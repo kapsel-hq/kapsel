@@ -1,0 +1,115 @@
+# Clippy configuration for Hooky
+# Enforces strict linting aligned with our style guide
+
+# Maximum cognitive complexity of a function
+cognitive-complexity-threshold = 30
+
+# Maximum number of lines in a function
+too-many-lines-threshold = 100
+
+# Maximum number of arguments to a function
+too-many-arguments-threshold = 7
+
+# Maximum size of types in bytes
+type-complexity-threshold = 250
+
+# Maximum number of single char bindings
+single-char-binding-names-threshold = 4
+
+# Enforce MSRV
+msrv = "1.75"
+
+# Disallowed names
+disallowed-names = ["foo", "bar", "baz", "tmp", "temp", "test", "data"]
+
+# Documentation requirements
+doc-valid-idents = [
+    "PostgreSQL",
+    "TigerBeetle",
+    "WebSocket",
+    "OAuth",
+    "OpenTelemetry",
+    "gRPC",
+    "UUID",
+    "URL",
+    "URI",
+    "HTTP",
+    "HTTPS",
+    "TCP",
+    "UDP",
+    "TLS",
+    "mTLS",
+    "JWT",
+    "HMAC",
+    "SHA256",
+    "API",
+    "JSON",
+    "YAML",
+    "TOML",
+    "SQL",
+    "HTML",
+    "CSS",
+    "JavaScript",
+    "TypeScript",
+    "GitHub",
+    "GitLab",
+    "CPU",
+    "GPU",
+    "RAM",
+    "I/O",
+    "Hooky",
+]
+
+# Maximum size of an enum variant
+enum-variant-size-threshold = 200
+
+# Avoid common OOP patterns that don't fit Rust
+avoid-breaking-exported-api = false
+
+# Enforce consistent error handling
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Maximum line length for checking
+max-include-file-size = 1000000
+
+# Encourage good practices
+enforced-import-renames = [
+    { path = "std::collections::HashMap", rename = "HashMap" },
+    { path = "std::collections::HashSet", rename = "HashSet" },
+    { path = "std::collections::BTreeMap", rename = "BTreeMap" },
+    { path = "std::collections::BTreeSet", rename = "BTreeSet" },
+]
+
+# Standard library functions that should be avoided
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "Use a proper configuration system instead" },
+    { path = "std::env::remove_var", reason = "Use a proper configuration system instead" },
+    { path = "std::mem::forget", reason = "Use ManuallyDrop or proper ownership instead" },
+    { path = "std::vec::Vec::leak", reason = "Leaking memory is almost never correct" },
+    { path = "std::boxed::Box::leak", reason = "Leaking memory is almost never correct" },
+]
+
+# Types that should be avoided
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "Use tokio::sync::Mutex in async code" },
+    { path = "std::sync::RwLock", reason = "Use tokio::sync::RwLock in async code" },
+    { path = "std::sync::Condvar", reason = "Use tokio::sync::Notify in async code" },
+]
+
+# Macros that should be avoided
+disallowed-macros = [
+    { path = "std::print", reason = "Use tracing instead" },
+    { path = "std::println", reason = "Use tracing instead" },
+    { path = "std::eprint", reason = "Use tracing instead" },
+    { path = "std::eprintln", reason = "Use tracing instead" },
+    { path = "std::dbg", reason = "Use tracing instead" },
+]
+
+# Third-party crate behavior
+warn-on-all-wildcard-imports = true
+
+# Array size threshold for stack vs heap
+array-size-threshold = 512000

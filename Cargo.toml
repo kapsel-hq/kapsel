@@ -1,0 +1,157 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Hooky Contributors"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hooky/hooky"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full", "tracing"] }
+tokio-util = "0.7"
+
+# Web framework
+axum = { version = "0.7", features = ["macros", "ws"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression", "timeout", "limit"] }
+hyper = "1.1"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+deadpool-postgres = "0.12"
+
+# Serialization
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde_with = "3.6"
+bytes = "1.5"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Tracing and metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.15"
+prometheus = "0.13"
+
+# Utilities
+uuid = { version = "1.7", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
+base64 = "0.21"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# HTTP
+http = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+
+# Configuration
+config = "0.14"
+dotenvy = "0.15"
+
+# Testing
+wiremock = "0.6"
+proptest = "1.4"
+arbitrary = { version = "1.3", features = ["derive"] }
+criterion = "0.5"
+insta = { version = "1.34", features = ["yaml", "json"] }
+fake = "2.9"
+rstest = "0.18"
+
+# Development dependencies
+pretty_assertions = "1.4"
+tempfile = "3.9"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Allow some pedantic lints
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Deny dangerous patterns
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Performance
+inefficient_to_string = "deny"
+unnecessary_self_imports = "deny"
+unused_async = "deny"
+
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = false
+strip = true
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
+
+# Root package for workspace-wide tooling
+[package]
+name = "hooky-workspace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "hooky"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[features]
+default = []
+bin = []
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+test-harness = { path = "crates/test-harness" }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }

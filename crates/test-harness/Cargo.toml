@@ -1,0 +1,48 @@
+[package]
+name = "test-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core testing infrastructure
+tokio = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+
+# Test utilities
+wiremock = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+# Tracing for tests
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Database testing
+testcontainers = "0.15"
+testcontainers-modules = { version = "0.3", features = ["postgres"] }
+
+# Additional utilities
+log = "0.4"
+rand = "0.8"
+
+# HTTP testing
+reqwest = { version = "0.11", features = ["json"] }
+http = "1.0"
+
+# Assertions
+pretty_assertions = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }

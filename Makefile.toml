@@ -1,0 +1,308 @@
+# Development tasks for Hooky
+# Run with: cargo make <task>
+
+[config]
+default_to_workspace = false
+skip_core_tasks = false
+
+[env]
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+RUST_BACKTRACE = "short"
+DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/hooky_test", condition = { env_not_set = ["DATABASE_URL"] } }
+
+# Core development tasks
+
+[tasks.setup]
+description = "Setup development environment"
+script = '''
+echo "Setting up Hooky development environment..."
+cargo install cargo-watch cargo-nextest cargo-llvm-cov sqlx-cli cargo-machete
+echo "Installing git hooks..."
+cargo install cargo-husky
+cargo husky install
+echo "Setup complete!"
+'''
+
+[tasks.dev]
+description = "Run development server with auto-reload"
+command = "cargo"
+args = ["watch", "-x", "run"]
+
+[tasks.test]
+description = "Run all tests with nextest"
+command = "cargo"
+args = ["nextest", "run", "--workspace"]
+
+[tasks.test-unit]
+description = "Run unit tests only"
+command = "cargo"
+args = ["nextest", "run", "--lib", "--workspace"]
+
+[tasks.test-integration]
+description = "Run integration tests only"
+command = "cargo"
+args = ["nextest", "run", "--test", "*", "--workspace"]
+
+[tasks.test-watch]
+description = "Run tests in watch mode"
+command = "cargo"
+args = ["watch", "-x", "nextest run"]
+
+[tasks.test-coverage]
+description = "Generate test coverage report"
+script = '''
+cargo llvm-cov clean --workspace
+cargo llvm-cov nextest --workspace --html
+echo "Coverage report generated at target/llvm-cov/html/index.html"
+'''
+
+[tasks.tdd]
+description = "TDD mode - watch and run tests on change"
+command = "cargo"
+args = ["watch", "-x", "nextest run", "-x", "clippy -- -D warnings"]
+
+[tasks.check]
+description = "Run all checks (format, lint, test)"
+dependencies = ["format-check", "lint", "test", "audit"]
+
+[tasks.format]
+description = "Format code with rustfmt"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.format-check]
+description = "Check code formatting"
+command = "cargo"
+args = ["fmt", "--all", "--check"]
+
+[tasks.lint]
+description = "Run clippy with strict settings"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.lint-fix]
+description = "Run clippy and attempt to fix issues"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--fix", "--", "-D", "warnings"]
+
+[tasks.clean]
+description = "Clean build artifacts"
+command = "cargo"
+args = ["clean"]
+
+[tasks.build]
+description = "Build in release mode"
+command = "cargo"
+args = ["build", "--release", "--workspace"]
+
+[tasks.build-debug]
+description = "Build in debug mode"
+command = "cargo"
+args = ["build", "--workspace"]
+
+[tasks.audit]
+description = "Check for security vulnerabilities"
+command = "cargo"
+args = ["audit"]
+
+[tasks.deps-check]
+description = "Check for unused dependencies"
+command = "cargo"
+args = ["machete"]
+
+[tasks.docs]
+description = "Generate and open documentation"
+script = '''
+cargo doc --no-deps --workspace --open
+'''
+
+[tasks.bench]
+description = "Run benchmarks"
+command = "cargo"
+args = ["bench", "--workspace"]
+
+# Database tasks
+
+[tasks.db-setup]
+description = "Setup test database"
+script = '''
+echo "Creating test database..."
+createdb hooky_test || true
+echo "Running migrations..."
+cargo sqlx migrate run
+echo "Database setup complete!"
+'''
+
+[tasks.db-reset]
+description = "Reset test database"
+script = '''
+echo "Dropping test database..."
+dropdb hooky_test || true
+echo "Creating test database..."
+createdb hooky_test
+echo "Running migrations..."
+cargo sqlx migrate run
+echo "Database reset complete!"
+'''
+
+[tasks.db-migrate]
+description = "Run database migrations"
+command = "cargo"
+args = ["sqlx", "migrate", "run"]
+
+[tasks.db-create-migration]
+description = "Create a new migration"
+script = '''
+read -p "Migration name: " name
+cargo sqlx migrate add $name
+'''
+
+# CI tasks
+
+[tasks.ci]
+description = "Run full CI pipeline"
+dependencies = ["format-check", "lint", "test", "audit", "build"]
+
+[tasks.ci-test]
+description = "CI test suite"
+script = '''
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo nextest run --workspace
+'''
+
+# Release tasks
+
+[tasks.pre-commit]
+description = "Run pre-commit checks"
+dependencies = ["format", "lint", "test-unit"]
+
+[tasks.pre-push]
+description = "Run pre-push checks"
+dependencies = ["check", "test"]
+
+# Utility tasks
+
+[tasks.todo]
+description = "Find all TODO comments"
+script = '''
+echo "Finding TODOs in code..."
+grep -r "TODO\|FIXME\|HACK\|XXX" --include="*.rs" --include="*.toml" --include="*.md" . | grep -v target/ | grep -v ".git/"
+'''
+
+[tasks.size]
+description = "Check binary size"
+script = '''
+cargo build --release
+ls -lh target/release/hooky
+'''
+
+[tasks.outdated]
+description = "Check for outdated dependencies"
+command = "cargo"
+args = ["outdated", "-R"]
+
+[tasks.update]
+description = "Update dependencies"
+command = "cargo"
+args = ["update"]
+
+[tasks.tree]
+description = "Display dependency tree"
+command = "cargo"
+args = ["tree"]
+
+# Chaos testing tasks
+
+[tasks.chaos-test]
+description = "Run chaos tests"
+env = { "RUST_LOG" = "debug,hooky=trace" }
+command = "cargo"
+args = ["test", "--test", "chaos_*", "--", "--nocapture"]
+
+[tasks.fuzz]
+description = "Run fuzz tests"
+script = '''
+cargo install cargo-fuzz
+cargo fuzz run fuzz_target_1 -- -max_total_time=30
+'''
+
+# Docker tasks
+
+[tasks.docker-build]
+description = "Build Docker image"
+script = '''
+docker build -t hooky:latest .
+'''
+
+[tasks.docker-run]
+description = "Run Docker container"
+script = '''
+docker run -p 8080:8080 -e DATABASE_URL=$DATABASE_URL hooky:latest
+'''
+
+[tasks.docker-compose-up]
+description = "Start services with docker-compose"
+script = '''
+docker-compose up -d
+'''
+
+[tasks.docker-compose-down]
+description = "Stop services with docker-compose"
+script = '''
+docker-compose down
+'''
+
+# Performance tasks
+
+[tasks.perf]
+description = "Run performance profiling"
+script = '''
+cargo build --release
+echo "Running performance profiling..."
+perf record -g target/release/hooky
+perf report
+'''
+
+[tasks.flamegraph]
+description = "Generate flamegraph"
+script = '''
+cargo install flamegraph
+cargo flamegraph --root
+'''
+
+# Help task
+
+[tasks.help]
+description = "Show available tasks"
+script = '''
+echo "Hooky Development Tasks"
+echo "======================"
+echo ""
+echo "Development:"
+echo "  cargo make dev           - Run development server"
+echo "  cargo make tdd          - TDD mode with watch"
+echo ""
+echo "Testing:"
+echo "  cargo make test         - Run all tests"
+echo "  cargo make test-unit    - Run unit tests only"
+echo "  cargo make test-watch   - Watch mode for tests"
+echo "  cargo make test-coverage - Generate coverage report"
+echo ""
+echo "Quality:"
+echo "  cargo make check        - Run all checks"
+echo "  cargo make lint         - Run clippy"
+echo "  cargo make format       - Format code"
+echo ""
+echo "Database:"
+echo "  cargo make db-setup     - Setup test database"
+echo "  cargo make db-reset     - Reset test database"
+echo ""
+echo "CI/CD:"
+echo "  cargo make ci           - Run full CI pipeline"
+echo ""
+echo "Run 'cargo make --list-all-steps' for complete list"
+'''
+
+[tasks.default]
+alias = "help"

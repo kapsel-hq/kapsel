@@ -1,0 +1,63 @@
+#!/usr/bin/env sh
+set -e
+
+# Commit message validation hook for conventional commits
+# Format: type(scope): subject
+
+commit_regex='^(feat|fix|docs|style|refactor|perf|test|chore)(\([a-z0-9-]+\))?: .{1,72}$'
+breaking_regex='^(feat|fix|docs|style|refactor|perf|test|chore)(\([a-z0-9-]+\))?!: .{1,72}$'
+
+commit_msg=$(cat "$1")
+first_line=$(echo "$commit_msg" | head -n1)
+
+# Check if it's a merge commit
+if echo "$first_line" | grep -q "^Merge"; then
+    exit 0
+fi
+
+# Check if it's a revert commit
+if echo "$first_line" | grep -q "^Revert"; then
+    exit 0
+fi
+
+# Validate commit message format
+if ! echo "$first_line" | grep -qE "$commit_regex" && ! echo "$first_line" | grep -qE "$breaking_regex"; then
+    echo "FAILURE: Invalid commit message format!"
+    echo ""
+    echo "Expected format: type(scope): subject"
+    echo "  or for breaking: type(scope)!: subject"
+    echo ""
+    echo "Types: feat, fix, docs, style, refactor, perf, test, chore"
+    echo ""
+    echo "Examples:"
+    echo "  feat(delivery): add exponential backoff"
+    echo "  fix(ingestion): handle missing headers"
+    echo "  docs(api): update webhook examples"
+    echo "  test(chaos): add network failure scenarios"
+    echo "  refactor(worker)!: redesign queue system"
+    echo ""
+    echo "Your message: '$first_line'"
+    exit 1
+fi
+
+# Check first line length
+if [ ${#first_line} -gt 72 ]; then
+    echo "FAILURE: First line of commit message is too long (${#first_line} > 72 characters)"
+    echo "Keep the subject line concise."
+    exit 1
+fi
+
+# Check that subject doesn't end with period
+if echo "$first_line" | grep -q '\.$'; then
+    echo "FAILURE: Subject line should not end with a period"
+    exit 1
+fi
+
+# Check that subject starts with lowercase after type
+if echo "$first_line" | grep -qE '^[a-z]+(\([a-z0-9-]+\))?!?: [A-Z]'; then
+    echo "FAILURE: Subject should start with lowercase letter"
+    echo "Example: 'feat(api): add endpoint' not 'feat(api): Add endpoint'"
+    exit 1
+fi
+
+echo "SUCCESS: Commit message format is valid"

@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting
+echo "Checking code formatting..."
+cargo fmt --all --check || {
+    echo "FAILURE: Code is not formatted. Run 'cargo fmt' to fix."
+    exit 1
+}
+
+# Run clippy
+echo "Running clippy..."
+cargo clippy --all-targets --all-features -- -D warnings || {
+    echo "FAILURE: Clippy found issues. Fix them before committing."
+    exit 1
+}
+
+# Run fast unit tests
+echo "Running unit tests..."
+cargo test --lib --workspace || {
+    echo "FAILURE: Unit tests failed. Fix them before committing."
+    exit 1
+}
+
+echo "SUCCESS: All pre-commit checks passed!"
