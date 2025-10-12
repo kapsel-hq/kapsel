@@ -24,6 +24,8 @@ pub struct TestEnv {
     pub http_mock: http::MockServer,
     pub clock: time::TestClock,
     pub config: TestConfig,
+    pub client: reqwest::Client,
+    pub server_addr: Option<std::net::SocketAddr>,
 }
 
 impl TestEnv {
@@ -46,8 +48,16 @@ impl TestEnv {
         let db = database::setup_test_database().await?;
         let http_mock = http::MockServer::start().await;
         let clock = time::TestClock::new();
+        let client = reqwest::Client::new();
 
-        Ok(Self { db, http_mock, clock, config })
+        Ok(Self {
+            db,
+            http_mock,
+            clock,
+            config,
+            client,
+            server_addr: None,
+        })
     }
 
     /// Advances test time by the specified duration.
@@ -59,6 +69,18 @@ impl TestEnv {
     pub async fn transaction(&self) -> Result<TestTransaction<'_>> {
         let tx = self.db.begin().await?;
         Ok(TestTransaction { tx: Some(tx), _env: self })
+    }
+
+    /// Attaches a running Axum server to this test environment.
+    pub fn with_server(&mut self, addr: std::net::SocketAddr) {
+        self.server_addr = Some(addr);
+    }
+
+    /// Returns the base URL for making requests to the test server.
+    pub fn base_url(&self) -> String {
+        self.server_addr
+            .map(|addr| format!("http://{}", addr))
+            .unwrap_or_else(|| "http://localhost:8080".to_string())
     }
 }
 
