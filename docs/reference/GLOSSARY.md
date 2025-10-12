@@ -1,6 +1,6 @@
 # Glossary
 
-This glossary defines domain-specific terms used throughout the Hooky project. Understanding these terms is essential for working with the codebase and documentation.
+This glossary defines domain-specific terms used throughout the Kapsel project. Understanding these terms is essential for working with the codebase and documentation.
 
 ## A
 
@@ -154,7 +154,7 @@ Our consistency model where events are first written to PostgreSQL for operation
 ## U
 
 ### Unique URL
-Per-endpoint ingestion URL where webhook sources send their events. Format: `https://api.hooky.dev/ingest/{endpoint_id}`
+Per-endpoint ingestion URL where webhook sources send their events. Format: `https://api.kapsel.dev/ingest/{endpoint_id}`
 
 ## W
 

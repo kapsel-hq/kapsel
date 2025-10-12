@@ -513,7 +513,7 @@ CHAOS_SEED=12345 cargo test test_delivery_retry_with_network_failures
 
 ```rust
 // Enable detailed logging for test debugging
-RUST_LOG=debug,hooky=trace cargo test failing_test -- --nocapture
+RUST_LOG=debug,kapsel=trace cargo test failing_test -- --nocapture
 ```
 
 ### Time Travel Debugging

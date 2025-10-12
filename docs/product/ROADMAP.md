@@ -1,6 +1,6 @@
 # Product Roadmap
 
-This roadmap defines the phased delivery plan for Hooky, from MVP through enterprise features. Each phase builds upon the previous, with clear success criteria and deliverables.
+This roadmap defines the phased delivery plan for kapsel, from MVP through enterprise features. Each phase builds upon the previous, with clear success criteria and deliverables.
 
 ## Timeline Overview
 
@@ -218,13 +218,6 @@ This roadmap defines the phased delivery plan for Hooky, from MVP through enterp
 - [ ] CDN integration
 - [ ] Global load balancing
 - [ ] Data residency options
-
-### Success Criteria
-- 1000+ active accounts
-- $50K MRR
-- 3+ enterprise customers
-- 99.99% availability SLA
-- < 50ms global ingestion
 
 ### Deliverables
 - Enterprise onboarding process

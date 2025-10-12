@@ -1,6 +1,6 @@
 # Architecture Principles
 
-These principles guide every architectural decision in Hooky. They are not aspirations—they are requirements. Every component, every abstraction, every line of code must conform to these tenets.
+These principles guide every architectural decision in Kapsel. They are not aspirations—they are requirements. Every component, every abstraction, every line of code must conform to these tenets.
 
 ## Core Principles
 
@@ -11,12 +11,14 @@ These principles guide every architectural decision in Hooky. They are not aspir
 We use Rust's type system as our first line of defense. If a state is invalid, it must be unrepresentable. If an operation can fail, it must return a Result. If a resource needs cleanup, it must use RAII.
 
 **Implementation**:
+
 - Newtype wrappers for all identifiers (no raw UUIDs)
 - State machines encoded in the type system
 - Builder patterns for complex configuration
 - Compile-time verification over runtime validation
 
 **Example**:
+
 ```rust
 // BAD: String confusion possible
 fn deliver_webhook(endpoint_id: String, event_id: String) { }
@@ -32,12 +34,14 @@ fn deliver_webhook(endpoint_id: EndpointId, event_id: EventId) { }
 A module's interface should be much simpler than its implementation. The cost of using a module should be the time to learn its interface, not the time to understand its internals.
 
 **Implementation**:
+
 - Public API has <10 endpoints while handling 100+ edge cases internally
 - Retry logic is completely hidden behind a simple "deliver" interface
 - Circuit breaker state management invisible to callers
 - Database connection pooling transparent to application code
 
 **Anti-patterns**:
+
 - Shallow modules that just pass through calls
 - Interfaces that expose implementation details
 - Configuration that requires understanding internals
@@ -49,12 +53,14 @@ A module's interface should be much simpler than its implementation. The cost of
 Data layout determines performance. We organize data based on how it's accessed, not how it's conceptually related. Hot data and cold data must be separated. Allocations must be minimized.
 
 **Implementation**:
+
 - Separate tables for frequently-accessed metadata and rarely-accessed payloads
 - Columnar storage for append-only audit logs
 - Denormalized read models for query performance
 - Pre-allocated pools for predictable memory usage
 
 **Trade-offs**:
+
 - Accept controlled denormalization for read performance
 - Trade storage space for computation time
 - Prefer batch operations over individual queries
@@ -66,6 +72,7 @@ Data layout determines performance. We organize data based on how it's accessed,
 The core logic must be deterministic and testable. All sources of non-determinism (time, randomness, I/O) must be abstracted behind traits that can be controlled in tests.
 
 **Implementation**:
+
 ```rust
 pub trait Clock: Send + Sync {
     fn now(&self) -> Instant;
@@ -81,6 +88,7 @@ pub trait Rng: Send + Sync {
 ```
 
 **Benefits**:
+
 - Reproducible test failures
 - Time-travel debugging
 - Chaos testing without external dependencies
@@ -93,12 +101,14 @@ pub trait Rng: Send + Sync {
 No task runs unsupervised. Every spawned task must be tracked, awaited, and cleanly shut down. Resource leaks from orphaned tasks are unacceptable.
 
 **Implementation**:
+
 - JoinSet for managing multiple tasks
 - Explicit abort handles for cancellation
 - Graceful shutdown propagation
 - select! with biased ordering for shutdown priority
 
 **Invariants**:
+
 - No task outlives its parent
 - All tasks respond to shutdown signals
 - Resource cleanup happens in reverse order of acquisition
@@ -110,12 +120,14 @@ No task runs unsupervised. Every spawned task must be tracked, awaited, and clea
 Unbounded growth leads to catastrophic failure. Every queue, every buffer, every pool must have a defined limit. When limits are reached, backpressure must flow upstream.
 
 **Implementation**:
+
 - Bounded channels between components
 - Fixed-size connection pools
 - Rate limiting at ingestion
 - Load shedding when at capacity
 
 **Behavior Under Load**:
+
 - Return 503 when channel is full (don't drop silently)
 - Use exponential backoff when resources exhausted
 - Maintain fairness through round-robin or fair queuing
@@ -128,12 +140,14 @@ Unbounded growth leads to catastrophic failure. Every queue, every buffer, every
 Every significant operation must be observable, but the act of observation must not materially impact the system's performance or behavior.
 
 **Implementation**:
+
 - Structured logging with zero-allocation when disabled
 - Metrics as close to the source as possible
 - Sampling for high-frequency events
 - Trace context propagation throughout
 
 **Standards**:
+
 - Every error includes context
 - Every async operation has a span
 - Every state transition is logged
@@ -146,12 +160,14 @@ Every significant operation must be observable, but the act of observation must 
 Individual components will fail. The system must continue operating. Failures must be detected quickly, isolated immediately, and recovered from automatically.
 
 **Implementation**:
+
 - Circuit breakers prevent cascade failures
 - Health checks detect failures quickly
 - Supervisor trees restart failed components
 - Bulkheads isolate failures
 
 **Recovery Strategy**:
+
 - Exponential backoff with jitter
 - State recovery from persistent storage
 - Reconciliation loops for eventual consistency
@@ -198,7 +214,9 @@ Individual components will fail. The system must continue operating. Failures mu
 ## Design Patterns
 
 ### Repository Pattern
+
 Isolate data access behind trait boundaries:
+
 ```rust
 #[async_trait]
 pub trait EventRepository {
@@ -209,7 +227,9 @@ pub trait EventRepository {
 ```
 
 ### Command/Query Separation
+
 Write operations return minimal data; read operations are side-effect free:
+
 ```rust
 // Command: changes state, returns ID only
 async fn create_endpoint(&self, cmd: CreateEndpoint) -> Result<EndpointId>;
@@ -219,6 +239,7 @@ async fn get_endpoint(&self, query: GetEndpoint) -> Result<Endpoint>;
 ```
 
 ### Builder Pattern for Complex Objects
+
 ```rust
 let webhook = WebhookEvent::builder()
     .endpoint_id(endpoint_id)
@@ -231,18 +252,23 @@ let webhook = WebhookEvent::builder()
 ## Anti-Patterns to Avoid
 
 ### Anemic Domain Models
+
 Don't create data structures without behavior. Encapsulate operations with the data they operate on.
 
 ### Distributed Monolith
+
 Don't split into services prematurely. A well-structured monolith is better than a poorly-structured distributed system.
 
 ### Abstraction Without Purpose
+
 Don't create abstractions for single use cases. Abstractions should simplify, not reorganize.
 
 ### Defensive Copying
+
 Trust the type system. If ownership is correct, defensive copies are waste.
 
 ### Shared Mutable State
+
 Message passing > Locks. When locks are necessary, minimize critical sections.
 
 ## Decision Framework

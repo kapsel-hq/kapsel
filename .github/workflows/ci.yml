@@ -7,7 +7,7 @@ on:
     branches: [main]
   schedule:
     # Run security audit daily at 2 AM UTC
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
 
 env:
   RUST_BACKTRACE: 1
@@ -63,7 +63,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: hooky_test
+          POSTGRES_DB: kapsel_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -97,17 +97,17 @@ jobs:
           cargo sqlx database create
           cargo sqlx migrate run
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
       - name: Run tests
         run: cargo nextest run --workspace --no-fail-fast
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
       - name: Run doc tests
         run: cargo test --doc --workspace
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
   coverage:
     name: Code Coverage
@@ -118,7 +118,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: hooky_test
+          POSTGRES_DB: kapsel_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -148,14 +148,14 @@ jobs:
           cargo sqlx database create
           cargo sqlx migrate run
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
       - name: Generate coverage
         run: |
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
       - name: Upload to codecov
         uses: codecov/codecov-action@v3
@@ -219,7 +219,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: hooky_test
+          POSTGRES_DB: kapsel_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -248,12 +248,12 @@ jobs:
           cargo sqlx database create
           cargo sqlx migrate run
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
       - name: Check sqlx prepare
         run: cargo sqlx prepare --check --workspace
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/hooky_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
   msrv:
     name: Minimum Supported Rust Version
@@ -272,7 +272,18 @@ jobs:
 
   success:
     name: CI Success
-    needs: [format, lint, test, coverage, security, unused-deps, docs, sqlx-prepare, msrv]
+    needs:
+      [
+        format,
+        lint,
+        test,
+        coverage,
+        security,
+        unused-deps,
+        docs,
+        sqlx-prepare,
+        msrv,
+      ]
     runs-on: ubuntu-latest
     if: always()
     steps:

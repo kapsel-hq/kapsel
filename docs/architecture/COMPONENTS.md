@@ -1,6 +1,6 @@
 # Component Architecture
 
-This document details the internal architecture of each major component in Hooky. Each component is described with its responsibilities, interfaces, implementation details, and failure modes.
+This document details the internal architecture of each major component in Kapsel. Each component is described with its responsibilities, interfaces, implementation details, and failure modes.
 
 ## Component Overview
 

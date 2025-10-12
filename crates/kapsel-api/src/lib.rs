@@ -1,4 +1,4 @@
-//! Hooky HTTP API.
+//! Kapsel HTTP API.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

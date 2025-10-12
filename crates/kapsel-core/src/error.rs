@@ -1,4 +1,4 @@
-//! Error types for Hooky webhook reliability service.
+//! Error types for Kapsel webhook reliability service.
 //!
 //! Implements complete error taxonomy from specification (E1001-E3004).
 
@@ -6,12 +6,12 @@ use thiserror::Error;
 
 use crate::EndpointId;
 
-/// Result type alias using `HookyError`.
-pub type Result<T> = std::result::Result<T, HookyError>;
+/// Result type alias using `KapselError`.
+pub type Result<T> = std::result::Result<T, KapselError>;
 
-/// Hooky error types with codes matching specification.
+/// Kapsel error types with codes matching specification.
 #[derive(Debug, Error)]
-pub enum HookyError {
+pub enum KapselError {
     // Application Errors (E1001-E1005)
     /// HMAC signature validation failed (E1001).
     #[error("[E1001] Invalid signature: HMAC validation failed")]
@@ -19,11 +19,17 @@ pub enum HookyError {
 
     /// Payload exceeds 10MB limit (E1002).
     #[error("[E1002] Payload too large: size {size_bytes} bytes exceeds 10MB limit")]
-    PayloadTooLarge { size_bytes: usize },
+    PayloadTooLarge {
+        /// Size of the payload in bytes
+        size_bytes: usize,
+    },
 
     /// Endpoint not found (E1003).
     #[error("[E1003] Invalid endpoint: endpoint {id} not found")]
-    InvalidEndpoint { id: EndpointId },
+    InvalidEndpoint {
+        /// The endpoint ID that was not found
+        id: EndpointId,
+    },
 
     /// Tenant quota exceeded (E1004).
     #[error("[E1004] Rate limited: tenant quota exceeded")]
@@ -31,7 +37,10 @@ pub enum HookyError {
 
     /// Duplicate event detected by idempotency check (E1005).
     #[error("[E1005] Duplicate event: {source_event_id} already processed")]
-    DuplicateEvent { source_event_id: String },
+    DuplicateEvent {
+        /// The source event ID that was already processed
+        source_event_id: String,
+    },
 
     // Delivery Errors (E2001-E2005)
     /// Target endpoint unavailable (E2001).
@@ -40,19 +49,31 @@ pub enum HookyError {
 
     /// Request timeout exceeded (E2002).
     #[error("[E2002] Connection timeout: exceeded {timeout_ms}ms")]
-    ConnectionTimeout { timeout_ms: u64 },
+    ConnectionTimeout {
+        /// Timeout duration that was exceeded in milliseconds
+        timeout_ms: u64,
+    },
 
     /// HTTP 4xx client error (E2003).
     #[error("[E2003] HTTP client error: {status} response from endpoint")]
-    HttpClientError { status: u16 },
+    HttpClientError {
+        /// HTTP status code returned by the endpoint
+        status: u16,
+    },
 
     /// HTTP 5xx server error (E2004).
     #[error("[E2004] HTTP server error: {status} response from endpoint")]
-    HttpServerError { status: u16 },
+    HttpServerError {
+        /// HTTP status code returned by the endpoint
+        status: u16,
+    },
 
     /// Circuit breaker is open (E2005).
     #[error("[E2005] Circuit open: endpoint {id} circuit breaker triggered")]
-    CircuitOpen { id: EndpointId },
+    CircuitOpen {
+        /// The endpoint ID whose circuit breaker is open
+        id: EndpointId,
+    },
 
     // System Errors (E3001-E3004)
     /// PostgreSQL connection failed (E3001).
@@ -84,9 +105,9 @@ pub enum HookyError {
     Other(#[from] anyhow::Error),
 }
 
-impl HookyError {
+impl KapselError {
     /// Returns the error code (E1001-E3004).
-    pub fn code(&self) -> &'static str {
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidSignature => "E1001",
             Self::PayloadTooLarge { .. } => "E1002",
@@ -107,7 +128,7 @@ impl HookyError {
     }
 
     /// Returns whether this error should trigger a retry.
-    pub fn is_retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         matches!(
             self,
             Self::RateLimited
@@ -129,20 +150,20 @@ mod tests {
 
     #[test]
     fn error_codes_match_specification() {
-        assert_eq!(HookyError::InvalidSignature.code(), "E1001");
-        assert_eq!(HookyError::PayloadTooLarge { size_bytes: 0 }.code(), "E1002");
-        assert_eq!(HookyError::RateLimited.code(), "E1004");
-        assert_eq!(HookyError::ConnectionRefused.code(), "E2001");
-        assert_eq!(HookyError::DatabaseUnavailable.code(), "E3001");
+        assert_eq!(KapselError::InvalidSignature.code(), "E1001");
+        assert_eq!(KapselError::PayloadTooLarge { size_bytes: 0 }.code(), "E1002");
+        assert_eq!(KapselError::RateLimited.code(), "E1004");
+        assert_eq!(KapselError::ConnectionRefused.code(), "E2001");
+        assert_eq!(KapselError::DatabaseUnavailable.code(), "E3001");
     }
 
     #[test]
     fn retryable_errors_identified() {
-        assert!(!HookyError::InvalidSignature.is_retryable());
-        assert!(!HookyError::PayloadTooLarge { size_bytes: 0 }.is_retryable());
-        assert!(HookyError::RateLimited.is_retryable());
-        assert!(HookyError::ConnectionRefused.is_retryable());
-        assert!(HookyError::HttpServerError { status: 500 }.is_retryable());
-        assert!(!HookyError::HttpClientError { status: 400 }.is_retryable());
+        assert!(!KapselError::InvalidSignature.is_retryable());
+        assert!(!KapselError::PayloadTooLarge { size_bytes: 0 }.is_retryable());
+        assert!(KapselError::RateLimited.is_retryable());
+        assert!(KapselError::ConnectionRefused.is_retryable());
+        assert!(KapselError::HttpServerError { status: 500 }.is_retryable());
+        assert!(!KapselError::HttpClientError { status: 400 }.is_retryable());
     }
 }

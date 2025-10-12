@@ -189,40 +189,38 @@ fn test_clock_deterministic_behavior() {
     assert_eq!(sys_elapsed, Duration::from_secs(60));
 }
 
-// RED phase test - this will fail until we implement the actual webhook endpoint
-// Uncomment when ready to implement ingestion logic
-/*
-#[tokio::test]
-async fn webhook_ingestion_endpoint_accepts_post() {
-    // Arrange
-    let env = TestEnv::new().await.unwrap();
-    let endpoint_id = uuid::Uuid::new_v4();
-
-    // Act - Try to POST to ingestion endpoint (will fail - RED phase)
-    let response = env.client
-        .post(&format!("/ingest/{}", endpoint_id))
-        .header("Content-Type", "application/json")
-        .header("X-Idempotency-Key", "test-123")
-        .json(&json!({
-            "event": "test.webhook",
-            "data": {
-                "id": "123",
-                "message": "Hello webhook!"
-            }
-        }))
-        .send()
-        .await
-        .expect("Request should complete");
-
-    // Assert - Should return 200 OK when implemented
-    assert_eq!(response.status(), 200);
-
-    // Should return a webhook receipt
-    let body: serde_json::Value = response.json().await.unwrap();
-    assert!(body["event_id"].as_str().is_some());
-    assert_eq!(body["status"], "received");
-}
-*/
+// RED phase test - this will fail until we implement the actual webhook
+// endpoint Uncomment when ready to implement ingestion logic
+// #[tokio::test]
+// async fn webhook_ingestion_endpoint_accepts_post() {
+// Arrange
+// let env = TestEnv::new().await.unwrap();
+// let endpoint_id = uuid::Uuid::new_v4();
+//
+// Act - Try to POST to ingestion endpoint (will fail - RED phase)
+// let response = env.client
+// .post(&format!("/ingest/{}", endpoint_id))
+// .header("Content-Type", "application/json")
+// .header("X-Idempotency-Key", "test-123")
+// .json(&json!({
+// "event": "test.webhook",
+// "data": {
+// "id": "123",
+// "message": "Hello webhook!"
+// }
+// }))
+// .send()
+// .await
+// .expect("Request should complete");
+//
+// Assert - Should return 200 OK when implemented
+// assert_eq!(response.status(), 200);
+//
+// Should return a webhook receipt
+// let body: serde_json::Value = response.json().await.unwrap();
+// assert!(body["event_id"].as_str().is_some());
+// assert_eq!(body["status"], "received");
+// }
 
 // Test demonstrating TDD cycle for retry logic
 #[tokio::test]
@@ -244,13 +242,14 @@ async fn retry_logic_exponential_backoff_timing() {
         clock.advance(delay);
 
         // Would make actual HTTP request here in real implementation
-        println!("Attempt {} at {:?} after delay {:?}", attempt + 1, clock.now(), delay);
+        tracing::debug!("Attempt {} at {:?} after delay {:?}", attempt + 1, clock.now(), delay);
     }
 
     // Assert - Verify exponential backoff timing
     assert_eq!(attempt_times.len(), 3);
 
-    // Each attempt should be roughly double the previous delay (with jitter tolerance)
+    // Each attempt should be roughly double the previous delay (with jitter
+    // tolerance)
     let delay1 = attempt_times[1].duration_since(attempt_times[0]);
     let delay2 = attempt_times[2].duration_since(attempt_times[1]);
 
@@ -281,18 +280,18 @@ async fn complete_webhook_reliability_workflow() {
 
     // 1. Webhook received (would persist to DB)
     let received_at = clock.now();
-    println!("Webhook received at: {:?}", received_at);
+    tracing::debug!("Webhook received at: {:?}", received_at);
 
     // 2. First delivery attempt fails
     clock.advance(Duration::from_millis(100)); // Processing time
     let first_attempt = clock.now();
-    println!("First delivery attempt at: {:?}", first_attempt);
+    tracing::debug!("First delivery attempt at: {:?}", first_attempt);
 
     // 3. Schedule retry with exponential backoff
     let retry_delay = backoff::standard_webhook_backoff(0);
     clock.advance(retry_delay);
     let retry_at = clock.now();
-    println!("Retry scheduled for: {:?} (after {:?})", retry_at, retry_delay);
+    tracing::debug!("Retry scheduled for: {:?} (after {:?})", retry_at, retry_delay);
 
     // 4. Configure destination to succeed on retry
     mock_destination
@@ -301,7 +300,7 @@ async fn complete_webhook_reliability_workflow() {
 
     // 5. Retry succeeds
     let delivered_at = clock.now();
-    println!("Webhook delivered at: {:?}", delivered_at);
+    tracing::debug!("Webhook delivered at: {:?}", delivered_at);
 
     // Assert - Verify complete flow timing
     let total_time = delivered_at.duration_since(received_at);
@@ -313,9 +312,9 @@ async fn complete_webhook_reliability_workflow() {
     // Verify webhook data integrity
     assert_eq!(webhook.content_type, "application/json");
     assert!(webhook.headers.contains_key("Stripe-Signature"));
-    assert!(webhook.body.len() > 0);
+    assert!(!webhook.body.is_empty());
 
-    println!("✅ Complete webhook reliability workflow test passed!");
-    println!("   Total processing time: {:?}", total_time);
-    println!("   Webhook delivered successfully with exponential backoff retry");
+    tracing::info!("Complete webhook reliability workflow test passed!");
+    tracing::info!("   Total processing time: {:?}", total_time);
+    tracing::info!("   Webhook delivered successfully with exponential backoff retry");
 }

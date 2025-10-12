@@ -4,11 +4,19 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Testing infrastructure and utilities for Kapsel webhook reliability service"
+repository.workspace = true
+readme = "README.md"
+keywords = ["testing", "webhook", "fixtures", "mocks", "harness"]
+categories = ["development-tools::testing", "web-programming", "network-programming"]
+
+[features]
+default = []
 
 [dependencies]
 # Core testing infrastructure
 tokio = { workspace = true }
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"] }
 axum = { workspace = true }
 tower = { workspace = true }
 
@@ -25,13 +33,11 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Database testing
-testcontainers = "0.15"
-testcontainers-modules = { version = "0.3", features = ["postgres"] }
+# Database testing - supports both SQLite (in-memory) and PostgreSQL (Docker)
 
 # Additional utilities
-log = "0.4"
-rand = "0.8"
+log = { workspace = true }
+rand = { workspace = true }
 
 # HTTP testing
 reqwest = { version = "0.11", features = ["json"] }

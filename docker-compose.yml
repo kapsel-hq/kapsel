@@ -1,16 +1,16 @@
-version: '3.9'
+version: "3.9"
 
 services:
   # PostgreSQL - Primary operational database
   postgres:
     image: postgres:15-alpine
-    container_name: hooky-postgres
+    container_name: kapsel-postgres
     ports:
       - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: hooky_dev
+      POSTGRES_DB: kapsel_dev
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
@@ -24,13 +24,13 @@ services:
   # PostgreSQL for testing (separate instance)
   postgres-test:
     image: postgres:15-alpine
-    container_name: hooky-postgres-test
+    container_name: kapsel-postgres-test
     ports:
       - "5433:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: hooky_test
+      POSTGRES_DB: kapsel_test
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -43,7 +43,7 @@ services:
   # TigerBeetle - Immutable audit log (uncomment when ready)
   # tigerbeetle:
   #   image: ghcr.io/tigerbeetle/tigerbeetle:latest
-  #   container_name: hooky-tigerbeetle
+  #   container_name: kapsel-tigerbeetle
   #   ports:
   #     - "3000:3000"
   #   volumes:
@@ -54,7 +54,7 @@ services:
   # Redis - For rate limiting and caching
   redis:
     image: redis:7-alpine
-    container_name: hooky-redis
+    container_name: kapsel-redis
     ports:
       - "6379:6379"
     volumes:
@@ -70,24 +70,24 @@ services:
   # Prometheus - Metrics collection
   prometheus:
     image: prom/prometheus:latest
-    container_name: hooky-prometheus
+    container_name: kapsel-prometheus
     ports:
       - "9090:9090"
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
     restart: unless-stopped
 
   # Grafana - Metrics visualization
   grafana:
     image: grafana/grafana:latest
-    container_name: hooky-grafana
+    container_name: kapsel-grafana
     ports:
       - "3001:3000"
     environment:
@@ -105,11 +105,11 @@ services:
   # Jaeger - Distributed tracing
   jaeger:
     image: jaegertracing/all-in-one:latest
-    container_name: hooky-jaeger
+    container_name: kapsel-jaeger
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
+      - "16686:16686" # Jaeger UI
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
     environment:
       COLLECTOR_OTLP_ENABLED: true
     restart: unless-stopped
@@ -117,7 +117,7 @@ services:
   # MinIO - S3-compatible storage for webhook payloads (optional)
   # minio:
   #   image: minio/minio:latest
-  #   container_name: hooky-minio
+  #   container_name: kapsel-minio
   #   ports:
   #     - "9000:9000"
   #     - "9001:9001"
@@ -137,7 +137,7 @@ services:
   # Adminer - Database UI (development only)
   adminer:
     image: adminer:latest
-    container_name: hooky-adminer
+    container_name: kapsel-adminer
     ports:
       - "8081:8080"
     environment:
@@ -151,10 +151,10 @@ services:
   # Mailhog - Email testing (for notifications)
   mailhog:
     image: mailhog/mailhog:latest
-    container_name: hooky-mailhog
+    container_name: kapsel-mailhog
     ports:
-      - "1025:1025"  # SMTP
-      - "8025:8025"  # Web UI
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
     restart: unless-stopped
     profiles:
       - dev
@@ -169,5 +169,5 @@ volumes:
 
 networks:
   default:
-    name: hooky-network
+    name: kapsel-network
     driver: bridge

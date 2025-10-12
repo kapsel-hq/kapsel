@@ -1,4 +1,4 @@
--- Initial schema for Hooky webhook reliability service
+-- Initial schema for Kapsel webhook reliability service
 -- This migration creates the core tables needed for webhook ingestion,
 -- delivery, and audit trail.
 

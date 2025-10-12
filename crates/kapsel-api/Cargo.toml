@@ -1,17 +1,23 @@
 [package]
-name = "hooky-api"
+name = "kapsel-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "HTTP API server for Kapsel webhook reliability service"
+repository.workspace = true
+readme = "README.md"
+keywords = ["webhook", "api", "http", "axum", "server"]
+categories = ["web-programming", "network-programming", "api-bindings"]
 
 [dependencies]
 # Core domain
-hooky-core = { path = "../hooky-core" }
+kapsel-core = { path = "../kapsel-core" }
 
 # Web framework
 axum = { workspace = true }
 tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "timeout"] }
 
 # Async
 tokio = { workspace = true }

@@ -1,4 +1,4 @@
-# Clippy configuration for Hooky
+# Clippy configuration for Kapsel
 # Enforces strict linting aligned with our style guide
 
 # Maximum cognitive complexity of a function
@@ -57,7 +57,7 @@ doc-valid-idents = [
     "GPU",
     "RAM",
     "I/O",
-    "Hooky",
+    "Kapsel",
 ]
 
 # Maximum size of an enum variant
@@ -76,12 +76,8 @@ allow-print-in-tests = true
 max-include-file-size = 1000000
 
 # Encourage good practices
-enforced-import-renames = [
-    { path = "std::collections::HashMap", rename = "HashMap" },
-    { path = "std::collections::HashSet", rename = "HashSet" },
-    { path = "std::collections::BTreeMap", rename = "BTreeMap" },
-    { path = "std::collections::BTreeSet", rename = "BTreeSet" },
-]
+
+
 
 # Standard library functions that should be avoided
 disallowed-methods = [

@@ -1,4 +1,4 @@
-# Development tasks for Hooky
+# Development tasks for Kapsel
 # Run with: cargo make <task>
 
 [config]
@@ -8,14 +8,14 @@ skip_core_tasks = false
 [env]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 RUST_BACKTRACE = "short"
-DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/hooky_test", condition = { env_not_set = ["DATABASE_URL"] } }
+DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
 
 # Core development tasks
 
 [tasks.setup]
 description = "Setup development environment"
 script = '''
-echo "Setting up Hooky development environment..."
+echo "Setting up Kapsel development environment..."
 cargo install cargo-watch cargo-nextest cargo-llvm-cov sqlx-cli cargo-machete
 echo "Installing git hooks..."
 cargo install cargo-husky
@@ -127,7 +127,7 @@ args = ["bench", "--workspace"]
 description = "Setup test database"
 script = '''
 echo "Creating test database..."
-createdb hooky_test || true
+createdb kapsel_test || true
 echo "Running migrations..."
 cargo sqlx migrate run
 echo "Database setup complete!"
@@ -137,9 +137,9 @@ echo "Database setup complete!"
 description = "Reset test database"
 script = '''
 echo "Dropping test database..."
-dropdb hooky_test || true
+dropdb kapsel_test || true
 echo "Creating test database..."
-createdb hooky_test
+createdb kapsel_test
 echo "Running migrations..."
 cargo sqlx migrate run
 echo "Database reset complete!"
@@ -194,7 +194,7 @@ grep -r "TODO\|FIXME\|HACK\|XXX" --include="*.rs" --include="*.toml" --include="
 description = "Check binary size"
 script = '''
 cargo build --release
-ls -lh target/release/hooky
+ls -lh target/release/kapsel
 '''
 
 [tasks.outdated]
@@ -216,7 +216,7 @@ args = ["tree"]
 
 [tasks.chaos-test]
 description = "Run chaos tests"
-env = { "RUST_LOG" = "debug,hooky=trace" }
+env = { "RUST_LOG" = "debug,kapsel=trace" }
 command = "cargo"
 args = ["test", "--test", "chaos_*", "--", "--nocapture"]
 
@@ -232,13 +232,13 @@ cargo fuzz run fuzz_target_1 -- -max_total_time=30
 [tasks.docker-build]
 description = "Build Docker image"
 script = '''
-docker build -t hooky:latest .
+docker build -t kapsel:latest .
 '''
 
 [tasks.docker-run]
 description = "Run Docker container"
 script = '''
-docker run -p 8080:8080 -e DATABASE_URL=$DATABASE_URL hooky:latest
+docker run -p 8080:8080 -e DATABASE_URL=$DATABASE_URL kapsel:latest
 '''
 
 [tasks.docker-compose-up]
@@ -260,7 +260,7 @@ description = "Run performance profiling"
 script = '''
 cargo build --release
 echo "Running performance profiling..."
-perf record -g target/release/hooky
+perf record -g target/release/kapsel
 perf report
 '''
 
@@ -276,7 +276,7 @@ cargo flamegraph --root
 [tasks.help]
 description = "Show available tasks"
 script = '''
-echo "Hooky Development Tasks"
+echo "Kapsel Development Tasks"
 echo "======================"
 echo ""
 echo "Development:"

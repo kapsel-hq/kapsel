@@ -1,8 +1,8 @@
-# Hooky Documentation
+# Kapsel Documentation
 
 > **Bank-grade webhook reliability for mission-critical integrations**
 
-This documentation represents the complete technical and operational specification for Hooky, our webhook reliability service. Every design decision, architectural choice, and operational procedure is documented here.
+This documentation represents the complete technical and operational specification for Kapsel, our webhook reliability service. Every design decision, architectural choice, and operational procedure is documented here.
 
 ## Navigation
 
@@ -20,6 +20,7 @@ This documentation represents the complete technical and operational specificati
 - **[Security Architecture](./architecture/SECURITY.md)** - Security model, threat analysis, and mitigations
 
 **Decision Records:**
+
 - **[ADR-001: Two-Phase Persistence](./architecture/decisions/ADR-001-two-phase-persistence.md)**
 - **[ADR-002: TigerBeetle for Audit Log](./architecture/decisions/ADR-002-tigerbeetle-audit.md)**
 - **[ADR-003: PostgreSQL for State](./architecture/decisions/ADR-003-postgresql-state.md)**
@@ -64,6 +65,7 @@ This documentation embodies our engineering philosophy:
 ## Contributing
 
 Documentation changes follow the same review process as code:
+
 1. Branch from `main`
 2. Make changes with clear, atomic commits
 3. Ensure internal links work
@@ -78,4 +80,4 @@ Documentation changes follow the same review process as code:
 
 ---
 
-*"The code is the truth, but the documentation is the map to understanding it."*
+_"The code is the truth, but the documentation is the map to understanding it."_

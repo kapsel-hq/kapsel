@@ -1,6 +1,6 @@
 # Technical Specification
 
-This document defines the complete technical requirements, constraints, and interfaces for the Hooky webhook reliability service. All implementation must conform to these specifications.
+This document defines the complete technical requirements, constraints, and interfaces for the Kapsel webhook reliability service. All implementation must conform to these specifications.
 
 ## Functional Requirements
 
@@ -38,9 +38,9 @@ This document defines the complete technical requirements, constraints, and inte
 - **FR-4.1**: HTTP POST delivery to configured destination URL
 - **FR-4.2**: Preserve original headers (with configurable filtering)
 - **FR-4.3**: Add delivery metadata headers:
-  - X-Hooky-Event-Id: unique event identifier
-  - X-Hooky-Delivery-Attempt: attempt number
-  - X-Hooky-Original-Timestamp: ISO8601 ingestion time
+  - X-Kapsel-Event-Id: unique event identifier
+  - X-Kapsel-Delivery-Attempt: attempt number
+  - X-Kapsel-Original-Timestamp: ISO8601 ingestion time
 - **FR-4.4**: Support custom headers per endpoint
 
 #### FR-5: Retry Logic

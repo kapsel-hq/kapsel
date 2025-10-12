@@ -1,15 +1,15 @@
 //! HTTP mocking utilities for webhook testing.
 
-use std::collections::HashMap as HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer as WiremockServer, ResponseTemplate};
+use wiremock::{
+    matchers::{header, method, path},
+    Mock, MockServer as WiremockServer, ResponseTemplate,
+};
 
 /// HTTP mock server for testing webhook deliveries.
 pub struct MockServer {
@@ -21,10 +21,7 @@ impl MockServer {
     /// Starts a new mock server on a random port.
     pub async fn start() -> Self {
         let server = WiremockServer::start().await;
-        Self {
-            server,
-            recorded_requests: Arc::new(RwLock::new(Vec::new())),
-        }
+        Self { server, recorded_requests: Arc::new(RwLock::new(Vec::new())) }
     }
 
     /// Returns the base URL of the mock server.
@@ -37,17 +34,14 @@ impl MockServer {
         let response = match endpoint.response {
             MockResponse::Success { status, body } => {
                 ResponseTemplate::new(status.as_u16()).set_body_bytes(body)
-            }
-            MockResponse::Failure {
-                status,
-                retry_after,
-            } => {
+            },
+            MockResponse::Failure { status, retry_after } => {
                 let mut response = ResponseTemplate::new(status.as_u16());
                 if let Some(seconds) = retry_after {
                     response = response.insert_header("Retry-After", seconds.as_secs().to_string());
                 }
                 response
-            }
+            },
             MockResponse::Timeout => ResponseTemplate::new(StatusCode::REQUEST_TIMEOUT.as_u16())
                 .set_delay(Duration::from_secs(35)),
         };
@@ -98,10 +92,7 @@ impl MockEndpoint {
         Self {
             path: path.into(),
             expected_headers: HashMap::new(),
-            response: MockResponse::Success {
-                status: StatusCode::OK,
-                body: Bytes::new(),
-            },
+            response: MockResponse::Success { status: StatusCode::OK, body: Bytes::new() },
         }
     }
 
@@ -110,10 +101,7 @@ impl MockEndpoint {
         Self {
             path: path.into(),
             expected_headers: HashMap::new(),
-            response: MockResponse::Failure {
-                status,
-                retry_after: None,
-            },
+            response: MockResponse::Failure { status, retry_after: None },
         }
     }
 
@@ -126,10 +114,7 @@ impl MockEndpoint {
     /// Sets the response body.
     pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
         if let MockResponse::Success { status, .. } = self.response {
-            self.response = MockResponse::Success {
-                status,
-                body: body.into(),
-            };
+            self.response = MockResponse::Success { status, body: body.into() };
         }
         self
     }
@@ -137,10 +122,7 @@ impl MockEndpoint {
     /// Sets a retry-after header for rate limiting scenarios.
     pub fn with_retry_after(mut self, duration: Duration) -> Self {
         if let MockResponse::Failure { status, .. } = self.response {
-            self.response = MockResponse::Failure {
-                status,
-                retry_after: Some(duration),
-            };
+            self.response = MockResponse::Failure { status, retry_after: Some(duration) };
         }
         self
     }
@@ -148,14 +130,8 @@ impl MockEndpoint {
 
 /// Types of mock responses.
 pub enum MockResponse {
-    Success {
-        status: StatusCode,
-        body: Bytes,
-    },
-    Failure {
-        status: StatusCode,
-        retry_after: Option<Duration>,
-    },
+    Success { status: StatusCode, body: Bytes },
+    Failure { status: StatusCode, retry_after: Option<Duration> },
     Timeout,
 }
 
@@ -183,18 +159,12 @@ struct Interaction {
 impl ScenarioBuilder {
     /// Creates a new scenario builder.
     pub fn new(server: MockServer) -> Self {
-        Self {
-            server,
-            interactions: Vec::new(),
-        }
+        Self { server, interactions: Vec::new() }
     }
 
     /// Adds a successful response after optional delay.
     pub fn respond_ok(mut self, path: impl Into<String>, delay: Option<Duration>) -> Self {
-        self.interactions.push(Interaction {
-            endpoint: MockEndpoint::success(path),
-            delay,
-        });
+        self.interactions.push(Interaction { endpoint: MockEndpoint::success(path), delay });
         self
     }
 
@@ -205,10 +175,8 @@ impl ScenarioBuilder {
         status: StatusCode,
         delay: Option<Duration>,
     ) -> Self {
-        self.interactions.push(Interaction {
-            endpoint: MockEndpoint::failure(path, status),
-            delay,
-        });
+        self.interactions
+            .push(Interaction { endpoint: MockEndpoint::failure(path, status), delay });
         self
     }
 
@@ -242,17 +210,10 @@ pub mod assertions {
 
     /// Asserts that a request contains the expected header.
     pub fn assert_header_present(request: &RecordedRequest, key: &str, value: &str) {
-        let header_value = request
-            .headers
-            .get(key)
-            .unwrap_or_else(|| panic!("Header '{}' not present", key));
+        let header_value =
+            request.headers.get(key).unwrap_or_else(|| panic!("Header '{}' not present", key));
 
-        assert_eq!(
-            header_value.to_str().unwrap(),
-            value,
-            "Header '{}' has unexpected value",
-            key
-        );
+        assert_eq!(header_value.to_str().unwrap(), value, "Header '{}' has unexpected value", key);
     }
 
     /// Asserts that the request body matches expected JSON.
@@ -260,10 +221,7 @@ pub mod assertions {
         let actual: Value =
             serde_json::from_slice(&request.body).expect("Failed to parse request body as JSON");
 
-        assert_eq!(
-            actual, *expected,
-            "Request body does not match expected JSON"
-        );
+        assert_eq!(actual, *expected, "Request body does not match expected JSON");
     }
 
     /// Asserts timing between requests.
@@ -275,9 +233,7 @@ pub mod assertions {
         );
 
         for (i, expected_delay) in expected_delays.iter().enumerate() {
-            let actual_delay = requests[i + 1]
-                .timestamp
-                .duration_since(requests[i].timestamp);
+            let actual_delay = requests[i + 1].timestamp.duration_since(requests[i].timestamp);
 
             // Allow 10% variance for timing
             let min = expected_delay.as_millis() * 9 / 10;

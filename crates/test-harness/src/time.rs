@@ -1,9 +1,14 @@
 //! Deterministic time control for testing.
 
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
 use rand::Rng;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Test clock for deterministic time control.
 #[derive(Clone)]
@@ -159,12 +164,14 @@ impl<C: Clock> Timer<C> {
 
 /// Utilities for retry timing calculations.
 pub mod backoff {
-    use super::*;
     use std::cmp::min;
+
+    use super::*;
 
     /// Calculates exponential backoff with jitter.
     ///
-    /// Jitter prevents thundering herd when multiple workers retry simultaneously.
+    /// Jitter prevents thundering herd when multiple workers retry
+    /// simultaneously.
     pub fn exponential_with_jitter(
         attempt: u32,
         base: Duration,
@@ -179,7 +186,7 @@ pub mod backoff {
         // Add jitter: ±jitter_factor of base delay
         let jitter_range = (capped_delay.as_millis() as f32 * jitter_factor) as u64;
         let jitter =
-            if jitter_range > 0 { rand::thread_rng().gen_range(0..jitter_range * 2) } else { 0 };
+            if jitter_range > 0 { rand::rng().random_range(0..jitter_range * 2) } else { 0 };
         let jittered_ms = capped_delay.as_millis() as u64 - jitter_range + jitter;
 
         Duration::from_millis(jittered_ms)

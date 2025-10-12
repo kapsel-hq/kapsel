@@ -1,10 +1,11 @@
 //! Test fixtures and data builders for consistent test data creation.
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
 use chrono::Utc;
 use rand::Rng;
 use serde_json::{json, Value};
-use std::collections::HashMap as HashMap;
 use uuid::Uuid;
 
 /// Builder for test webhook events.
@@ -158,7 +159,7 @@ impl EndpointBuilder {
     pub fn with_defaults() -> Self {
         Self {
             tenant_id: Some(Uuid::new_v4()),
-            name: Some(format!("test-endpoint-{}", rand::thread_rng().gen_range(1000..9999))),
+            name: Some(format!("test-endpoint-{}", rand::rng().random_range(1000..9999))),
             url: Some("https://example.com/webhook".to_string()),
             signing_secret: Some("test_secret_123".to_string()),
             signature_header: Some("X-Webhook-Signature".to_string()),

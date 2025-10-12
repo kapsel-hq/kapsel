@@ -1,4 +1,4 @@
-//! Test harness for Hooky integration and unit tests.
+//! Test harness for Kapsel integration and unit tests.
 //!
 //! Provides deterministic test infrastructure, database setup, HTTP mocking,
 //! and fixture builders for RED-GREEN TDD development.
@@ -9,18 +9,16 @@ pub mod http;
 pub mod time;
 
 // Re-export commonly used items
-pub use time::Clock;
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-
-use sqlx::{PgPool, Postgres};
+use database::{DatabasePool, DatabaseTransaction};
+pub use time::Clock;
 use tracing_subscriber::EnvFilter;
 
 /// Test environment with all necessary infrastructure.
 pub struct TestEnv {
-    pub db: PgPool,
+    pub db: DatabasePool,
     pub http_mock: http::MockServer,
     pub clock: time::TestClock,
     pub config: TestConfig,
@@ -40,7 +38,7 @@ impl TestEnv {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("warn,hooky=debug")),
+                    .unwrap_or_else(|_| EnvFilter::new("warn,kapsel=debug")),
             )
             .with_test_writer()
             .try_init();
@@ -50,14 +48,7 @@ impl TestEnv {
         let clock = time::TestClock::new();
         let client = reqwest::Client::new();
 
-        Ok(Self {
-            db,
-            http_mock,
-            clock,
-            config,
-            client,
-            server_addr: None,
-        })
+        Ok(Self { db, http_mock, clock, config, client, server_addr: None })
     }
 
     /// Advances test time by the specified duration.
@@ -67,7 +58,7 @@ impl TestEnv {
 
     /// Creates a test transaction that auto-rollbacks.
     pub async fn transaction(&self) -> Result<TestTransaction<'_>> {
-        let tx = self.db.begin().await?;
+        let tx = self.db.begin().await.context("Failed to begin test transaction")?;
         Ok(TestTransaction { tx: Some(tx), _env: self })
     }
 
@@ -81,6 +72,99 @@ impl TestEnv {
         self.server_addr
             .map(|addr| format!("http://{}", addr))
             .unwrap_or_else(|| "http://localhost:8080".to_string())
+    }
+
+    /// Executes a health check query that works across database backends.
+    pub async fn database_health_check(&self) -> Result<bool> {
+        match &self.db {
+            database::DatabasePool::Sqlite(pool) => {
+                let result = sqlx::query("SELECT 1 as health").fetch_one(pool).await;
+                Ok(result.is_ok())
+            },
+            database::DatabasePool::Postgres(pool) => {
+                let result = sqlx::query("SELECT 1 as health").fetch_one(pool).await;
+                Ok(result.is_ok())
+            },
+        }
+    }
+
+    /// Lists tables in the database.
+    pub async fn list_tables(&self) -> Result<Vec<String>> {
+        match &self.db {
+            database::DatabasePool::Sqlite(pool) => sqlx::query_scalar(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+            )
+            .fetch_all(pool)
+            .await
+            .context("Failed to query SQLite tables"),
+            database::DatabasePool::Postgres(pool) => sqlx::query_scalar(
+                "SELECT table_name FROM information_schema.tables
+                     WHERE table_schema = 'public'
+                     AND table_type = 'BASE TABLE'
+                     ORDER BY table_name",
+            )
+            .fetch_all(pool)
+            .await
+            .context("Failed to query PostgreSQL tables"),
+        }
+    }
+
+    /// Counts rows in a table by ID.
+    pub async fn count_rows_by_id(
+        &self,
+        table: &str,
+        id_column: &str,
+        id_value: &str,
+    ) -> Result<i64> {
+        match &self.db {
+            database::DatabasePool::Sqlite(pool) => {
+                let query = format!("SELECT COUNT(*) FROM {} WHERE {} = ?", table, id_column);
+                sqlx::query_scalar(&query)
+                    .bind(id_value)
+                    .fetch_one(pool)
+                    .await
+                    .context("Failed to count rows in SQLite")
+            },
+            database::DatabasePool::Postgres(pool) => {
+                let query = format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, id_column);
+                let id_uuid =
+                    uuid::Uuid::parse_str(id_value).context("Invalid UUID for PostgreSQL query")?;
+                sqlx::query_scalar(&query)
+                    .bind(id_uuid)
+                    .fetch_one(pool)
+                    .await
+                    .context("Failed to count rows in PostgreSQL")
+            },
+        }
+    }
+
+    /// Inserts a test tenant and returns the ID.
+    pub async fn insert_test_tenant(&self, name: &str, plan: &str) -> Result<String> {
+        let tenant_id = uuid::Uuid::new_v4();
+
+        match &self.db {
+            database::DatabasePool::Sqlite(pool) => {
+                let tenant_id_str = tenant_id.to_string();
+                sqlx::query("INSERT INTO tenants (id, name, plan) VALUES (?, ?, ?)")
+                    .bind(&tenant_id_str)
+                    .bind(name)
+                    .bind(plan)
+                    .execute(pool)
+                    .await
+                    .context("Failed to insert tenant in SQLite")?;
+                Ok(tenant_id_str)
+            },
+            database::DatabasePool::Postgres(pool) => {
+                sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+                    .bind(tenant_id)
+                    .bind(name)
+                    .bind(plan)
+                    .execute(pool)
+                    .await
+                    .context("Failed to insert tenant in PostgreSQL")?;
+                Ok(tenant_id.to_string())
+            },
+        }
     }
 }
 
@@ -100,7 +184,7 @@ impl Default for TestConfig {
 
 /// Transaction that automatically rolls back on drop.
 pub struct TestTransaction<'a> {
-    tx: Option<sqlx::Transaction<'a, Postgres>>,
+    tx: Option<DatabaseTransaction>,
     _env: &'a TestEnv,
 }
 
@@ -124,9 +208,13 @@ impl<'a> TestTransaction<'a> {
 
 impl<'a> Drop for TestTransaction<'a> {
     fn drop(&mut self) {
-        if self.tx.is_some() {
-            // Transaction will rollback automatically
-            tracing::debug!("Test transaction rolling back");
+        if let Some(tx) = self.tx.take() {
+            // Spawn task to handle async rollback since Drop cannot be async
+            tokio::spawn(async move {
+                if let Err(e) = tx.rollback().await {
+                    tracing::warn!("Failed to rollback test transaction: {}", e);
+                }
+            });
         }
     }
 }
@@ -281,15 +369,23 @@ impl ScenarioBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::Bytes;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_environment_setup() {
         let env = TestEnv::new().await.unwrap();
 
         // Verify database connection
-        sqlx::query("SELECT 1").fetch_one(&env.db).await.unwrap();
+        match &env.db {
+            database::DatabasePool::Sqlite(pool) => {
+                sqlx::query("SELECT 1").fetch_one(pool).await.unwrap();
+            },
+            database::DatabasePool::Postgres(pool) => {
+                sqlx::query("SELECT 1").fetch_one(pool).await.unwrap();
+            },
+        }
 
         // Verify mock server is running
         assert!(!env.http_mock.url().is_empty());
@@ -305,10 +401,20 @@ mod tests {
         }
 
         // Verify no data was persisted
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
-            .fetch_one(&env.db)
-            .await
-            .unwrap_or(0);
+        let count: i64 = match &env.db {
+            database::DatabasePool::Sqlite(pool) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0)
+            },
+            database::DatabasePool::Postgres(pool) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0)
+            },
+        };
 
         assert_eq!(count, 0);
     }
