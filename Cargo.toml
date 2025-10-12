@@ -150,6 +150,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 test-harness = { path = "crates/test-harness" }
+hooky-api = { path = "crates/hooky-api" }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }

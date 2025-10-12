@@ -8,7 +8,20 @@ use test_harness::TestEnv;
 #[tokio::test]
 async fn webhook_ingestion_returns_200_with_event_id() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+
+    // Start server
+    let db = env.db.clone();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
+    let actual_addr = listener.local_addr().expect("Failed to get local addr");
+
+    tokio::spawn(async move {
+        let app = hooky_api::create_router(db);
+        axum::serve(listener, app).await.expect("Server failed");
+    });
+
+    env.with_server(actual_addr);
 
     // Create test endpoint in database
     let endpoint_id = uuid::Uuid::new_v4();
@@ -68,7 +81,20 @@ async fn webhook_ingestion_returns_200_with_event_id() {
 #[tokio::test]
 async fn webhook_ingestion_persists_to_database() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+
+    // Start server
+    let db = env.db.clone();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
+    let actual_addr = listener.local_addr().expect("Failed to get local addr");
+
+    tokio::spawn(async move {
+        let app = hooky_api::create_router(db);
+        axum::serve(listener, app).await.expect("Server failed");
+    });
+
+    env.with_server(actual_addr);
 
     let endpoint_id = uuid::Uuid::new_v4();
     let tenant_id = uuid::Uuid::new_v4();
