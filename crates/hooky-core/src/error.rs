@@ -1,0 +1,148 @@
+//! Error types for Hooky webhook reliability service.
+//!
+//! Implements complete error taxonomy from specification (E1001-E3004).
+
+use thiserror::Error;
+
+use crate::EndpointId;
+
+/// Result type alias using `HookyError`.
+pub type Result<T> = std::result::Result<T, HookyError>;
+
+/// Hooky error types with codes matching specification.
+#[derive(Debug, Error)]
+pub enum HookyError {
+    // Application Errors (E1001-E1005)
+    /// HMAC signature validation failed (E1001).
+    #[error("[E1001] Invalid signature: HMAC validation failed")]
+    InvalidSignature,
+
+    /// Payload exceeds 10MB limit (E1002).
+    #[error("[E1002] Payload too large: size {size_bytes} bytes exceeds 10MB limit")]
+    PayloadTooLarge { size_bytes: usize },
+
+    /// Endpoint not found (E1003).
+    #[error("[E1003] Invalid endpoint: endpoint {id} not found")]
+    InvalidEndpoint { id: EndpointId },
+
+    /// Tenant quota exceeded (E1004).
+    #[error("[E1004] Rate limited: tenant quota exceeded")]
+    RateLimited,
+
+    /// Duplicate event detected by idempotency check (E1005).
+    #[error("[E1005] Duplicate event: {source_event_id} already processed")]
+    DuplicateEvent { source_event_id: String },
+
+    // Delivery Errors (E2001-E2005)
+    /// Target endpoint unavailable (E2001).
+    #[error("[E2001] Connection refused: target endpoint unavailable")]
+    ConnectionRefused,
+
+    /// Request timeout exceeded (E2002).
+    #[error("[E2002] Connection timeout: exceeded {timeout_ms}ms")]
+    ConnectionTimeout { timeout_ms: u64 },
+
+    /// HTTP 4xx client error (E2003).
+    #[error("[E2003] HTTP client error: {status} response from endpoint")]
+    HttpClientError { status: u16 },
+
+    /// HTTP 5xx server error (E2004).
+    #[error("[E2004] HTTP server error: {status} response from endpoint")]
+    HttpServerError { status: u16 },
+
+    /// Circuit breaker is open (E2005).
+    #[error("[E2005] Circuit open: endpoint {id} circuit breaker triggered")]
+    CircuitOpen { id: EndpointId },
+
+    // System Errors (E3001-E3004)
+    /// PostgreSQL connection failed (E3001).
+    #[error("[E3001] Database unavailable: PostgreSQL connection failed")]
+    DatabaseUnavailable,
+
+    /// TigerBeetle audit log unreachable (E3002).
+    #[error("[E3002] TigerBeetle unavailable: audit log unreachable")]
+    TigerBeetleUnavailable,
+
+    /// Bounded channel at capacity (E3003).
+    #[error("[E3003] Queue full: channel at capacity")]
+    QueueFull,
+
+    /// No available workers (E3004).
+    #[error("[E3004] Worker pool exhausted: no available workers")]
+    WorkerPoolExhausted,
+
+    /// Generic database error.
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+
+    /// Generic HTTP error.
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// Generic error for wrapping other errors.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl HookyError {
+    /// Returns the error code (E1001-E3004).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidSignature => "E1001",
+            Self::PayloadTooLarge { .. } => "E1002",
+            Self::InvalidEndpoint { .. } => "E1003",
+            Self::RateLimited => "E1004",
+            Self::DuplicateEvent { .. } => "E1005",
+            Self::ConnectionRefused => "E2001",
+            Self::ConnectionTimeout { .. } => "E2002",
+            Self::HttpClientError { .. } => "E2003",
+            Self::HttpServerError { .. } => "E2004",
+            Self::CircuitOpen { .. } => "E2005",
+            Self::DatabaseUnavailable => "E3001",
+            Self::TigerBeetleUnavailable => "E3002",
+            Self::QueueFull => "E3003",
+            Self::WorkerPoolExhausted => "E3004",
+            Self::Database(_) | Self::Http(_) | Self::Other(_) => "E9999",
+        }
+    }
+
+    /// Returns whether this error should trigger a retry.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited
+                | Self::ConnectionRefused
+                | Self::ConnectionTimeout { .. }
+                | Self::HttpServerError { .. }
+                | Self::CircuitOpen { .. }
+                | Self::DatabaseUnavailable
+                | Self::TigerBeetleUnavailable
+                | Self::QueueFull
+                | Self::WorkerPoolExhausted
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_codes_match_specification() {
+        assert_eq!(HookyError::InvalidSignature.code(), "E1001");
+        assert_eq!(HookyError::PayloadTooLarge { size_bytes: 0 }.code(), "E1002");
+        assert_eq!(HookyError::RateLimited.code(), "E1004");
+        assert_eq!(HookyError::ConnectionRefused.code(), "E2001");
+        assert_eq!(HookyError::DatabaseUnavailable.code(), "E3001");
+    }
+
+    #[test]
+    fn retryable_errors_identified() {
+        assert!(!HookyError::InvalidSignature.is_retryable());
+        assert!(!HookyError::PayloadTooLarge { size_bytes: 0 }.is_retryable());
+        assert!(HookyError::RateLimited.is_retryable());
+        assert!(HookyError::ConnectionRefused.is_retryable());
+        assert!(HookyError::HttpServerError { status: 500 }.is_retryable());
+        assert!(!HookyError::HttpClientError { status: 400 }.is_retryable());
+    }
+}
