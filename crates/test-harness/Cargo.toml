@@ -33,6 +33,7 @@ tracing-subscriber = { workspace = true }
 
 # Additional utilities
 rand = { workspace = true }
+proptest = { workspace = true }
 
 # HTTP testing
 reqwest = { version = "0.11", features = ["json"] }
