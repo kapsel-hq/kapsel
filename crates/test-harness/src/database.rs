@@ -43,7 +43,14 @@ impl TestDatabase {
     /// container.
     pub async fn new_postgres() -> Result<Self> {
         let database_name = "kapsel_test".to_string();
-        let port = 5433; // postgres-test container port
+
+        // Read port from DATABASE_URL or default to 5432 (CI default)
+        let port = std::env::var("DATABASE_URL")
+            .ok()
+            .and_then(|url| url.split(':').nth(4))
+            .and_then(|port_str| port_str.split('/').next())
+            .and_then(|port_str| port_str.parse::<u16>().ok())
+            .unwrap_or(5432);
 
         let connect_options = PgConnectOptions::new()
             .host("127.0.0.1")
