@@ -77,6 +77,19 @@ impl MockServer {
             requests.len()
         );
     }
+
+    /// Creates a mock sequence builder for chaining multiple responses.
+    pub fn mock_sequence(&self) -> MockSequenceBuilder<'_> {
+        MockSequenceBuilder { server: &self.server, responses: Vec::new() }
+    }
+
+    /// Configures an endpoint to always fail with the given status code.
+    pub async fn mock_endpoint_always_fail(&self, status: u16) {
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&self.server)
+            .await;
+    }
 }
 
 /// Configuration for a mock endpoint.
@@ -200,6 +213,39 @@ impl ScenarioBuilder {
                 tokio::time::sleep(delay).await;
             }
             self.server.mock_endpoint(interaction.endpoint).await;
+        }
+    }
+}
+
+/// Builder for mock response sequences.
+pub struct MockSequenceBuilder<'a> {
+    server: &'a WiremockServer,
+    responses: Vec<(u16, String)>,
+}
+
+impl<'a> MockSequenceBuilder<'a> {
+    /// Adds a response with the given status code and body.
+    pub fn respond_with(mut self, status: u16, body: impl Into<String>) -> Self {
+        self.responses.push((status, body.into()));
+        self
+    }
+
+    /// Adds a JSON response.
+    pub fn respond_with_json(mut self, status: u16, json: serde_json::Value) -> Self {
+        self.responses.push((status, json.to_string()));
+        self
+    }
+
+    /// Builds and mounts the mock sequence.
+    pub async fn build(self) {
+        // For simplicity, we'll mount all responses at once
+        // In a real implementation, this would cycle through responses
+        for (status, body) in self.responses {
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .up_to_n_times(1)
+                .mount(self.server)
+                .await;
         }
     }
 }
