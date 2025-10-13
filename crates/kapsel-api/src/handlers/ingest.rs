@@ -252,15 +252,17 @@ async fn persist_event(
     body: Bytes,
     content_type: String,
 ) -> sqlx::Result<()> {
+    // Calculate payload size, ensuring at least 1 to satisfy CHECK constraint
+    let payload_size = i32::try_from(body.len()).unwrap_or(i32::MAX).max(1);
+
     sqlx::query(
         r"
         INSERT INTO webhook_events (
             id, tenant_id, endpoint_id, source_event_id,
-
             idempotency_strategy, status, headers, body,
-            content_type, received_at, failure_count
+            content_type, payload_size, received_at, failure_count
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)
         "
     )
     .bind(event_id.0)
@@ -272,6 +274,7 @@ async fn persist_event(
     .bind(headers)
     .bind(body.as_ref())
     .bind(content_type)
+    .bind(payload_size)
     .bind(Utc::now())
     .execute(db)
     .await?;

@@ -146,7 +146,7 @@ impl From<Uuid> for EndpointId {
 ///                    └-> Failed (after max retries)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EventStatus {
     /// Initial state after ingestion.
     ///
@@ -174,6 +174,13 @@ pub enum EventStatus {
     /// Terminal failure state after all retries exhausted or
     /// non-retryable error encountered.
     Failed,
+
+    /// Event moved to dead letter queue after permanent failure.
+    ///
+    /// Terminal failure state for events that cannot be delivered even after
+    /// all retries exhausted. Requires manual intervention or reprocessing.
+    /// Used for debugging and compliance audit trail.
+    DeadLetter,
 }
 
 impl fmt::Display for EventStatus {
@@ -184,6 +191,7 @@ impl fmt::Display for EventStatus {
             Self::Delivering => write!(f, "delivering"),
             Self::Delivered => write!(f, "delivered"),
             Self::Failed => write!(f, "failed"),
+            Self::DeadLetter => write!(f, "dead_letter"),
         }
     }
 }
@@ -252,6 +260,28 @@ pub struct WebhookEvent {
 
     /// When permanently failed (terminal state).
     pub failed_at: Option<DateTime<Utc>>,
+
+    /// Size of the payload in bytes.
+    ///
+    /// Must be between 1 and 10MB (10485760 bytes) to satisfy database
+    /// CHECK constraint. Even empty payloads are stored as size 1.
+    pub payload_size: i32,
+
+    /// Result of signature validation (if signing_secret configured).
+    ///
+    /// None if validation not attempted, Some(true) if valid,
+    /// Some(false) if invalid.
+    pub signature_valid: Option<bool>,
+
+    /// Error message from signature validation failure.
+    ///
+    /// Only populated when signature_valid is Some(false).
+    pub signature_error: Option<String>,
+
+    /// Reference to immutable audit log entry in TigerBeetle.
+    ///
+    /// Populated after event is written to audit log for compliance.
+    pub tigerbeetle_id: Option<Uuid>,
 }
 
 /// Webhook endpoint configuration.
@@ -275,6 +305,12 @@ pub struct Endpoint {
     /// Human-readable endpoint name.
     pub name: String,
 
+    /// Whether this endpoint is active and should receive webhooks.
+    ///
+    /// Inactive endpoints are skipped during delivery. Used for soft-disable
+    /// without deleting endpoint configuration.
+    pub is_active: bool,
+
     /// Secret for HMAC signature generation.
     ///
     /// When present, webhooks include an HMAC-SHA256 signature.
@@ -295,6 +331,9 @@ pub struct Endpoint {
     /// Prevents slow endpoints from blocking workers.
     pub timeout_seconds: u32,
 
+    /// Retry backoff strategy: exponential, linear, or fixed.
+    pub retry_strategy: String,
+
     /// Circuit breaker current state.
     pub circuit_state: CircuitState,
 
@@ -302,6 +341,12 @@ pub struct Endpoint {
     ///
     /// Reset to zero on successful delivery.
     pub circuit_failure_count: u32,
+
+    /// Consecutive successes in half-open state.
+    ///
+    /// Used to determine when to transition from half-open back to closed.
+    /// Typically requires 3 consecutive successes.
+    pub circuit_success_count: u32,
 
     /// When the last failure occurred.
     ///
@@ -318,6 +363,21 @@ pub struct Endpoint {
 
     /// When configuration was last modified.
     pub updated_at: DateTime<Utc>,
+
+    /// Soft delete timestamp.
+    ///
+    /// When present, endpoint is logically deleted but retained for audit.
+    pub deleted_at: Option<DateTime<Utc>>,
+
+    // Performance statistics (denormalized for dashboard queries)
+    /// Total number of webhook events received for this endpoint.
+    pub total_events_received: i64,
+
+    /// Total number successfully delivered (status = delivered).
+    pub total_events_delivered: i64,
+
+    /// Total number permanently failed (status = failed or dead_letter).
+    pub total_events_failed: i64,
 }
 
 /// Circuit breaker state machine.
@@ -381,6 +441,11 @@ pub struct DeliveryAttempt {
     /// HTTP headers sent with the request.
     pub request_headers: HashMap<String, String>,
 
+    /// HTTP method used for delivery request.
+    ///
+    /// Defaults to POST but endpoints may configure other methods.
+    pub request_method: String,
+
     /// HTTP status code received.
     ///
     /// None if request failed before receiving response.
@@ -409,4 +474,27 @@ pub struct DeliveryAttempt {
 
     /// Human-readable error description.
     pub error_message: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_status_dead_letter_variant_exists() {
+        // Test that DeadLetter variant exists and formats correctly
+        let status = EventStatus::DeadLetter;
+        assert_eq!(status.to_string(), "dead_letter");
+    }
+
+    #[test]
+    fn event_status_display_format() {
+        // Test all EventStatus variants format correctly for database storage
+        assert_eq!(EventStatus::Received.to_string(), "received");
+        assert_eq!(EventStatus::Pending.to_string(), "pending");
+        assert_eq!(EventStatus::Delivering.to_string(), "delivering");
+        assert_eq!(EventStatus::Delivered.to_string(), "delivered");
+        assert_eq!(EventStatus::Failed.to_string(), "failed");
+        assert_eq!(EventStatus::DeadLetter.to_string(), "dead_letter");
+    }
 }

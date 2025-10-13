@@ -145,6 +145,8 @@ async fn run_postgres_migrations(pool: &PgPool) -> Result<()> {
             body BYTEA NOT NULL,
             content_type TEXT NOT NULL,
             payload_size INTEGER NOT NULL,
+            signature_valid BOOLEAN,
+            signature_error TEXT,
             received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             delivered_at TIMESTAMPTZ,
             failed_at TIMESTAMPTZ,
