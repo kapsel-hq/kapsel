@@ -23,7 +23,7 @@ tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit"]
 hyper = "1.1"
 
 # Database
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "uuid", "chrono", "json", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
 deadpool-postgres = "0.14"
 
 # Serialization
@@ -159,9 +159,8 @@ path = "src/main.rs"
 required-features = ["bin"]
 
 [features]
-default = ["sqlite"]
+default = []
 bin = []
-sqlite = []
 docker = []
 
 [dependencies]

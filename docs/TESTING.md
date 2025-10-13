@@ -1,6 +1,6 @@
 # Testing Guide
 
-Kapsel uses a multi-tier testing strategy designed for both local development and CI environments.
+Kapsel uses a comprehensive testing strategy designed for both local development and CI environments.
 
 ## Test Categories
 
@@ -14,42 +14,30 @@ cargo test --lib
 
 ### Integration Tests
 
-Business logic tests using in-memory SQLite database.
+Complete system tests using PostgreSQL database.
 
 ```bash
 cargo test --test health_check_test
 ```
 
-### Full Integration Tests
-
-Complete system tests using PostgreSQL containers.
-
-```bash
-cargo test --features docker --test health_check_test
-```
-
-## Database Backends
-
-### SQLite (Default)
-
-- In-memory database
-- No Docker required
-- Fast startup and execution
-- Perfect for TDD and local development
+## Database Backend
 
 ### PostgreSQL (Docker)
 
 - Full PostgreSQL compatibility
-- Requires Docker daemon
-- Used in CI and for database-specific features
-- Activated with `--features docker`
+- Requires Docker daemon running
+- Used for all tests (unit and integration)
+- Ensures tests run against production database type
 
 ## Environment Setup
 
 ### Local Development
 
 ```bash
-# Run tests with SQLite (default)
+# Ensure PostgreSQL test container is running
+docker ps | grep kapsel-postgres-test
+
+# Run all tests
 cargo test
 
 # Run specific test
@@ -62,11 +50,9 @@ RUST_LOG=debug cargo test
 ### CI/Production Testing
 
 ```bash
-# Force PostgreSQL backend
-KAPSEL_TEST_BACKEND=postgres cargo test --features docker
-
-# Run in CI mode
-CI=true cargo test --features docker
+# Tests use DATABASE_URL environment variable
+# Defaults to port 5432 for CI
+cargo test
 ```
 
 ## Test Structure
@@ -130,56 +116,47 @@ ScenarioBuilder::new("webhook retry scenario")
 
 ### Environment Variables
 
-- `KAPSEL_TEST_BACKEND=postgres` - Force PostgreSQL
+- `DATABASE_URL` - PostgreSQL connection string (auto-detected from container)
 - `RUST_LOG=debug` - Enable debug logging
-- `CI=true` - CI mode (uses PostgreSQL automatically)
+- `CI=true` - CI mode (uses default port 5432)
 
 ### Features
 
-- `sqlite` - SQLite backend (default)
-- `docker` - PostgreSQL with testcontainers
+- `docker` - PostgreSQL with testcontainers (required for integration tests)
 
 ## Troubleshooting
 
-### "Docker feature not enabled"
-
-Solution: Add `--features docker` or use SQLite mode (default).
-
 ### "Connection refused" errors
 
-Check Docker daemon is running:
+Check Docker daemon is running and PostgreSQL test container is up:
 
 ```bash
 docker info
+docker ps | grep kapsel-postgres-test
 ```
 
 ### Slow test startup
 
-Use SQLite for development:
-
-```bash
-cargo test  # SQLite is default
-```
+PostgreSQL tests typically complete in ~300-400ms per test. If slower:
+- Check Docker resources
+- Ensure no other heavy processes are running
+- Consider increasing Docker memory allocation
 
 ### Database schema mismatches
 
-Tests create fresh databases automatically. No manual cleanup needed.
+Tests create fresh schemas automatically. No manual cleanup needed.
 
 ## Performance Guidelines
 
-- SQLite tests: < 100ms per test
 - PostgreSQL tests: < 500ms per test
 - Use `#[ignore]` for slow integration tests
 - Prefer unit tests for business logic
 - Use integration tests for API contracts
+- Database tests include schema creation and cleanup
 
 ## CI Configuration
 
-Tests run in three stages:
-
-1. **Unit tests** - No database required
-2. **SQLite integration** - Fast integration tests
-3. **PostgreSQL integration** - Full database compatibility
+Tests run with PostgreSQL backend for all test types.
 
 Example GitHub Actions:
 
@@ -187,11 +164,8 @@ Example GitHub Actions:
 - name: Run unit tests
   run: cargo test --lib
 
-- name: Run SQLite integration tests
+- name: Run integration tests
   run: cargo test
-
-- name: Run PostgreSQL integration tests
-  run: cargo test --features docker
 ```
 
 ## Best Practices
@@ -236,8 +210,11 @@ RUST_LOG=sqlx=debug cargo test
 
 ### Inspect test database
 
-SQLite tests use in-memory databases - use logging for inspection.
-PostgreSQL tests spin up containers - check Docker logs.
+PostgreSQL tests use persistent container - connect directly for inspection:
+
+```bash
+psql -h localhost -U postgres -d kapsel_test
+```
 
 ### Test timing issues
 

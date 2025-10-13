@@ -16,7 +16,7 @@ default = []
 [dependencies]
 # Core testing infrastructure
 tokio = { workspace = true }
-sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"] }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls"] }
 
 # Test utilities
 wiremock = { workspace = true }
@@ -29,7 +29,7 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Database testing - supports both SQLite (in-memory) and PostgreSQL (Docker)
+# Database testing - PostgreSQL via Docker
 
 # Additional utilities
 rand = { workspace = true }

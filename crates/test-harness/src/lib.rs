@@ -74,97 +74,54 @@ impl TestEnv {
             .unwrap_or_else(|| "http://localhost:8080".to_string())
     }
 
-    /// Executes a health check query that works across database backends.
+    /// Executes a health check query against PostgreSQL.
     pub async fn database_health_check(&self) -> Result<bool> {
-        match &self.db {
-            database::DatabasePool::Sqlite(pool) => {
-                let result = sqlx::query("SELECT 1 as health").fetch_one(pool).await;
-                Ok(result.is_ok())
-            },
-            database::DatabasePool::Postgres(pool) => {
-                let result = sqlx::query("SELECT 1 as health").fetch_one(pool).await;
-                Ok(result.is_ok())
-            },
-        }
+        let result = sqlx::query("SELECT 1 as health").fetch_one(&self.db).await;
+        Ok(result.is_ok())
     }
 
-    /// Lists tables in the database.
+    /// Lists tables in the PostgreSQL database.
     pub async fn list_tables(&self) -> Result<Vec<String>> {
-        match &self.db {
-            database::DatabasePool::Sqlite(pool) => sqlx::query_scalar(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-            )
-            .fetch_all(pool)
-            .await
-            .context("Failed to query SQLite tables"),
-            database::DatabasePool::Postgres(pool) => sqlx::query_scalar(
-                "SELECT table_name FROM information_schema.tables
-                     WHERE table_schema = 'public'
-                     AND table_type = 'BASE TABLE'
-                     ORDER BY table_name",
-            )
-            .fetch_all(pool)
-            .await
-            .context("Failed to query PostgreSQL tables"),
-        }
+        sqlx::query_scalar(
+            "SELECT table_name FROM information_schema.tables
+             WHERE table_schema = 'public'
+             AND table_type = 'BASE TABLE'
+             ORDER BY table_name",
+        )
+        .fetch_all(&self.db)
+        .await
+        .context("Failed to query PostgreSQL tables")
     }
 
-    /// Counts rows in a table by ID.
+    /// Counts rows in a table by ID (PostgreSQL UUID).
     pub async fn count_rows_by_id(
         &self,
         table: &str,
         id_column: &str,
         id_value: &str,
     ) -> Result<i64> {
-        match &self.db {
-            database::DatabasePool::Sqlite(pool) => {
-                let query = format!("SELECT COUNT(*) FROM {} WHERE {} = ?", table, id_column);
-                sqlx::query_scalar(&query)
-                    .bind(id_value)
-                    .fetch_one(pool)
-                    .await
-                    .context("Failed to count rows in SQLite")
-            },
-            database::DatabasePool::Postgres(pool) => {
-                let query = format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, id_column);
-                let id_uuid =
-                    uuid::Uuid::parse_str(id_value).context("Invalid UUID for PostgreSQL query")?;
-                sqlx::query_scalar(&query)
-                    .bind(id_uuid)
-                    .fetch_one(pool)
-                    .await
-                    .context("Failed to count rows in PostgreSQL")
-            },
-        }
+        let query = format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, id_column);
+        let id_uuid =
+            uuid::Uuid::parse_str(id_value).context("Invalid UUID for PostgreSQL query")?;
+        sqlx::query_scalar(&query)
+            .bind(id_uuid)
+            .fetch_one(&self.db)
+            .await
+            .context("Failed to count rows in PostgreSQL")
     }
 
     /// Inserts a test tenant and returns the ID.
     pub async fn insert_test_tenant(&self, name: &str, plan: &str) -> Result<String> {
         let tenant_id = uuid::Uuid::new_v4();
 
-        match &self.db {
-            database::DatabasePool::Sqlite(pool) => {
-                let tenant_id_str = tenant_id.to_string();
-                sqlx::query("INSERT INTO tenants (id, name, plan) VALUES (?, ?, ?)")
-                    .bind(&tenant_id_str)
-                    .bind(name)
-                    .bind(plan)
-                    .execute(pool)
-                    .await
-                    .context("Failed to insert tenant in SQLite")?;
-                Ok(tenant_id_str)
-            },
-            database::DatabasePool::Postgres(pool) => {
-                sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-                    .bind(tenant_id)
-                    .bind(name)
-                    .bind(plan)
-                    .execute(pool)
-                    .await
-                    .context("Failed to insert tenant in PostgreSQL")?;
-                Ok(tenant_id.to_string())
-            },
-        }
+        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+            .bind(tenant_id)
+            .bind(name)
+            .bind(plan)
+            .execute(&self.db)
+            .await
+            .context("Failed to insert tenant in PostgreSQL")?;
+        Ok(tenant_id.to_string())
     }
 }
 
@@ -378,14 +335,7 @@ mod tests {
         let env = TestEnv::new().await.unwrap();
 
         // Verify database connection
-        match &env.db {
-            database::DatabasePool::Sqlite(pool) => {
-                sqlx::query("SELECT 1").fetch_one(pool).await.unwrap();
-            },
-            database::DatabasePool::Postgres(pool) => {
-                sqlx::query("SELECT 1").fetch_one(pool).await.unwrap();
-            },
-        }
+        sqlx::query("SELECT 1").fetch_one(&env.db).await.unwrap();
 
         // Verify mock server is running
         assert!(!env.http_mock.url().is_empty());
@@ -401,20 +351,10 @@ mod tests {
         }
 
         // Verify no data was persisted
-        let count: i64 = match &env.db {
-            database::DatabasePool::Sqlite(pool) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0)
-            },
-            database::DatabasePool::Postgres(pool) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0)
-            },
-        };
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events")
+            .fetch_one(&env.db)
+            .await
+            .unwrap_or(0);
 
         assert_eq!(count, 0);
     }

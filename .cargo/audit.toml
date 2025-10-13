@@ -9,7 +9,7 @@ ignore = [
     # RUSTSEC-2023-0071: Marvin Attack on RSA in sqlx-mysql
     #
     # Justification:
-    # - We do not use MySQL in this project (only PostgreSQL and SQLite)
+    # - We do not use MySQL in this project (only PostgreSQL)
     # - This vulnerability only affects MySQL's RSA-based authentication
     # - The dependency exists only because sqlx-macros includes all database
     #   backends as optional dependencies for compile-time query checking
