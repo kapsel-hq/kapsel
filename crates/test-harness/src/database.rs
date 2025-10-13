@@ -24,7 +24,8 @@ impl TestDatabase {
     /// Creates PostgreSQL database connection using existing postgres-test
     /// container.
     pub async fn new_postgres() -> Result<Self> {
-        let database_name = "kapsel_test";
+        // Generate unique database name for test isolation
+        let database_name = format!("kapsel_test_{}", Uuid::new_v4().simple());
 
         // Read port from DATABASE_URL or default to 5432 (CI default)
         let port = std::env::var("DATABASE_URL")
@@ -35,14 +36,36 @@ impl TestDatabase {
                     .and_then(|port_str| port_str.split('/').next())
                     .and_then(|port_str| port_str.parse::<u16>().ok())
             })
-            .unwrap_or(5432);
+            .unwrap_or(5433);
 
+        // First connect to postgres database to create test database
+        let admin_options = PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(port)
+            .username("postgres")
+            .password("postgres")
+            .database("postgres");
+
+        let admin_pool = sqlx::PgPool::connect_with(admin_options)
+            .await
+            .context("Failed to connect to PostgreSQL admin database")?;
+
+        // Create unique test database
+        let create_db_query = format!("CREATE DATABASE \"{}\"", database_name);
+        sqlx::query(&create_db_query)
+            .execute(&admin_pool)
+            .await
+            .context("Failed to create test database")?;
+
+        admin_pool.close().await;
+
+        // Now connect to the test database
         let connect_options = PgConnectOptions::new()
             .host("127.0.0.1")
             .port(port)
             .username("postgres")
             .password("postgres")
-            .database(database_name);
+            .database(&database_name);
 
         let pool = sqlx::PgPool::connect_with(connect_options)
             .await
@@ -78,13 +101,77 @@ pub type DatabasePool = PgPool;
 /// Transaction type alias.
 pub type DatabaseTransaction = sqlx::Transaction<'static, Postgres>;
 
+/// Test database instance that cleans up on drop.
+pub struct TestDatabaseGuard {
+    database: TestDatabase,
+    database_name: String,
+    port: u16,
+}
+
+impl TestDatabaseGuard {
+    pub fn pool(&self) -> PgPool {
+        self.database.pool()
+    }
+}
+
+impl Drop for TestDatabaseGuard {
+    fn drop(&mut self) {
+        let database_name = self.database_name.clone();
+        let port = self.port;
+
+        tokio::spawn(async move {
+            if let Err(e) = cleanup_test_database(&database_name, port).await {
+                tracing::warn!("Failed to cleanup test database {}: {}", database_name, e);
+            }
+        });
+    }
+}
+
+async fn cleanup_test_database(database_name: &str, port: u16) -> Result<()> {
+    let admin_options = PgConnectOptions::new()
+        .host("127.0.0.1")
+        .port(port)
+        .username("postgres")
+        .password("postgres")
+        .database("postgres");
+
+    let admin_pool = sqlx::PgPool::connect_with(admin_options).await?;
+
+    // Terminate all connections to the database
+    let terminate_query = format!(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+        database_name
+    );
+    let _ = sqlx::query(&terminate_query).execute(&admin_pool).await;
+
+    // Drop the database
+    let drop_query = format!("DROP DATABASE IF EXISTS \"{}\"", database_name);
+    sqlx::query(&drop_query).execute(&admin_pool).await?;
+
+    admin_pool.close().await;
+    Ok(())
+}
+
 /// Sets up test database and returns connection pool.
 pub async fn setup_test_database() -> Result<DatabasePool> {
+    let database_name = format!("kapsel_test_{}", Uuid::new_v4().simple());
+    let port = std::env::var("DATABASE_URL")
+        .ok()
+        .and_then(|url| {
+            url.split(':')
+                .nth(4)
+                .and_then(|port_str| port_str.split('/').next())
+                .and_then(|port_str| port_str.parse::<u16>().ok())
+        })
+        .unwrap_or(5433);
+
     let db = TestDatabase::new().await?;
-    let pool = db.pool();
+    let guard = TestDatabaseGuard { database: db, database_name, port };
+
+    let pool = guard.pool();
 
     #[allow(clippy::disallowed_methods)]
-    Box::leak(Box::new(db));
+    Box::leak(Box::new(guard));
 
     Ok(pool)
 }

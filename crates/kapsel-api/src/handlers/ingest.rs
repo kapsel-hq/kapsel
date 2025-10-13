@@ -20,6 +20,8 @@ use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
+use crate::crypto::{validate_signature, ValidationResult};
+
 /// Request body for webhook ingestion.
 ///
 /// Accepts any valid JSON payload up to 10MB.
@@ -148,6 +150,30 @@ pub async fn ingest_webhook(
         }
     }
 
+    // Validate signature if endpoint has signing secret configured
+    let (signature_valid, signature_error) =
+        match validate_webhook_signature(&db, endpoint_id, &headers, &body).await {
+            Ok(validation_result) => {
+                (Some(validation_result.is_valid), validation_result.error_message)
+            },
+            Err(e) => {
+                error!(error = %e, "Failed to validate signature");
+                return create_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &KapselError::Other(anyhow::anyhow!("Signature validation failed: {e}")),
+                );
+            },
+        };
+
+    // If signature validation failed, reject the webhook
+    if signature_valid == Some(false) {
+        warn!("Webhook signature validation failed");
+        return create_error_response(
+            StatusCode::BAD_REQUEST,
+            &KapselError::Other(anyhow::anyhow!("Invalid webhook signature")),
+        );
+    }
+
     // Generate new event ID
     let event_id = EventId::new();
     info!(event_id = %event_id, "Generated new event ID");
@@ -182,6 +208,8 @@ pub async fn ingest_webhook(
         headers_json,
         body,
         content_type,
+        signature_valid,
+        signature_error,
     )
     .await;
 
@@ -251,6 +279,8 @@ async fn persist_event(
     headers: serde_json::Value,
     body: Bytes,
     content_type: String,
+    signature_valid: Option<bool>,
+    signature_error: Option<String>,
 ) -> sqlx::Result<()> {
     // Calculate payload size, ensuring at least 1 to satisfy CHECK constraint
     let payload_size = i32::try_from(body.len()).unwrap_or(i32::MAX).max(1);
@@ -260,9 +290,10 @@ async fn persist_event(
         INSERT INTO webhook_events (
             id, tenant_id, endpoint_id, source_event_id,
             idempotency_strategy, status, headers, body,
-            content_type, payload_size, received_at, failure_count
+            content_type, payload_size, signature_valid, signature_error,
+            received_at, failure_count
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0)
         "
     )
     .bind(event_id.0)
@@ -275,6 +306,8 @@ async fn persist_event(
     .bind(body.as_ref())
     .bind(content_type)
     .bind(payload_size)
+    .bind(signature_valid)
+    .bind(signature_error)
     .bind(Utc::now())
     .execute(db)
     .await?;
@@ -293,6 +326,44 @@ fn extract_headers(headers: &HeaderMap) -> HashMap<String, String> {
     map
 }
 
+/// Validates webhook signature against endpoint configuration.
+///
+/// Returns validation result or error if endpoint configuration is invalid.
+async fn validate_webhook_signature(
+    db: &PgPool,
+    endpoint_id: EndpointId,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<ValidationResult> {
+    // Fetch endpoint signature configuration
+    let signature_config = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT signing_secret, signature_header FROM endpoints WHERE id = $1",
+    )
+    .bind(endpoint_id.0)
+    .fetch_one(db)
+    .await
+    .map_err(KapselError::Database)?;
+
+    let (signing_secret, signature_header) = signature_config;
+
+    // If no signing secret configured, skip validation
+    let Some(signing_secret) = signing_secret else { return Ok(ValidationResult::valid()) };
+
+    // Determine signature header name (default to X-Webhook-Signature)
+    let header_name = signature_header.unwrap_or_else(|| "X-Webhook-Signature".to_string());
+
+    // Extract signature from headers
+    let signature = headers.get(&header_name).and_then(|v| v.to_str().ok()).unwrap_or("");
+
+    // If signing secret is configured but signature is missing, fail
+    if signature.is_empty() {
+        return Ok(ValidationResult::invalid("signature required but missing"));
+    }
+
+    // Validate signature
+    Ok(validate_signature(body, signature, &signing_secret))
+}
+
 /// Creates a standardized error response.
 fn create_error_response(status: StatusCode, error: &KapselError) -> Response {
     let error_response = ErrorResponse {
@@ -308,7 +379,7 @@ mod tests {
 
     #[test]
     fn error_response_includes_code() {
-        let error = KapselError::PayloadTooLarge { size_bytes: 11000000 };
+        let error = KapselError::PayloadTooLarge { size_bytes: 11_000_000 };
         let response = create_error_response(StatusCode::PAYLOAD_TOO_LARGE, &error);
 
         // Response type is opaque, so we can't easily inspect it in tests

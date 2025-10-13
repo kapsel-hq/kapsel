@@ -244,3 +244,214 @@ async fn webhook_event_struct_has_required_fields() {
     // Note: The primary validation is that cargo check passes for kapsel-core
     // with the added fields in WebhookEvent struct
 }
+
+#[tokio::test]
+async fn webhook_ingestion_validates_hmac_signature_success() {
+    // RED PHASE: This test should FAIL until signature validation is implemented
+    let env = TestEnv::new().await.expect("Failed to create test environment");
+
+    #[cfg(feature = "docker")]
+    {
+        use serde_json::json;
+
+        let pool = &env.db;
+        let addr = "127.0.0.1:0";
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
+        let actual_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let db_clone = pool.clone();
+        tokio::spawn(async move {
+            let app = kapsel_api::create_router(db_clone);
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        // Setup endpoint with signing secret
+        let endpoint_id = uuid::Uuid::new_v4();
+        let tenant_id =
+            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let signing_secret = "test_secret_key";
+
+        sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret, signature_header) VALUES ($1, $2, $3, $4, $5, $6)")
+            .bind(endpoint_id)
+            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind("test-endpoint")
+            .bind("https://example.com/webhook")
+            .bind(signing_secret)
+            .bind("X-Webhook-Signature")
+            .execute(pool)
+            .await
+            .expect("Failed to insert test endpoint");
+
+        let payload = json!({"user_id": 123, "action": "user.created"});
+        let payload_bytes = payload.to_string().into_bytes();
+
+        // Generate valid HMAC signature
+        let signature = kapsel_api::crypto::generate_hmac_hex(&payload_bytes, signing_secret)
+            .expect("HMAC generation should succeed in test");
+
+        // Act - POST with valid signature
+        let response = env
+            .client
+            .post(format!("http://{}/ingest/{}", actual_addr, endpoint_id))
+            .header("Content-Type", "application/json")
+            .header("X-Webhook-Signature", format!("sha256={}", signature))
+            .json(&payload)
+            .send()
+            .await
+            .expect("Request should complete");
+
+        // Assert - Should succeed with valid signature
+        assert_eq!(response.status(), 200, "Valid signature should be accepted");
+
+        let body: serde_json::Value = response.json().await.expect("Response should be valid JSON");
+        let event_id = body["event_id"].as_str().expect("event_id should be present");
+
+        // Verify signature validation result stored in database
+        let signature_valid: Option<bool> =
+            sqlx::query_scalar("SELECT signature_valid FROM webhook_events WHERE id = $1")
+                .bind(uuid::Uuid::parse_str(event_id).unwrap())
+                .fetch_one(pool)
+                .await
+                .expect("Should fetch signature validation result");
+
+        assert_eq!(signature_valid, Some(true), "Valid signature should be stored as true");
+    }
+
+    #[cfg(not(feature = "docker"))]
+    {
+        assert!(env.database_health_check().await.expect("Health check should work"));
+    }
+}
+
+#[tokio::test]
+async fn webhook_ingestion_rejects_invalid_hmac_signature() {
+    // RED PHASE: This test should FAIL until signature validation is implemented
+    let env = TestEnv::new().await.expect("Failed to create test environment");
+
+    #[cfg(feature = "docker")]
+    {
+        use serde_json::json;
+
+        let pool = &env.db;
+        let addr = "127.0.0.1:0";
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
+        let actual_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let db_clone = pool.clone();
+        tokio::spawn(async move {
+            let app = kapsel_api::create_router(db_clone);
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        // Setup endpoint with signing secret
+        let endpoint_id = uuid::Uuid::new_v4();
+        let tenant_id =
+            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+
+        sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret, signature_header) VALUES ($1, $2, $3, $4, $5, $6)")
+            .bind(endpoint_id)
+            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind("test-endpoint")
+            .bind("https://example.com/webhook")
+            .bind("test_secret_key")
+            .bind("X-Webhook-Signature")
+            .execute(pool)
+            .await
+            .expect("Failed to insert test endpoint");
+
+        let payload = json!({"user_id": 123, "action": "user.created"});
+
+        // Act - POST with invalid signature
+        let response = env
+            .client
+            .post(format!("http://{}/ingest/{}", actual_addr, endpoint_id))
+            .header("Content-Type", "application/json")
+            .header("X-Webhook-Signature", "sha256=invalid_signature_here")
+            .json(&payload)
+            .send()
+            .await
+            .expect("Request should complete");
+
+        // Assert - Should reject with 400 Bad Request
+        assert_eq!(response.status(), 400, "Invalid signature should be rejected with 400");
+
+        let body: serde_json::Value = response.json().await.expect("Response should be valid JSON");
+        assert!(
+            body["error"].as_str().unwrap().contains("signature"),
+            "Error should mention signature validation"
+        );
+    }
+
+    #[cfg(not(feature = "docker"))]
+    {
+        assert!(env.database_health_check().await.expect("Health check should work"));
+    }
+}
+
+#[tokio::test]
+async fn webhook_ingestion_requires_signature_when_configured() {
+    // RED PHASE: This test should FAIL until signature validation is implemented
+    let env = TestEnv::new().await.expect("Failed to create test environment");
+
+    #[cfg(feature = "docker")]
+    {
+        use serde_json::json;
+
+        let pool = &env.db;
+        let addr = "127.0.0.1:0";
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
+        let actual_addr = listener.local_addr().expect("Failed to get local addr");
+
+        let db_clone = pool.clone();
+        tokio::spawn(async move {
+            let app = kapsel_api::create_router(db_clone);
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        // Setup endpoint with signing secret but no signature header default
+        let endpoint_id = uuid::Uuid::new_v4();
+        let tenant_id =
+            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+
+        sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret) VALUES ($1, $2, $3, $4, $5)")
+            .bind(endpoint_id)
+            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind("test-endpoint")
+            .bind("https://example.com/webhook")
+            .bind("test_secret_key")
+            .execute(pool)
+            .await
+            .expect("Failed to insert test endpoint");
+
+        let payload = json!({"user_id": 123, "action": "user.created"});
+
+        // Act - POST without signature header
+        let response = env
+            .client
+            .post(format!("http://{}/ingest/{}", actual_addr, endpoint_id))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .expect("Request should complete");
+
+        // Assert - Should reject with 400 Bad Request when signature is required but
+        // missing
+        assert_eq!(
+            response.status(),
+            400,
+            "Missing signature should be rejected when endpoint requires it"
+        );
+
+        let body: serde_json::Value = response.json().await.expect("Response should be valid JSON");
+        assert!(
+            body["error"].as_str().unwrap().contains("signature"),
+            "Error should mention missing signature"
+        );
+    }
+
+    #[cfg(not(feature = "docker"))]
+    {
+        assert!(env.database_health_check().await.expect("Health check should work"));
+    }
+}
