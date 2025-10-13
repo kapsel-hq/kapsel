@@ -30,9 +30,7 @@ CREATE TABLE tenants (
 
     -- Billing
     stripe_customer_id TEXT,
-    stripe_subscription_id TEXT,
-
-    UNIQUE(name) WHERE deleted_at IS NULL
+    stripe_subscription_id TEXT
 );
 
 -- ============================================================================
@@ -71,9 +69,7 @@ CREATE TABLE endpoints (
     -- Statistics (denormalized for performance)
     total_events_received BIGINT NOT NULL DEFAULT 0,
     total_events_delivered BIGINT NOT NULL DEFAULT 0,
-    total_events_failed BIGINT NOT NULL DEFAULT 0,
-
-    UNIQUE(tenant_id, name) WHERE deleted_at IS NULL
+    total_events_failed BIGINT NOT NULL DEFAULT 0
 );
 
 -- ============================================================================
@@ -185,6 +181,16 @@ CREATE TABLE api_keys (
 -- ============================================================================
 -- Indexes for performance
 -- ============================================================================
+
+-- Tenants indexes - partial unique index for soft deletes
+CREATE UNIQUE INDEX idx_tenants_name_active
+    ON tenants(name)
+    WHERE deleted_at IS NULL;
+
+-- Endpoints indexes - partial unique index for soft deletes
+CREATE UNIQUE INDEX idx_endpoints_tenant_name_active
+    ON endpoints(tenant_id, name)
+    WHERE deleted_at IS NULL;
 
 -- Webhook events indexes
 CREATE INDEX idx_webhook_events_status
