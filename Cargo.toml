@@ -158,6 +158,10 @@ name = "kapsel"
 path = "src/main.rs"
 required-features = ["bin"]
 
+[[bench]]
+name = "webhook_benchmarks"
+harness = false
+
 [features]
 default = []
 bin = []
@@ -174,6 +178,7 @@ kapsel-api = { path = "crates/kapsel-api" }
 [dev-dependencies]
 cargo-husky = "1.5"
 test-harness = { path = "crates/test-harness" }
+criterion = { workspace = true }
 kapsel-api = { path = "crates/kapsel-api" }
 axum = { workspace = true }
 serde_json = { workspace = true }
@@ -181,3 +186,10 @@ sqlx = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
+proptest = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

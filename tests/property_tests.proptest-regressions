@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e4f463658a5113625c96ef5662933627a19cdab2f00339e2cf0620437ad3820f # shrinks to webhook = WebhookEvent { id: 00000000-0000-0000-0000-000000000000, tenant_id: 00000000-0000-0000-0000-000000000000, endpoint_id: 00000000-0000-0000-0000-000000000000, source_event_id: "evt_a00aaaaa0aaaa0aa", idempotency_strategy: "header", status: Received, attempt_count: 0, next_retry_at: None, headers: {}, body: b"{\"a\":\"A\"}", content_type: "application/json", received_at: 2025-10-13T19:26:44.178286Z, delivered_at: None }
