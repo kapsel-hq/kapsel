@@ -143,6 +143,9 @@ jobs:
             --no-default-features \
             --locked
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Setup database
         run: |
           cargo sqlx database create
