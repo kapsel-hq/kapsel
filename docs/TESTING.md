@@ -118,7 +118,8 @@ ScenarioBuilder::new("webhook retry scenario")
 
 - `DATABASE_URL` - PostgreSQL connection string (auto-detected from container)
 - `RUST_LOG=debug` - Enable debug logging
-- `CI=true` - CI mode (uses default port 5432)
+- `CI=true` - CI mode (uses default port 5432, 100 property test cases)
+- `PROPTEST_CASES` - Number of property test cases (default: 20 for dev, 100 for CI)
 
 ### Features
 
@@ -138,6 +139,7 @@ docker ps | grep kapsel-postgres-test
 ### Slow test startup
 
 PostgreSQL tests typically complete in ~300-400ms per test. If slower:
+
 - Check Docker resources
 - Ensure no other heavy processes are running
 - Consider increasing Docker memory allocation
@@ -149,10 +151,26 @@ Tests create fresh schemas automatically. No manual cleanup needed.
 ## Performance Guidelines
 
 - PostgreSQL tests: < 500ms per test
+- Property tests: Configurable via `PROPTEST_CASES` (20 for dev, 100 for CI)
 - Use `#[ignore]` for slow integration tests
 - Prefer unit tests for business logic
 - Use integration tests for API contracts
 - Database tests include schema creation and cleanup
+
+### Property Test Configuration
+
+Property tests automatically adjust based on environment:
+
+```bash
+# Development (fast iteration)
+cargo test  # Uses 20 cases, 50ms max delays
+
+# CI/Production (thorough testing)
+CI=true cargo test  # Uses 100 cases, 1000ms max delays
+
+# Custom configuration
+PROPTEST_CASES=50 cargo test  # Uses 50 cases
+```
 
 ## CI Configuration
 
