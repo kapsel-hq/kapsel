@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   schedule:
     # Run security audit daily at 2 AM UTC
     - cron: "0 2 * * *"
@@ -12,7 +12,7 @@ on:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
-  SQLX_VERSION: 0.7.3
+  SQLX_VERSION: 0.8.6
   SQLX_FEATURES: "rustls,postgres"
 
 jobs:

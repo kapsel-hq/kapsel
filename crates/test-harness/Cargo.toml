@@ -17,15 +17,11 @@ default = []
 # Core testing infrastructure
 tokio = { workspace = true }
 sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"] }
-axum = { workspace = true }
-tower = { workspace = true }
 
 # Test utilities
 wiremock = { workspace = true }
-tempfile = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 
@@ -36,19 +32,14 @@ tracing-subscriber = { workspace = true }
 # Database testing - supports both SQLite (in-memory) and PostgreSQL (Docker)
 
 # Additional utilities
-log = { workspace = true }
 rand = { workspace = true }
 
 # HTTP testing
 reqwest = { version = "0.11", features = ["json"] }
 http = "1.0"
 
-# Assertions
-pretty_assertions = { workspace = true }
-
 # Error handling
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 rstest = { workspace = true }

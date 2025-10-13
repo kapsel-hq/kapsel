@@ -30,7 +30,6 @@
 //! - Tenant isolation for all operations
 //! - Rate limiting per tenant
 //! - Payload size limits (10MB max)
-//! ```
 
 pub mod ingest;
 

@@ -1,0 +1,23 @@
+# Cargo Security Audit Configuration
+#
+# This file documents security advisories that we've reviewed and chosen to ignore
+# with clear justification for each case.
+
+[advisories]
+# Ignored advisories with justification
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack on RSA in sqlx-mysql
+    #
+    # Justification:
+    # - We do not use MySQL in this project (only PostgreSQL and SQLite)
+    # - This vulnerability only affects MySQL's RSA-based authentication
+    # - The dependency exists only because sqlx-macros includes all database
+    #   backends as optional dependencies for compile-time query checking
+    # - At runtime, MySQL code is never executed in our application
+    # - No fix is available from upstream as of 2025-10-13
+    #
+    # Risk Assessment: ACCEPTED - No actual risk to our application
+    # Review Date: 2025-10-13
+    # Next Review: When sqlx releases a version that removes or fixes this dependency
+    "RUSTSEC-2023-0071",
+]
