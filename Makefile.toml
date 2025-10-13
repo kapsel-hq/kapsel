@@ -8,7 +8,8 @@ skip_core_tasks = false
 [env]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 RUST_BACKTRACE = "short"
-DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
+DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5433/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
+SQLX_VERSION = "0.8.6"
 
 # Core development tasks
 
@@ -16,11 +17,15 @@ DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/kapsel_tes
 description = "Setup development environment"
 script = '''
 echo "Setting up Kapsel development environment..."
-cargo install cargo-watch cargo-nextest cargo-llvm-cov sqlx-cli cargo-machete
-echo "Installing git hooks..."
-cargo install cargo-husky
-cargo husky install
+echo "Installing development tools..."
+cargo install cargo-watch cargo-nextest cargo-llvm-cov cargo-machete cargo-audit
+echo "Installing sqlx-cli ${SQLX_VERSION}..."
+cargo install sqlx-cli --version=${SQLX_VERSION} --features=rustls,postgres --no-default-features
 echo "Setup complete!"
+echo ""
+echo "Note: PostgreSQL is required for database tasks."
+echo "On macOS: brew install postgresql@15"
+echo "Using Docker: See docker-compose.yml"
 '''
 
 [tasks.dev]
@@ -124,22 +129,21 @@ args = ["bench", "--workspace"]
 # Database tasks
 
 [tasks.db-setup]
-description = "Setup test database"
+description = "Setup test database (using Docker PostgreSQL)"
 script = '''
 echo "Creating test database..."
-createdb kapsel_test || true
+docker exec kapsel-postgres-test psql -U postgres -c "CREATE DATABASE kapsel_test;" 2>/dev/null || echo "Database may already exist"
 echo "Running migrations..."
 cargo sqlx migrate run
 echo "Database setup complete!"
 '''
 
 [tasks.db-reset]
-description = "Reset test database"
+description = "Reset test database (using Docker PostgreSQL)"
 script = '''
-echo "Dropping test database..."
-dropdb kapsel_test || true
-echo "Creating test database..."
-createdb kapsel_test
+echo "Resetting test database..."
+docker exec kapsel-postgres-test psql -U postgres -c "DROP DATABASE IF EXISTS kapsel_test;"
+docker exec kapsel-postgres-test psql -U postgres -c "CREATE DATABASE kapsel_test;"
 echo "Running migrations..."
 cargo sqlx migrate run
 echo "Database reset complete!"
