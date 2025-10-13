@@ -63,18 +63,18 @@ impl std::error::Error for SignatureError {}
 /// Supports multiple signature formats:
 /// - GitHub: "sha256=<hex>"
 /// - Stripe: "v1=<hex>"
-/// - Generic: "<hex>" (raw hex)
+/// - Raw: "<hex>"
 ///
-/// # Arguments
-/// * `payload` - Raw webhook payload bytes
-/// * `signature` - Signature header value
-/// * `secret` - Secret key for HMAC generation
+/// Compares the provided signature against the expected HMAC-SHA256 of the
+/// payload using the given secret. Returns validation result with error
+/// details if verification fails.
 ///
 /// # Example
+///
 /// ```
 /// use kapsel_api::crypto::validate_signature;
 ///
-/// let payload = b"{'user_id': 123}";
+/// let payload = b"webhook payload";
 /// let signature = "sha256=abc123...";
 /// let secret = "my_secret_key";
 ///
@@ -112,12 +112,13 @@ pub fn validate_signature(payload: &[u8], signature: &str, secret: &str) -> Vali
 
 /// Generates HMAC-SHA256 signature as hex string.
 ///
-/// # Arguments
-/// * `payload` - Data to sign
-/// * `secret` - Secret key
+/// Creates an HMAC-SHA256 hash of the provided payload using the secret key
+/// and returns it as a lowercase hexadecimal string. This is the expected
+/// signature format for webhook validation.
 ///
-/// # Returns
-/// Hex-encoded HMAC signature
+/// # Errors
+///
+/// Returns `SignatureError::InvalidSecret` if the secret key is invalid.
 pub fn generate_hmac_hex(payload: &[u8], secret: &str) -> Result<String, SignatureError> {
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SignatureError::InvalidSecret)?;
