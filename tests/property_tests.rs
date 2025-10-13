@@ -522,6 +522,9 @@ mod integration_tests {
             // Test with actual database operations
             runtime.block_on(async {
                 // Insert webhook
+                // payload_size must be at least 1 due to CHECK constraint
+                let payload_size = (webhook.body.len() as i32).max(1);
+
                 sqlx::query(
                     "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id,
                      idempotency_strategy, status, failure_count, headers, body, content_type, payload_size, received_at)
@@ -537,7 +540,7 @@ mod integration_tests {
                 .bind(serde_json::json!({}))
                 .bind(webhook.body.as_ref())
                 .bind(webhook.content_type)
-                .bind(webhook.body.len() as i32)
+                .bind(payload_size)
                 .bind(webhook.received_at)
                 .execute(&env.db)
                 .await
