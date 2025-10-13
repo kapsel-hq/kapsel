@@ -101,8 +101,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     .await?;
 
     // Expected delays for exponential backoff (1s, 2s, 4s)
-    let expected_delays =
-        vec![Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+    let expected_delays = [Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
 
     // Simulate delivery attempts with precise timing
     for (attempt_num, expected_delay) in expected_delays.iter().enumerate() {
@@ -458,7 +457,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     }
 
     // Process first 5 webhooks - these should open the circuit
-    for i in 0..5 {
+    for event_id in event_ids.iter().take(5) {
         // Simulate delivery attempt
         sqlx::query(
             "INSERT INTO delivery_attempts
@@ -467,7 +466,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(Uuid::new_v4())
-        .bind(event_ids[i])
+        .bind(event_id)
         .bind(1i32)
         .bind(mock.url())
         .bind(json!({}))
@@ -480,7 +479,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
 
         // Update failure count
         sqlx::query("UPDATE webhook_events SET failure_count = failure_count + 1 WHERE id = $1")
-            .bind(event_ids[i])
+            .bind(event_id)
             .execute(&env.db)
             .await?;
     }
@@ -499,7 +498,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     .await?;
 
     // Process remaining 5 webhooks - these should fail fast without making requests
-    for i in 5..10 {
+    for event_id in event_ids.iter().take(10).skip(5) {
         // These should not create delivery attempts when circuit is open
         let circuit_state: (String,) =
             sqlx::query_as("SELECT circuit_state FROM endpoints WHERE id = $1")
@@ -516,16 +515,16 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
              WHERE id = $2",
         )
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
-        .bind(event_ids[i])
+        .bind(event_id)
         .execute(&env.db)
         .await?;
     }
 
     // Verify first 5 made actual attempts
-    for i in 0..5 {
+    for event_id in event_ids.iter().take(5) {
         let attempts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
-                .bind(event_ids[i])
+                .bind(event_id)
                 .fetch_one(&env.db)
                 .await?;
 
@@ -533,10 +532,10 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     }
 
     // Verify last 5 made no attempts (circuit was open)
-    for i in 5..10 {
+    for event_id in event_ids.iter().take(10).skip(5) {
         let attempts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
-                .bind(event_ids[i])
+                .bind(event_id)
                 .fetch_one(&env.db)
                 .await?;
 

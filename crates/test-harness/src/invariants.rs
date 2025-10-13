@@ -401,7 +401,7 @@ pub mod strategies {
         (
             1u32..20,                  // attempts
             vec(any::<bool>(), 1..20), // success/failure pattern
-            0u64..3600_000,            // total time ms
+            0u64..3_600_000,           // total time ms
         )
             .prop_map(|(max_attempts, outcomes, total_ms)| RetryScenario {
                 max_attempts,

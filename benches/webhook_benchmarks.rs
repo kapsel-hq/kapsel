@@ -457,6 +457,7 @@ struct MockCircuitBreaker {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum CircuitState {
     Closed,
     Open,

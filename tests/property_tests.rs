@@ -9,7 +9,6 @@ use std::{
 };
 
 use proptest::prelude::*;
-use rand;
 use test_harness::{
     invariants::{strategies, CircuitState, EventStatus, WebhookEvent},
     TestEnv,
@@ -113,7 +112,7 @@ proptest! {
 
             // With up to 50% jitter, ratio should be between 1.0 and 3.0
             prop_assert!(
-                ratio >= 1.0 && ratio <= 3.0,
+                (1.0..=3.0).contains(&ratio),
                 "Backoff ratio {} out of expected range [1.0, 3.0]",
                 ratio
             );
@@ -130,7 +129,7 @@ proptest! {
         let mut consecutive_failures = 0;
 
         for success in outcomes {
-            let prev_state = circuit.state.clone();
+            let prev_state = circuit.state;
 
             if success {
                 circuit.record_success();
@@ -319,7 +318,7 @@ proptest! {
         }
 
         // Process and deliver webhooks
-        for (_endpoint, webhooks) in &mut endpoint_webhooks {
+        for webhooks in endpoint_webhooks.values_mut() {
             // Simulate delivery with timestamps
             for (i, webhook) in webhooks.iter_mut().enumerate() {
                 webhook.status = EventStatus::Delivered;
@@ -375,11 +374,10 @@ proptest! {
 
         // Optionally tamper with payload
         let mut verification_payload = payload.clone();
-        if tamper {
-            if !verification_payload.is_empty() {
+        if tamper
+            && !verification_payload.is_empty() {
                 verification_payload[0] ^= 1; // Flip a bit
             }
-        }
 
         // Verify signature
         let valid = verify_hmac(&verification_payload, &secret, &signature);
@@ -464,9 +462,9 @@ impl MockCircuitBreaker {
 
     fn record_failure(&mut self) {
         self.failure_count += 1;
-        if self.state == CircuitState::Closed && self.failure_count >= self.threshold {
-            self.state = CircuitState::Open;
-        } else if self.state == CircuitState::HalfOpen {
+        if (self.state == CircuitState::Closed && self.failure_count >= self.threshold)
+            || self.state == CircuitState::HalfOpen
+        {
             self.state = CircuitState::Open;
         }
     }

@@ -216,17 +216,20 @@ pub mod assertions {
     }
 }
 
+/// Type alias for state assertions and invariant checks.
+type InvariantCheck = Box<dyn Fn(&TestEnv) -> Result<()>>;
+
 /// Test scenario builder for complex test cases.
 ///
 /// Enables deterministic multi-step testing with invariant validation.
 pub struct ScenarioBuilder {
     name: String,
     steps: Vec<Step>,
-    invariant_checks: Vec<Box<dyn Fn(&TestEnv) -> Result<()>>>,
+    invariant_checks: Vec<InvariantCheck>,
 }
 
 /// Type alias for state assertions in scenarios.
-type StateAssertion = Box<dyn Fn(&TestEnv) -> Result<()>>;
+type StateAssertion = InvariantCheck;
 
 enum Step {
     IngestWebhook {
