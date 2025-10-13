@@ -93,45 +93,12 @@ pub async fn setup_test_database() -> Result<DatabasePool> {
 async fn run_postgres_migrations(pool: &PgPool) -> Result<()> {
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS webhook_events (
+        CREATE TABLE IF NOT EXISTS tenants (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id UUID NOT NULL,
-            endpoint_id UUID NOT NULL,
-            source_event_id TEXT NOT NULL,
-            idempotency_strategy TEXT NOT NULL,
-            status TEXT NOT NULL,
-            failure_count INTEGER NOT NULL DEFAULT 0,
-            last_attempt_at TIMESTAMPTZ,
-            next_retry_at TIMESTAMPTZ,
-            headers JSONB NOT NULL,
-            body BYTEA NOT NULL,
-            content_type TEXT NOT NULL,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            delivered_at TIMESTAMPTZ,
-            failed_at TIMESTAMPTZ,
-            tigerbeetle_id UUID,
-            UNIQUE(tenant_id, endpoint_id, source_event_id)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS delivery_attempts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            event_id UUID NOT NULL REFERENCES webhook_events(id),
-            attempt_number INTEGER NOT NULL,
-            request_url TEXT NOT NULL,
-            request_headers JSONB NOT NULL,
-            response_status INTEGER,
-            response_headers JSONB,
-            response_body TEXT,
-            attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            duration_ms INTEGER NOT NULL,
-            error_type TEXT,
-            error_message TEXT
+            name TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         "#,
     )
@@ -164,12 +131,67 @@ async fn run_postgres_migrations(pool: &PgPool) -> Result<()> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS tenants (
+        CREATE TABLE IF NOT EXISTS webhook_events (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            plan TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            tenant_id UUID NOT NULL,
+            endpoint_id UUID NOT NULL,
+            source_event_id TEXT NOT NULL,
+            idempotency_strategy TEXT NOT NULL,
+            status TEXT NOT NULL,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TIMESTAMPTZ,
+            next_retry_at TIMESTAMPTZ,
+            headers JSONB NOT NULL,
+            body BYTEA NOT NULL,
+            content_type TEXT NOT NULL,
+            payload_size INTEGER NOT NULL,
+            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            delivered_at TIMESTAMPTZ,
+            failed_at TIMESTAMPTZ,
+            tigerbeetle_id UUID,
+            UNIQUE(tenant_id, endpoint_id, source_event_id),
+            CHECK (payload_size > 0 AND payload_size <= 10485760)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Add payload_size column if it doesn't exist (migration for existing test
+    // databases)
+    sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'webhook_events' AND column_name = 'payload_size'
+            ) THEN
+                ALTER TABLE webhook_events ADD COLUMN payload_size INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE webhook_events ADD CONSTRAINT webhook_events_payload_size_check
+                    CHECK (payload_size > 0 AND payload_size <= 10485760);
+            END IF;
+        END $$;
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS delivery_attempts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            event_id UUID NOT NULL REFERENCES webhook_events(id),
+            attempt_number INTEGER NOT NULL,
+            request_url TEXT NOT NULL,
+            request_headers JSONB NOT NULL,
+            response_status INTEGER,
+            response_headers JSONB,
+            response_body TEXT,
+            attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            duration_ms INTEGER NOT NULL,
+            error_type TEXT,
+            error_message TEXT
         )
         "#,
     )
@@ -226,11 +248,11 @@ async fn seed_webhook_events(pool: &PgPool) -> Result<()> {
         r#"
         INSERT INTO webhook_events (
             tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-            status, headers, body, content_type
+            status, headers, body, content_type, payload_size
         )
         VALUES
-            ($1, $2, 'test-event-1', 'header', 'pending', '{}', 'test body 1', 'text/plain'),
-            ($1, $2, 'test-event-2', 'header', 'delivered', '{}', 'test body 2', 'text/plain')
+            ($1, $2, 'test-event-1', 'header', 'pending', '{}', 'test body 1', 'text/plain', 11),
+            ($1, $2, 'test-event-2', 'header', 'delivered', '{}', 'test body 2', 'text/plain', 11)
         ON CONFLICT DO NOTHING
         "#,
     )

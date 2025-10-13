@@ -362,10 +362,13 @@ struct TestWebhook {
 
 async fn ingest_webhook(env: &TestEnv, webhook: TestWebhook) {
     // Simplified ingestion for benchmarking
+    let body_bytes = webhook.payload.to_string().into_bytes();
+    let payload_size = body_bytes.len() as i32;
+
     sqlx::query(
         "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id,
-         idempotency_strategy, status, failure_count, headers, body, content_type, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         idempotency_strategy, status, failure_count, headers, body, content_type, payload_size, received_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT DO NOTHING",
     )
     .bind(webhook.id)
@@ -376,8 +379,9 @@ async fn ingest_webhook(env: &TestEnv, webhook: TestWebhook) {
     .bind("pending")
     .bind(0i32)
     .bind(json!({}))
-    .bind(webhook.payload.to_string().as_bytes())
+    .bind(&body_bytes)
     .bind("application/json")
+    .bind(payload_size)
     .bind(chrono::Utc::now())
     .execute(&env.db)
     .await

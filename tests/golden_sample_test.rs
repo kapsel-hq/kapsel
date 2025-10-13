@@ -80,11 +80,14 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
 
     // Step 1: Ingest webhook
     let event_id = Uuid::new_v4();
+    let body_bytes = webhook_payload.to_string().into_bytes();
+    let payload_size = body_bytes.len() as i32;
+
     sqlx::query(
         "INSERT INTO webhook_events
          (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-          status, failure_count, headers, body, content_type, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+          status, failure_count, headers, body, content_type, payload_size, received_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(event_id)
     .bind(tenant_id)
@@ -94,8 +97,9 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     .bind("pending")
     .bind(0i32)
     .bind(json!({"X-Idempotency-Key": idempotency_key, "Content-Type": "application/json"}))
-    .bind(webhook_payload.to_string().as_bytes())
+    .bind(&body_bytes)
     .bind("application/json")
+    .bind(payload_size)
     .bind(DateTime::<Utc>::from(env.clock.now_system()))
     .execute(&env.db)
     .await?;
@@ -253,11 +257,14 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     }
 
     // Test idempotency: Resend same webhook with same idempotency key
+    let duplicate_body_bytes = webhook_payload.to_string().into_bytes();
+    let duplicate_payload_size = duplicate_body_bytes.len() as i32;
+
     let duplicate_result: (Uuid,) = sqlx::query_as(
         "INSERT INTO webhook_events
          (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-          status, failure_count, headers, body, content_type, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          status, failure_count, headers, body, content_type, payload_size, received_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (tenant_id, endpoint_id, source_event_id)
          DO UPDATE SET id = webhook_events.id
          RETURNING id")
@@ -269,8 +276,9 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .bind("pending")
         .bind(0i32)
         .bind(json!({"X-Idempotency-Key": idempotency_key}))
-        .bind(webhook_payload.to_string().as_bytes())
+        .bind(&duplicate_body_bytes)
         .bind("application/json")
+        .bind(duplicate_payload_size)
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
         .fetch_one(&env.db)
         .await?;
@@ -435,11 +443,14 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         let event_id = Uuid::new_v4();
         event_ids.push(event_id);
 
+        let test_body = b"test";
+        let test_payload_size = test_body.len() as i32;
+
         sqlx::query(
             "INSERT INTO webhook_events
              (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-              status, failure_count, headers, body, content_type, received_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+              status, failure_count, headers, body, content_type, payload_size, received_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(event_id)
         .bind(tenant_id)
@@ -449,8 +460,9 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         .bind("pending")
         .bind(0i32)
         .bind(json!({}))
-        .bind(b"test")
+        .bind(test_body.as_ref())
         .bind("text/plain")
+        .bind(test_payload_size)
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
         .execute(&env.db)
         .await?;

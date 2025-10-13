@@ -524,8 +524,8 @@ mod integration_tests {
                 // Insert webhook
                 sqlx::query(
                     "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id,
-                     idempotency_strategy, status, failure_count, headers, body, content_type, received_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     idempotency_strategy, status, failure_count, headers, body, content_type, payload_size, received_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                      ON CONFLICT (tenant_id, endpoint_id, source_event_id) DO NOTHING")
                 .bind(webhook.id)
                 .bind(webhook.tenant_id)
@@ -537,6 +537,7 @@ mod integration_tests {
                 .bind(serde_json::json!({}))
                 .bind(webhook.body.as_ref())
                 .bind(webhook.content_type)
+                .bind(webhook.body.len() as i32)
                 .bind(webhook.received_at)
                 .execute(&env.db)
                 .await
