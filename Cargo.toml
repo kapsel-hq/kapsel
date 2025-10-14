@@ -180,6 +180,7 @@ cargo-husky = "1.5"
 test-harness = { path = "crates/test-harness" }
 criterion = { workspace = true }
 kapsel-api = { path = "crates/kapsel-api" }
+kapsel-delivery = { path = "crates/kapsel-delivery" }
 axum = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }

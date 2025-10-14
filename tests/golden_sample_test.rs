@@ -421,6 +421,14 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     let tenant_id = Uuid::new_v4();
     let endpoint_id = Uuid::new_v4();
 
+    // Create tenant first (required for foreign key constraint)
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+        .bind(tenant_id)
+        .bind("test-tenant")
+        .bind("enterprise")
+        .execute(&env.db)
+        .await?;
+
     // Create endpoint with circuit breaker settings
     sqlx::query(
         "INSERT INTO endpoints

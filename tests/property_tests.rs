@@ -521,6 +521,29 @@ mod integration_tests {
         proptest!(|(webhook in strategies::webhook_event_strategy())| {
             // Test with actual database operations
             runtime.block_on(async {
+                // Create tenant first (required for foreign key constraint)
+                sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
+                    .bind(webhook.tenant_id)
+                    .bind("test-tenant")
+                    .bind("enterprise")
+                    .execute(&env.db)
+                    .await
+                    .unwrap();
+
+                // Create endpoint (required for foreign key constraint)
+                sqlx::query(
+                    "INSERT INTO endpoints (id, tenant_id, url, name, max_retries, timeout_seconds)
+                     VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING")
+                .bind(webhook.endpoint_id)
+                .bind(webhook.tenant_id)
+                .bind("https://example.com/webhook")
+                .bind("test-endpoint")
+                .bind(10i32)
+                .bind(30i32)
+                .execute(&env.db)
+                .await
+                .unwrap();
+
                 // Insert webhook
                 // payload_size must be at least 1 due to CHECK constraint
                 let payload_size = (webhook.body.len() as i32).max(1);
