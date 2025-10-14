@@ -4,7 +4,7 @@
 //! Requires Docker with kapsel-postgres-test container running.
 //!
 //! Tests automatically connect to PostgreSQL on the port specified in
-//! DATABASE_URL environment variable (defaults to 5432 for CI).
+//! DATABASE_URL environment variable (defaults to 5432).
 
 use anyhow::{Context, Result};
 use sqlx::{postgres::PgConnectOptions, PgPool, Postgres};
@@ -32,11 +32,11 @@ impl TestDatabase {
             .ok()
             .and_then(|url| {
                 url.split(':')
-                    .nth(4)
+                    .nth(3)
                     .and_then(|port_str| port_str.split('/').next())
                     .and_then(|port_str| port_str.parse::<u16>().ok())
             })
-            .unwrap_or(5433);
+            .unwrap_or(5432);
 
         // First connect to postgres database to create test database
         let admin_options = PgConnectOptions::new()
@@ -422,6 +422,45 @@ pub mod assertions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_database_url_port_parsing() {
+        // Test parsing port from DATABASE_URL
+        let test_cases = vec![
+            ("postgres://postgres:postgres@localhost:5432/kapsel_test", 5432),
+            ("postgres://user:pass@127.0.0.1:5433/testdb", 5433),
+            ("postgres://postgres:postgres@localhost:3000/db", 3000),
+        ];
+
+        for (url, expected_port) in test_cases {
+            std::env::set_var("DATABASE_URL", url);
+
+            let port = std::env::var("DATABASE_URL")
+                .ok()
+                .and_then(|url| {
+                    url.split(':')
+                        .nth(3)
+                        .and_then(|port_str| port_str.split('/').next())
+                        .and_then(|port_str| port_str.parse::<u16>().ok())
+                })
+                .unwrap_or(5432);
+
+            assert_eq!(port, expected_port, "Failed to parse port from URL: {}", url);
+        }
+
+        // Test default port when DATABASE_URL is not set
+        std::env::remove_var("DATABASE_URL");
+        let port = std::env::var("DATABASE_URL")
+            .ok()
+            .and_then(|url| {
+                url.split(':')
+                    .nth(3)
+                    .and_then(|port_str| port_str.split('/').next())
+                    .and_then(|port_str| port_str.parse::<u16>().ok())
+            })
+            .unwrap_or(5432);
+        assert_eq!(port, 5432, "Should default to 5432 when DATABASE_URL is not set");
+    }
 
     #[tokio::test]
     async fn database_setup_succeeds() {
