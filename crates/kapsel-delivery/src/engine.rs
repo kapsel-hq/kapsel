@@ -31,7 +31,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use kapsel_core::models::{EndpointId, EventId, EventStatus, TenantId, WebhookEvent};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use tokio::{sync::RwLock, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -340,73 +340,7 @@ impl DeliveryWorker {
         // Convert database rows to WebhookEvent structs
         let mut events = Vec::with_capacity(rows.len());
         for row in rows {
-            // Parse headers from JSONB
-            let headers_value: serde_json::Value = row
-                .try_get("headers")
-                .map_err(|e| DeliveryError::internal(format!("failed to get headers: {e}")))?;
-            let headers: HashMap<String, String> = serde_json::from_value(headers_value)
-                .map_err(|e| DeliveryError::internal(format!("invalid headers JSON: {e}")))?;
-
-            let event = WebhookEvent {
-                id: EventId(
-                    row.try_get("id")
-                        .map_err(|e| DeliveryError::internal(format!("failed to get id: {e}")))?,
-                ),
-                tenant_id: TenantId(row.try_get("tenant_id").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get tenant_id: {e}"))
-                })?),
-                endpoint_id: EndpointId(row.try_get("endpoint_id").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get endpoint_id: {e}"))
-                })?),
-                source_event_id: row.try_get("source_event_id").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get source_event_id: {e}"))
-                })?,
-                idempotency_strategy: row.try_get("idempotency_strategy").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get idempotency_strategy: {e}"))
-                })?,
-                status: EventStatus::Delivering, // We just updated it to delivering
-                failure_count: {
-                    let count = row.try_get::<i32, _>("failure_count").map_err(|e| {
-                        DeliveryError::internal(format!("failed to get failure_count: {e}"))
-                    })?;
-                    u32::try_from(count).unwrap_or(0)
-                },
-                last_attempt_at: row.try_get("last_attempt_at").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get last_attempt_at: {e}"))
-                })?,
-                next_retry_at: row.try_get("next_retry_at").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get next_retry_at: {e}"))
-                })?,
-                headers,
-                body: Bytes::from(
-                    row.try_get::<Vec<u8>, _>("body")
-                        .map_err(|e| DeliveryError::internal(format!("failed to get body: {e}")))?,
-                ),
-                content_type: row.try_get("content_type").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get content_type: {e}"))
-                })?,
-                received_at: row.try_get("received_at").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get received_at: {e}"))
-                })?,
-                delivered_at: row.try_get("delivered_at").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get delivered_at: {e}"))
-                })?,
-                failed_at: row.try_get("failed_at").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get failed_at: {e}"))
-                })?,
-                payload_size: row.try_get("payload_size").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get payload_size: {e}"))
-                })?,
-                signature_valid: row.try_get("signature_valid").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get signature_valid: {e}"))
-                })?,
-                signature_error: row.try_get("signature_error").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get signature_error: {e}"))
-                })?,
-                tigerbeetle_id: row.try_get("tigerbeetle_id").map_err(|e| {
-                    DeliveryError::internal(format!("failed to get tigerbeetle_id: {e}"))
-                })?,
-            };
+            let event = Self::parse_webhook_event_from_row(&row)?;
             events.push(event);
         }
 
@@ -652,10 +586,87 @@ impl DeliveryWorker {
         // TODO: Implement full audit trail recording
         // For now, skip detailed recording to avoid schema issues
     }
+
+    /// Parses a database row into a WebhookEvent struct.
+    fn parse_webhook_event_from_row(row: &sqlx::postgres::PgRow) -> Result<WebhookEvent> {
+        use sqlx::Row;
+
+        // Parse headers from JSONB
+        let headers_value: serde_json::Value = row
+            .try_get("headers")
+            .map_err(|e| DeliveryError::internal(format!("failed to get headers: {e}")))?;
+        let headers: HashMap<String, String> = serde_json::from_value(headers_value)
+            .map_err(|e| DeliveryError::internal(format!("invalid headers JSON: {e}")))?;
+
+        let event =
+            WebhookEvent {
+                id: EventId(
+                    row.try_get("id")
+                        .map_err(|e| DeliveryError::internal(format!("failed to get id: {e}")))?,
+                ),
+                tenant_id: TenantId(row.try_get("tenant_id").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get tenant_id: {e}"))
+                })?),
+                endpoint_id: EndpointId(row.try_get("endpoint_id").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get endpoint_id: {e}"))
+                })?),
+                source_event_id: row.try_get("source_event_id").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get source_event_id: {e}"))
+                })?,
+                idempotency_strategy: row.try_get("idempotency_strategy").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get idempotency_strategy: {e}"))
+                })?,
+                status: EventStatus::Delivering, // We just updated it to delivering
+                failure_count: {
+                    let count = row.try_get::<i32, _>("failure_count").map_err(|e| {
+                        DeliveryError::internal(format!("failed to get failure_count: {e}"))
+                    })?;
+                    u32::try_from(count).unwrap_or(0)
+                },
+                last_attempt_at: row.try_get("last_attempt_at").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get last_attempt_at: {e}"))
+                })?,
+                next_retry_at: row.try_get("next_retry_at").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get next_retry_at: {e}"))
+                })?,
+                headers,
+                body: Bytes::from(
+                    row.try_get::<Vec<u8>, _>("body")
+                        .map_err(|e| DeliveryError::internal(format!("failed to get body: {e}")))?,
+                ),
+                content_type: row.try_get("content_type").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get content_type: {e}"))
+                })?,
+                received_at: row.try_get("received_at").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get received_at: {e}"))
+                })?,
+                delivered_at: row.try_get("delivered_at").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get delivered_at: {e}"))
+                })?,
+                failed_at: row.try_get("failed_at").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get failed_at: {e}"))
+                })?,
+                payload_size: row.try_get("payload_size").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get payload_size: {e}"))
+                })?,
+                signature_valid: row.try_get("signature_valid").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get signature_valid: {e}"))
+                })?,
+                signature_error: row.try_get("signature_error").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get signature_error: {e}"))
+                })?,
+                tigerbeetle_id: row.try_get("tigerbeetle_id").map_err(|e| {
+                    DeliveryError::internal(format!("failed to get tigerbeetle_id: {e}"))
+                })?,
+            };
+
+        Ok(event)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use sqlx::Row;
     use test_harness::TestEnv;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
