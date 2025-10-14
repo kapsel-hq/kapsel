@@ -330,12 +330,13 @@ pub struct WebhookEvent {
     pub next_retry_at: Option<DateTime<Utc>>,
 
     /// Original HTTP headers from ingestion.
-    pub headers: HashMap<String, String>,
+    pub headers: sqlx::types::Json<HashMap<String, String>>,
 
     /// Raw webhook payload.
     ///
-    /// Using Bytes for zero-copy efficiency.
-    pub body: Bytes,
+    /// Stored as Vec<u8> for database compatibility, converted to Bytes for
+    /// zero-copy operations.
+    pub body: Vec<u8>,
 
     /// MIME type of the payload.
     pub content_type: String,
@@ -374,27 +375,13 @@ pub struct WebhookEvent {
 
 impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-        use std::collections::HashMap;
-
         use sqlx::Row;
-
-        // Handle headers JSONB -> HashMap conversion
-        let headers_value: serde_json::Value = row.try_get("headers")?;
-        let headers: HashMap<String, String> =
-            serde_json::from_value(headers_value).map_err(|e| sqlx::Error::ColumnDecode {
-                index: "headers".to_string(),
-                source: e.into(),
-            })?;
 
         // Handle failure_count i32 -> u32 conversion
         let failure_count_i32: i32 = row.try_get("failure_count")?;
         let failure_count = u32::try_from(failure_count_i32).map_err(|e| {
             sqlx::Error::ColumnDecode { index: "failure_count".to_string(), source: e.into() }
         })?;
-
-        // Handle body BYTEA -> Bytes conversion
-        let body_vec: Vec<u8> = row.try_get("body")?;
-        let body = Bytes::from(body_vec);
 
         Ok(Self {
             id: row.try_get("id")?,
@@ -406,8 +393,8 @@ impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
             failure_count,
             last_attempt_at: row.try_get("last_attempt_at")?,
             next_retry_at: row.try_get("next_retry_at")?,
-            headers,
-            body,
+            headers: row.try_get("headers")?,
+            body: row.try_get("body")?,
             content_type: row.try_get("content_type")?,
             received_at: row.try_get("received_at")?,
             delivered_at: row.try_get("delivered_at")?,
@@ -417,6 +404,60 @@ impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
             signature_error: row.try_get("signature_error")?,
             tigerbeetle_id: row.try_get("tigerbeetle_id")?,
         })
+    }
+}
+
+impl WebhookEvent {
+    /// Get the headers as a regular HashMap for easy access.
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers.0
+    }
+
+    /// Get the body as Bytes for zero-copy operations.
+    pub fn body_bytes(&self) -> Bytes {
+        Bytes::from(self.body.clone())
+    }
+
+    /// Get the raw body as a byte slice.
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    /// Create a WebhookEvent with the given data.
+    pub fn new(
+        id: EventId,
+        tenant_id: TenantId,
+        endpoint_id: EndpointId,
+        source_event_id: String,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+        content_type: String,
+    ) -> Self {
+        let payload_size = i32::try_from(body.len())
+            .unwrap_or(i32::MAX) // If payload exceeds i32::MAX, use max value
+            .max(1); // Ensure minimum size of 1
+
+        Self {
+            id,
+            tenant_id,
+            endpoint_id,
+            source_event_id,
+            idempotency_strategy: "header".to_string(),
+            status: EventStatus::Received,
+            failure_count: 0,
+            last_attempt_at: None,
+            next_retry_at: None,
+            headers: sqlx::types::Json(headers),
+            body,
+            content_type,
+            received_at: Utc::now(),
+            delivered_at: None,
+            failed_at: None,
+            payload_size,
+            signature_valid: None,
+            signature_error: None,
+            tigerbeetle_id: None,
+        }
     }
 }
 

@@ -1,18 +1,25 @@
 # kapsel
 
-Kapsel is a webhook reliability service that guarantees at-least-once delivery with exponential backoff, circuit breakers, and cryptographically verifiable audit trails.
+Kapsel is a webhook reliability service foundation for building guaranteed at-least-once delivery systems. Currently provides webhook ingestion with idempotency, with delivery engine in active development.
 
 ## What are we building?
 
 Webhook failures are silent killers in distributed systems. Network timeouts, server errors, rate limits, and cascading failures during load spikes lead to lost data and poor user experience. Kapsel solves this by acting as a reliable intermediary that accepts webhooks and guarantees their delivery to destination endpoints.
 
-### Key Features
+### Current Features
 
-- **Guaranteed Delivery**: At-least-once delivery with configurable retry policies
-- **Idempotency**: Built-in deduplication prevents duplicate processing
-- **Circuit Breakers**: Per-endpoint failure isolation to prevent cascading failures
-- **Audit Trail**: Complete delivery tracking with TigerBeetle integration
-- **Observability**: Structured logging and distributed tracing
+- **Webhook Ingestion**: HTTP endpoint with HMAC validation and persistence
+- **Idempotency**: Built-in deduplication with 24-hour window
+- **Strong Typing**: Type-safe domain models with compile-time guarantees
+- **Test Infrastructure**: Deterministic testing with time control
+- **Observability**: Structured logging with correlation IDs
+
+### In Development
+
+- **Delivery Engine**: Worker pool for reliable webhook delivery (partially complete)
+- **Circuit Breakers**: Per-endpoint failure isolation (types defined, not integrated)
+- **Retry Logic**: Exponential backoff with jitter (planned)
+- **TigerBeetle Integration**: Cryptographic audit trail (planned)
 
 ## Quick Start
 
@@ -122,17 +129,18 @@ The codebase follows strict quality standards:
 
 Kapsel uses a multi-layered architecture:
 
-1. **HTTP Layer** (`kapsel-api`): Axum-based web server with middleware
-2. **Domain Layer** (`kapsel-core`): Core business logic and types
-3. **Persistence Layer**: PostgreSQL for operations, TigerBeetle for audit
-4. **Delivery Layer**: Background workers with retry and circuit breaking
+1. **HTTP Layer** (`kapsel-api`): Axum-based web server with middleware ✅
+2. **Domain Layer** (`kapsel-core`): Core business logic and types ✅
+3. **Persistence Layer**: PostgreSQL for all operations ✅
+4. **Delivery Layer** (`kapsel-delivery`): Worker pool foundation (in progress)
 
-Key design decisions:
+Key design decisions implemented:
 
 - **Strong typing**: Newtype wrappers prevent ID confusion at compile time
 - **Zero-copy**: `Bytes` type for efficient payload handling
 - **Async throughout**: Tokio-based async runtime
 - **Database-first durability**: Write to PostgreSQL before acknowledging requests
+- **No panics**: Result types throughout, no unwrap in production code
 
 ### Testing Philosophy
 
@@ -198,14 +206,16 @@ Each error includes:
 - Human-readable messages for debugging
 - Retry classification (retryable vs permanent failures)
 
-## Performance
+## Performance Targets
 
-Current targets:
+These are our design goals (benchmarks not yet implemented):
 
 - **Ingestion latency**: < 50ms p99
 - **Throughput**: 10K webhooks/second
 - **Success rate**: > 99.9%
 - **Memory usage**: < 100MB at idle
+
+Note: Actual performance benchmarks will be added once delivery engine is complete.
 
 ## Documentation
 

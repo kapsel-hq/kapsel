@@ -41,14 +41,15 @@
 
 pub mod circuit;
 pub mod client;
-pub mod engine;
 pub mod error;
 pub mod retry;
-mod worker;
+pub mod worker;
+pub mod worker_pool;
 
 // Re-export main public API
-pub use engine::{DeliveryConfig, DeliveryEngine};
 pub use error::{DeliveryError, Result};
+pub use worker::{DeliveryConfig, DeliveryEngine};
+pub use worker_pool::WorkerPool;
 
 /// Default number of concurrent delivery workers.
 pub const DEFAULT_WORKER_COUNT: usize = 3;

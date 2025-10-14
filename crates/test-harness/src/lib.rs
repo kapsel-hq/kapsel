@@ -113,20 +113,6 @@ impl TestEnv {
             .context("Failed to count rows in PostgreSQL")
     }
 
-    /// Inserts a test tenant and returns the ID.
-    pub async fn insert_test_tenant(&self, name: &str, plan: &str) -> Result<String> {
-        let tenant_id = uuid::Uuid::new_v4();
-
-        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-            .bind(tenant_id)
-            .bind(name)
-            .bind(plan)
-            .execute(&self.db.pool())
-            .await
-            .context("Failed to insert tenant in PostgreSQL")?;
-        Ok(tenant_id.to_string())
-    }
-
     /// Creates a test tenant with modern typed return value.
     pub async fn create_tenant(&self, name: &str) -> Result<TenantId> {
         self.create_tenant_with_plan(name, "enterprise").await

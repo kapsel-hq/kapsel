@@ -27,13 +27,12 @@ async fn webhook_ingestion_returns_200_with_event_id() {
 
         // Setup test data
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
 
         // Insert endpoint directly using the pool
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url) VALUES ($1, $2, $3, $4)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .execute(&pool)
@@ -93,13 +92,12 @@ async fn webhook_ingestion_persists_to_database() {
 
         // Setup test data
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
 
         // Insert endpoint directly using the pool
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url) VALUES ($1, $2, $3, $4)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .execute(&pool)
@@ -167,13 +165,12 @@ async fn webhook_ingestion_includes_payload_size() {
 
         // Setup test data
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
 
         // Insert endpoint directly using the pool
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url) VALUES ($1, $2, $3, $4)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .execute(&pool)
@@ -267,13 +264,12 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
 
         // Setup endpoint with signing secret
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
         let signing_secret = "test_secret_key";
 
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret, signature_header) VALUES ($1, $2, $3, $4, $5, $6)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .bind(signing_secret)
@@ -345,12 +341,11 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
 
         // Setup endpoint with signing secret
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
 
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret, signature_header) VALUES ($1, $2, $3, $4, $5, $6)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .bind("test_secret_key")
@@ -410,12 +405,11 @@ async fn webhook_ingestion_requires_signature_when_configured() {
 
         // Setup endpoint with signing secret but no signature header default
         let endpoint_id = uuid::Uuid::new_v4();
-        let tenant_id =
-            env.insert_test_tenant("test-tenant", "free").await.expect("Failed to create tenant");
+        let tenant_id = env.create_tenant("test-tenant").await.expect("Failed to create tenant");
 
         sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, signing_secret) VALUES ($1, $2, $3, $4, $5)")
             .bind(endpoint_id)
-            .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
+            .bind(tenant_id.0)
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .bind("test_secret_key")
