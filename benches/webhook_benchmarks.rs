@@ -383,7 +383,7 @@ async fn ingest_webhook(env: &TestEnv, webhook: TestWebhook) {
     .bind("application/json")
     .bind(payload_size)
     .bind(chrono::Utc::now())
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await
     .ok();
 }
@@ -415,7 +415,7 @@ async fn claim_pending_webhooks(env: &TestEnv, batch_size: i32) {
          )",
     )
     .bind(batch_size)
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await
     .ok();
 }
@@ -424,7 +424,7 @@ async fn check_idempotency(env: &TestEnv, key: &str) -> bool {
     let result: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM webhook_events WHERE source_event_id = $1")
             .bind(key)
-            .fetch_one(&env.db)
+            .fetch_one(&env.db.pool())
             .await
             .unwrap_or((0,));
 

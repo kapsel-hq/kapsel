@@ -7,15 +7,15 @@
 //! # Architecture
 //!
 //! ```text
-//! ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+//! ┌────────────────┐   ┌──────────────┐   ┌─────────────┐
 //! │ DeliveryEngine │──▶│ Worker Pool  │──▶│ HTTP Client │
-//! └─────────────┘    └──────────────┘    └─────────────┘
+//! └────────────────┘   └──────────────┘   └─────────────┘
 //!        │                   │                   │
 //!        ▼                   ▼                   ▼
-//! ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-//! │ PostgreSQL  │    │ Circuit      │    │ Destination │
-//! │ Event Queue │    │ Breakers     │    │ Endpoints   │
-//! └─────────────┘    └──────────────┘    └─────────────┘
+//! ┌───────────────┐    ┌──────────────┐   ┌─────────────┐
+//! │ PostgreSQL    │    │ Circuit      │   │ Destination │
+//! │ Event Queue   │    │ Breakers     │   │ Endpoints   │
+//! └───────────────┘    └──────────────┘   └─────────────┘
 //! ```
 //!
 //! # Key Features
@@ -673,7 +673,7 @@ mod tests {
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
         let mut engine =
-            DeliveryEngine::new(env.db.clone(), config).expect("engine creation should succeed");
+            DeliveryEngine::new(env.db.pool(), config).expect("engine creation should succeed");
         engine.start().await.expect("engine should start successfully");
 
         let stats = engine.stats().await;
@@ -687,7 +687,7 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
         let mut engine =
-            DeliveryEngine::new(env.db.clone(), config).expect("engine creation should succeed");
+            DeliveryEngine::new(env.db.pool(), config).expect("engine creation should succeed");
 
         engine.start().await.expect("engine should start");
 
@@ -747,7 +747,6 @@ mod tests {
 
         // Insert test data
         let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&env, &webhook_url).await;
-
         // Create worker
         let worker = create_test_worker(&env).await;
 
@@ -790,7 +789,7 @@ mod tests {
         // Update event to be at max retry limit (assuming default max_attempts = 10)
         sqlx::query("UPDATE webhook_events SET failure_count = 9 WHERE id = $1")
             .bind(event_id)
-            .execute(&env.db)
+            .execute(&env.db.pool())
             .await
             .expect("failed to update failure count");
 
@@ -839,7 +838,7 @@ mod tests {
         // Set event to delivering status (simulates normal claim process)
         sqlx::query("UPDATE webhook_events SET status = 'delivering' WHERE id = $1")
             .bind(event_id)
-            .execute(&env.db)
+            .execute(&env.db.pool())
             .await
             .expect("failed to set event to delivering status");
 
@@ -892,8 +891,8 @@ mod tests {
         .bind(b"{\"test\": \"data2\"}")
         .bind("application/json")
         .bind(now)
-        .bind(17) // payload_size for "{\"test\": \"data2\"}"
-        .execute(&env.db)
+        .bind(17) // payload_size for "{\"test\": \"data\"}"
+        .execute(&env.db.pool())
         .await
         .expect("failed to insert second test event");
 
@@ -901,7 +900,7 @@ mod tests {
         sqlx::query("UPDATE webhook_events SET status = 'pending' WHERE id IN ($1, $2)")
             .bind(event1_id)
             .bind(event2_id)
-            .execute(&env.db)
+            .execute(&env.db.pool())
             .await
             .expect("failed to set events to pending");
 
@@ -920,7 +919,7 @@ mod tests {
         )
         .bind(event1_id)
         .bind(event2_id)
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await
         .expect("failed to count delivering events");
 
@@ -943,7 +942,6 @@ mod tests {
 
         // Insert test data
         let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&env, &webhook_url).await;
-
         // Create worker
         let worker = create_test_worker(&env).await;
 
@@ -980,7 +978,7 @@ mod tests {
             .bind(tenant_id)
             .bind(tenant_name)
             .bind("free")
-            .execute(&env.db)
+            .execute(&env.db.pool())
             .await
             .expect("failed to insert test tenant");
 
@@ -996,7 +994,7 @@ mod tests {
         .bind("secret123")
         .bind(5)
         .bind("closed")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await
         .expect("failed to insert test endpoint");
 
@@ -1023,7 +1021,7 @@ mod tests {
         .bind("application/json")
         .bind(now)
         .bind(12)
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await
         .expect("failed to insert test webhook event");
 
@@ -1040,7 +1038,7 @@ mod tests {
     ) -> DeliveryWorker {
         DeliveryWorker {
             id: 0,
-            pool: env.db.clone(),
+            pool: env.db.pool(),
             config,
             client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
             circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
@@ -1062,7 +1060,7 @@ mod tests {
             ",
         )
         .bind(event_id)
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await
         .expect("failed to fetch event");
 

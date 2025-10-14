@@ -72,13 +72,16 @@ impl std::error::Error for SignatureError {}
 /// # Example
 ///
 /// ```
-/// use kapsel_api::crypto::validate_signature;
+/// use kapsel_api::crypto::{generate_hmac_hex, validate_signature};
 ///
 /// let payload = b"webhook payload";
-/// let signature = "sha256=abc123...";
 /// let secret = "my_secret_key";
 ///
-/// let result = validate_signature(payload, signature, secret);
+/// // Generate proper signature for validation
+/// let expected = generate_hmac_hex(payload, secret).unwrap();
+/// let signature = format!("sha256={expected}");
+///
+/// let result = validate_signature(payload, &signature, secret);
 /// assert!(result.is_valid);
 /// ```
 pub fn validate_signature(payload: &[u8], signature: &str, secret: &str) -> ValidationResult {

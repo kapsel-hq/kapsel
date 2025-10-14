@@ -34,7 +34,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
     // Insert endpoint configuration
@@ -47,7 +47,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .bind(10i32)
         .bind(30i32)
         .bind("closed")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
     // Configure destination to fail 3 times with 503, then succeed with 200
@@ -101,7 +101,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     .bind("application/json")
     .bind(payload_size)
     .bind(DateTime::<Utc>::from(env.clock.now_system()))
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await?;
 
     // Expected delays for exponential backoff (1s, 2s, 4s)
@@ -128,7 +128,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .bind(attempted_at)
         .bind(150i32)
         .bind("http_error")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
         // Update webhook event status
@@ -144,7 +144,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
                 + chrono::Duration::from_std(*expected_delay).unwrap(),
         )
         .bind(event_id)
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
         // Advance clock by expected backoff delay
@@ -159,7 +159,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
                  LIMIT 2",
             )
             .bind(event_id)
-            .fetch_all(&env.db)
+            .fetch_all(&env.db.pool())
             .await?;
 
             if attempts.len() == 2 {
@@ -196,7 +196,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     .bind("{\"status\": \"processed\", \"id\": \"dest_123\"}")
     .bind(delivered_at)
     .bind(75i32)
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await?;
 
     // Update webhook to delivered status
@@ -207,7 +207,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     )
     .bind(delivered_at)
     .bind(event_id)
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await?;
 
     // Verify total elapsed time matches sum of delays
@@ -223,7 +223,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     // Verify event reached delivered state
     let status: (String,) = sqlx::query_as("SELECT status FROM webhook_events WHERE id = $1")
         .bind(event_id)
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await?;
     assert_eq!(status.0, "delivered");
 
@@ -231,7 +231,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     let attempt_count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
             .bind(event_id)
-            .fetch_one(&env.db)
+            .fetch_one(&env.db.pool())
             .await?;
     assert_eq!(attempt_count.0, 4, "Should have exactly 4 delivery attempts");
 
@@ -243,7 +243,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
          ORDER BY attempt_number",
     )
     .bind(event_id)
-    .fetch_all(&env.db)
+    .fetch_all(&env.db.pool())
     .await?;
 
     assert_eq!(attempts.len(), 4);
@@ -280,7 +280,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .bind("application/json")
         .bind(duplicate_payload_size)
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await?;
 
     // Verify idempotency: Should return same event_id
@@ -290,7 +290,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     let attempt_count_after: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
             .bind(event_id)
-            .fetch_one(&env.db)
+            .fetch_one(&env.db.pool())
             .await?;
     assert_eq!(attempt_count_after.0, 4, "No new attempts should be created for duplicate webhook");
 
@@ -325,7 +325,7 @@ async fn verify_invariants(
     // Invariant 1: At-least-once delivery
     let event_status: (String,) = sqlx::query_as("SELECT status FROM webhook_events WHERE id = $1")
         .bind(event_id)
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await?;
 
     assert!(
@@ -337,12 +337,12 @@ async fn verify_invariants(
     let failure_count: (i32,) =
         sqlx::query_as("SELECT failure_count FROM webhook_events WHERE id = $1")
             .bind(event_id)
-            .fetch_one(&env.db)
+            .fetch_one(&env.db.pool())
             .await?;
 
     let max_retries: (i32,) = sqlx::query_as("SELECT max_retries FROM endpoints WHERE id = $1")
         .bind(endpoint_id)
-        .fetch_one(&env.db)
+        .fetch_one(&env.db.pool())
         .await?;
 
     assert!(
@@ -359,7 +359,7 @@ async fn verify_invariants(
          ORDER BY attempt_number",
     )
     .bind(event_id)
-    .fetch_all(&env.db)
+    .fetch_all(&env.db.pool())
     .await?;
 
     for i in 1..attempts.len() {
@@ -387,7 +387,7 @@ async fn verify_invariants(
     )
     .bind(tenant_id)
     .bind(event_id)
-    .fetch_one(&env.db)
+    .fetch_one(&env.db.pool())
     .await?;
 
     assert_eq!(other_tenant_events.0, 0, "Event should not be accessible by other tenants");
@@ -399,7 +399,7 @@ async fn verify_invariants(
          ORDER BY attempt_number",
     )
     .bind(event_id)
-    .fetch_all(&env.db)
+    .fetch_all(&env.db.pool())
     .await?;
 
     for (i, (num,)) in attempt_numbers.iter().enumerate() {
@@ -426,7 +426,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
     // Create endpoint with circuit breaker settings
@@ -442,7 +442,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     .bind(10i32)
     .bind(30i32)
     .bind("closed")
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await?;
 
     // Create 10 webhooks
@@ -472,7 +472,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         .bind("text/plain")
         .bind(test_payload_size)
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
     }
 
@@ -494,13 +494,13 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
         .bind(100i32)
         .bind("http_error")
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
 
         // Update failure count
         sqlx::query("UPDATE webhook_events SET failure_count = failure_count + 1 WHERE id = $1")
             .bind(event_id)
-            .execute(&env.db)
+            .execute(&env.db.pool())
             .await?;
     }
 
@@ -514,7 +514,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
     )
     .bind(DateTime::<Utc>::from(env.clock.now_system()))
     .bind(endpoint_id)
-    .execute(&env.db)
+    .execute(&env.db.pool())
     .await?;
 
     // Process remaining 5 webhooks - these should fail fast without making requests
@@ -523,7 +523,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         let circuit_state: (String,) =
             sqlx::query_as("SELECT circuit_state FROM endpoints WHERE id = $1")
                 .bind(endpoint_id)
-                .fetch_one(&env.db)
+                .fetch_one(&env.db.pool())
                 .await?;
 
         assert_eq!(circuit_state.0, "open", "Circuit should be open");
@@ -536,7 +536,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         )
         .bind(DateTime::<Utc>::from(env.clock.now_system()))
         .bind(event_id)
-        .execute(&env.db)
+        .execute(&env.db.pool())
         .await?;
     }
 
@@ -545,7 +545,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         let attempts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
                 .bind(event_id)
-                .fetch_one(&env.db)
+                .fetch_one(&env.db.pool())
                 .await?;
 
         assert_eq!(attempts.0, 1, "First batch should have made attempts");
@@ -556,7 +556,7 @@ async fn circuit_breaker_prevents_cascade() -> Result<()> {
         let attempts: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
                 .bind(event_id)
-                .fetch_one(&env.db)
+                .fetch_one(&env.db.pool())
                 .await?;
 
         assert_eq!(attempts.0, 0, "Second batch should not make attempts when circuit is open");

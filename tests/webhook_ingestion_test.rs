@@ -14,7 +14,7 @@ async fn webhook_ingestion_returns_200_with_event_id() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -36,7 +36,7 @@ async fn webhook_ingestion_returns_200_with_event_id() {
             .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 
@@ -80,7 +80,7 @@ async fn webhook_ingestion_persists_to_database() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -102,7 +102,7 @@ async fn webhook_ingestion_persists_to_database() {
             .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 
@@ -127,7 +127,7 @@ async fn webhook_ingestion_persists_to_database() {
         // Assert - Verify webhook persisted to database
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
             .bind(uuid::Uuid::parse_str(event_id).unwrap())
-            .fetch_one(pool)
+            .fetch_one(&pool)
             .await
             .expect("Should query database");
 
@@ -154,7 +154,7 @@ async fn webhook_ingestion_includes_payload_size() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -176,7 +176,7 @@ async fn webhook_ingestion_includes_payload_size() {
             .bind(uuid::Uuid::parse_str(&tenant_id).unwrap())
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 
@@ -207,7 +207,7 @@ async fn webhook_ingestion_includes_payload_size() {
         let stored_payload_size: i32 =
             sqlx::query_scalar("SELECT payload_size FROM webhook_events WHERE id = $1")
                 .bind(uuid::Uuid::parse_str(event_id).unwrap())
-                .fetch_one(pool)
+                .fetch_one(&pool)
                 .await
                 .expect("Should fetch payload_size from database");
 
@@ -254,7 +254,7 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -278,7 +278,7 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
             .bind("https://example.com/webhook")
             .bind(signing_secret)
             .bind("X-Webhook-Signature")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 
@@ -310,7 +310,7 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
         let signature_valid: Option<bool> =
             sqlx::query_scalar("SELECT signature_valid FROM webhook_events WHERE id = $1")
                 .bind(uuid::Uuid::parse_str(event_id).unwrap())
-                .fetch_one(pool)
+                .fetch_one(&pool)
                 .await
                 .expect("Should fetch signature validation result");
 
@@ -332,7 +332,7 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -355,7 +355,7 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
             .bind("https://example.com/webhook")
             .bind("test_secret_key")
             .bind("X-Webhook-Signature")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 
@@ -397,7 +397,7 @@ async fn webhook_ingestion_requires_signature_when_configured() {
     {
         use serde_json::json;
 
-        let pool = &env.db;
+        let pool = env.db.pool();
         let addr = "127.0.0.1:0";
         let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
         let actual_addr = listener.local_addr().expect("Failed to get local addr");
@@ -419,7 +419,7 @@ async fn webhook_ingestion_requires_signature_when_configured() {
             .bind("test-endpoint")
             .bind("https://example.com/webhook")
             .bind("test_secret_key")
-            .execute(pool)
+            .execute(&pool)
             .await
             .expect("Failed to insert test endpoint");
 

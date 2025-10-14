@@ -13,14 +13,14 @@ pub mod time;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use database::{DatabasePool, DatabaseTransaction};
+use database::{TestDatabase, TestTransaction};
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 pub use time::Clock;
 use tracing_subscriber::EnvFilter;
 
 /// Test environment with all necessary infrastructure.
 pub struct TestEnv {
-    pub db: DatabasePool,
+    pub db: TestDatabase,
     pub http_mock: http::MockServer,
     pub clock: time::TestClock,
     pub config: TestConfig,
@@ -45,7 +45,7 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
-        let db = database::setup_test_database().await?;
+        let db = TestDatabase::new().await?;
         let http_mock = http::MockServer::start().await;
         let clock = time::TestClock::new();
         let client = reqwest::Client::new();
@@ -59,9 +59,8 @@ impl TestEnv {
     }
 
     /// Creates a test transaction that auto-rollbacks.
-    pub async fn transaction(&self) -> Result<TestTransaction<'_>> {
-        let tx = self.db.begin().await.context("Failed to begin test transaction")?;
-        Ok(TestTransaction { tx: Some(tx), _env: self })
+    pub async fn transaction(&self) -> Result<TestTransaction> {
+        self.db.transaction().await
     }
 
     /// Attaches a running Axum server to this test environment.
@@ -78,7 +77,7 @@ impl TestEnv {
 
     /// Executes a health check query against PostgreSQL.
     pub async fn database_health_check(&self) -> Result<bool> {
-        let result = sqlx::query("SELECT 1 as health").fetch_one(&self.db).await;
+        let result = sqlx::query("SELECT 1 as health").fetch_one(&self.db.pool()).await;
         Ok(result.is_ok())
     }
 
@@ -90,7 +89,7 @@ impl TestEnv {
              AND table_type = 'BASE TABLE'
              ORDER BY table_name",
         )
-        .fetch_all(&self.db)
+        .fetch_all(&self.db.pool())
         .await
         .context("Failed to query PostgreSQL tables")
     }
@@ -107,7 +106,7 @@ impl TestEnv {
             uuid::Uuid::parse_str(id_value).context("Invalid UUID for PostgreSQL query")?;
         sqlx::query_scalar(&query)
             .bind(id_uuid)
-            .fetch_one(&self.db)
+            .fetch_one(&self.db.pool())
             .await
             .context("Failed to count rows in PostgreSQL")
     }
@@ -120,7 +119,7 @@ impl TestEnv {
             .bind(tenant_id)
             .bind(name)
             .bind(plan)
-            .execute(&self.db)
+            .execute(&self.db.pool())
             .await
             .context("Failed to insert tenant in PostgreSQL")?;
         Ok(tenant_id.to_string())
@@ -129,7 +128,7 @@ impl TestEnv {
     /// Explicitly closes database connections to prevent connection pool
     /// exhaustion.
     pub async fn cleanup(&self) {
-        self.db.close().await;
+        self.db.pool().close().await;
     }
 }
 
@@ -144,43 +143,6 @@ pub struct TestConfig {
 impl Default for TestConfig {
     fn default() -> Self {
         Self { enable_tracing: true, database_name: None, seed: None }
-    }
-}
-
-/// Transaction that automatically rolls back on drop.
-pub struct TestTransaction<'a> {
-    tx: Option<DatabaseTransaction>,
-    _env: &'a TestEnv,
-}
-
-impl<'a> TestTransaction<'a> {
-    /// Commits the transaction (prevents automatic rollback).
-    pub async fn commit(mut self) -> Result<()> {
-        if let Some(tx) = self.tx.take() {
-            tx.commit().await?;
-        }
-        Ok(())
-    }
-
-    /// Explicitly rolls back the transaction.
-    pub async fn rollback(mut self) -> Result<()> {
-        if let Some(tx) = self.tx.take() {
-            tx.rollback().await?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> Drop for TestTransaction<'a> {
-    fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            // Spawn task to handle async rollback since Drop cannot be async
-            tokio::spawn(async move {
-                if let Err(e) = tx.rollback().await {
-                    tracing::warn!("Failed to rollback test transaction: {}", e);
-                }
-            });
-        }
     }
 }
 
@@ -370,7 +332,7 @@ mod tests {
         let env = TestEnv::new().await.unwrap();
 
         // Verify database connection
-        sqlx::query("SELECT 1").fetch_one(&env.db).await.unwrap();
+        sqlx::query("SELECT 1").fetch_one(&env.db.pool()).await.unwrap();
 
         // Verify mock server is running
         assert!(!env.http_mock.url().is_empty());
@@ -387,7 +349,8 @@ mod tests {
         }
 
         // Test that we can still use the database after transaction rollback
-        let result: (i32,) = sqlx::query_as("SELECT 1 as test").fetch_one(&env.db).await.unwrap();
+        let result: (i32,) =
+            sqlx::query_as("SELECT 1 as test").fetch_one(&env.db.pool()).await.unwrap();
         assert_eq!(result.0, 1);
     }
 

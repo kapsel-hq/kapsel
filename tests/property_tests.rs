@@ -961,7 +961,7 @@ mod integration_tests {
                     .bind(webhook.tenant_id)
                     .bind(tenant_name)
                     .bind("enterprise")
-                    .execute(&env.db)
+                    .execute(&env.db.pool())
                     .await
                     .unwrap();
 
@@ -975,7 +975,7 @@ mod integration_tests {
                 .bind("test-endpoint")
                 .bind(10i32)
                 .bind(30i32)
-                .execute(&env.db)
+                .execute(&env.db.pool())
                 .await
                 .unwrap();
 
@@ -1000,7 +1000,7 @@ mod integration_tests {
                 .bind(webhook.content_type)
                 .bind(payload_size)
                 .bind(webhook.received_at)
-                .execute(&env.db)
+                .execute(&env.db.pool())
                 .await
                 .unwrap();
 
@@ -1009,7 +1009,7 @@ mod integration_tests {
                     "SELECT COUNT(*) FROM webhook_events WHERE id = $1"
                 )
                 .bind(webhook.id)
-                .fetch_one(&env.db)
+                .fetch_one(&env.db.pool())
                 .await
                 .unwrap();
 

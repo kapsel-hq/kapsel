@@ -214,7 +214,7 @@ mod tests {
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
 
-        WorkerPool::new(env.db, config, client, circuit_manager, stats, cancellation_token)
+        WorkerPool::new(env.db.pool(), config, client, circuit_manager, stats, cancellation_token)
     }
 
     #[tokio::test]
@@ -227,7 +227,7 @@ mod tests {
         let cancellation_token = CancellationToken::new();
 
         let mut pool = WorkerPool::new(
-            env.db.clone(),
+            env.db.pool(),
             config,
             client,
             circuit_manager,
@@ -302,7 +302,7 @@ mod tests {
         let cancellation_token = CancellationToken::new();
 
         let mut pool = WorkerPool::new(
-            env.db.clone(),
+            env.db.pool(),
             config,
             client,
             circuit_manager,
@@ -357,7 +357,7 @@ mod tests {
 
         // Create and initialize worker pool
         let mut pool = WorkerPool::new(
-            env.db.clone(),
+            env.db.pool(),
             config,
             client,
             circuit_manager,
