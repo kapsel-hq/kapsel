@@ -585,7 +585,7 @@ for chunk in events.chunks(BATCH_SIZE) {
 
 ## Commit Message Format
 
-Use conventional commits:
+Use conventional commits, this allows us to create changelogs:
 
 ```
 type(scope): description
@@ -596,6 +596,18 @@ docs(style): update naming conventions
 test(delivery): add property tests for retry bounds
 refactor(core): extract event validation logic
 perf(db): optimize event claiming query with index
+```
+
+Descriptions should be kept straight to the point.
+
+```
+perf(db): optimize that thing again
+
+Here is a short description of the commit. Problem was this,
+solution was this.
+
+- Changed x to y, because z
+- Another relevant change
 ```
 
 ## Code Review Checklist

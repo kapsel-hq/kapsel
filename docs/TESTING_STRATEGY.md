@@ -1,6 +1,16 @@
-# Kapsel Testing Strategy
+# Testing Strategy
 
-The test suite IS the system specification. Every test represents an invariant that must hold true. We don't test to find bugs—we test to prove correctness through exhaustive invariant validation, deterministic simulation, and property-based exploration.
+Comprehensive testing methodology for proving webhook reliability correctness through deterministic simulation and property-based validation.
+
+**Related Documents:**
+
+- [System Overview](OVERVIEW.md) - Architecture supporting testability by design
+- [Implementation Status](IMPLEMENTATION_STATUS.md) - Current testing coverage status
+- [Technical Specification](SPECIFICATION.md) - Requirements validated by test suite
+
+## Philosophy
+
+The test suite IS the system specification. Every test represents an invariant that must hold true for webhook reliability. We don't test to find bugs—we test to prove correctness through exhaustive validation.
 
 ## The Testing Pyramid
 
@@ -33,6 +43,7 @@ This inverted pyramid reflects webhook reliability priorities: complex interacti
 **Location:** Inline with implementation in `crates/*/src/`.
 
 **Examples:**
+
 ```rust
 // Exponential backoff calculation correctness
 #[test]
@@ -70,6 +81,7 @@ fn extracts_stripe_event_id() {
 **Location:** Separate module in `crates/*/src/` files.
 
 **Examples:**
+
 ```rust
 proptest! {
     // Idempotent operations remain idempotent
@@ -115,6 +127,7 @@ proptest! {
 **Location:** `tests/` directory for cross-crate tests.
 
 **Examples:**
+
 ```rust
 // Database constraint enforcement
 #[tokio::test]
@@ -177,6 +190,7 @@ async fn circuit_state_survives_restart() {
 **Location:** `tests/scenarios/` directory.
 
 **Examples:**
+
 ```rust
 // Complete retry with backoff scenario
 #[tokio::test]
@@ -248,6 +262,7 @@ async fn respects_rate_limit_headers() {
 **Location:** `tests/e2e/` directory.
 
 **Examples:**
+
 ```rust
 // Complete webhook journey
 #[tokio::test]
@@ -318,6 +333,7 @@ async fn tenants_completely_isolated() {
 **Location:** `tests/chaos/` directory, CI-only.
 
 **Examples:**
+
 ```rust
 // Random network failures during delivery
 #[tokio::test]
@@ -519,6 +535,7 @@ async fn sustained_10k_webhooks_per_second() {
 ### TDD Cycle
 
 1. **RED**: Write failing test first
+
 ```rust
 #[tokio::test]
 async fn new_circuit_breaker_strategy() {
@@ -531,6 +548,7 @@ async fn new_circuit_breaker_strategy() {
 ```
 
 2. **GREEN**: Minimal implementation
+
 ```rust
 impl AdaptiveCircuitBreaker {
     fn calculate_threshold(&self, window: &Window) -> usize {
@@ -541,6 +559,7 @@ impl AdaptiveCircuitBreaker {
 ```
 
 3. **REFACTOR**: Improve with tests as safety net
+
 ```rust
 impl AdaptiveCircuitBreaker {
     fn calculate_threshold(&self, window: &Window) -> usize {
@@ -560,6 +579,7 @@ impl AdaptiveCircuitBreaker {
 Example: Implementing webhook replay
 
 1. Start with integration test:
+
 ```rust
 #[tokio::test]
 async fn replay_webhook_creates_new_delivery() {
@@ -576,6 +596,7 @@ async fn replay_webhook_creates_new_delivery() {
 ```
 
 2. Add unit tests for components:
+
 ```rust
 #[test]
 fn replay_preserves_original_headers() {
@@ -586,6 +607,7 @@ fn replay_preserves_original_headers() {
 ```
 
 3. Property test invariants:
+
 ```rust
 proptest! {
     #[test]
@@ -609,6 +631,7 @@ proptest! {
 ### Advanced Techniques
 
 **Deterministic Simulation Testing**
+
 ```rust
 // Coming: Full system simulation
 SimulationBuilder::new()
@@ -622,6 +645,7 @@ SimulationBuilder::new()
 ```
 
 **Production Testing**
+
 ```rust
 // Shadow traffic replay
 ProductionTest::new()
@@ -632,6 +656,7 @@ ProductionTest::new()
 ```
 
 **Formal Verification**
+
 ```rust
 // Model checking with TLA+ specs
 #[formal_spec("webhook_delivery.tla")]
@@ -665,6 +690,7 @@ Immediate priorities for test infrastructure:
 ## The Standard
 
 Every test must:
+
 1. Be deterministic (same result every run)
 2. Test one behavior (single assertion focus)
 3. Use descriptive names (behavior, not implementation)

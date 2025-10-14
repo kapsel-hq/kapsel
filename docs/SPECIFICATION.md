@@ -1,6 +1,12 @@
 # Technical Specification
 
-This document defines the complete technical requirements, constraints, and interfaces for the Kapsel webhook reliability service. All implementation must conform to these specifications.
+This document defines the functional and non-functional requirements for Kapsel's webhook reliability service. These requirements guide all implementation decisions while leaving architectural flexibility.
+
+**Related Documents:**
+
+- [System Overview](OVERVIEW.md) - Architecture and design philosophy
+- [Implementation Status](IMPLEMENTATION_STATUS.md) - Current development status
+- [Testing Strategy](TESTING_STRATEGY.md) - Quality assurance approach
 
 ## Functional Requirements
 
@@ -144,156 +150,68 @@ This document defines the complete technical requirements, constraints, and inte
 - All errors handled explicitly
 - Structured logging only (no println!)
 
-## Data Models
+## Data Requirements
 
-### Database Schema
+### Persistence Model
 
-```sql
--- Core webhook event table
-CREATE TABLE webhook_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL,
-    endpoint_id UUID NOT NULL,
+- **Durability**: All accepted webhooks must survive system failures
+- **Idempotency**: Duplicate detection and prevention across 24-hour window
+- **Audit Trail**: Complete history of delivery attempts with timing and outcomes
+- **Multi-tenancy**: Strict isolation between tenant data and configurations
 
-    -- Idempotency
-    source_event_id TEXT NOT NULL, -- Extracted based on strategy
-    idempotency_strategy TEXT NOT NULL, -- 'header', 'content', 'source_id'
+### Event Lifecycle States
 
-    -- Status tracking
-    status TEXT NOT NULL, -- 'received', 'pending', 'delivering', 'success', 'failed'
-    failure_count INTEGER NOT NULL DEFAULT 0,
-    last_attempt_at TIMESTAMPTZ,
-    next_retry_at TIMESTAMPTZ,
+- **Received**: Webhook accepted and persisted
+- **Pending**: Queued for delivery processing
+- **Delivering**: Currently being delivered by worker
+- **Delivered**: Successfully delivered to destination
+- **Failed**: Permanently failed after exhausting retries
+- **Dead Letter**: Moved to manual intervention queue
 
-    -- Payload
-    headers JSONB NOT NULL,
-    body BYTEA NOT NULL, -- Raw bytes, not interpreted
-    content_type TEXT NOT NULL,
+### Configuration Storage
 
-    -- Metadata
-    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    delivered_at TIMESTAMPTZ,
-    failed_at TIMESTAMPTZ,
+- **Endpoints**: Destination URLs, retry policies, circuit breaker thresholds
+- **Security**: Signing secrets, signature validation headers
+- **Tenant Settings**: Rate limits, retention policies, feature flags
 
-    -- Audit
-    tigerbeetle_id UUID, -- Reference to immutable log
+## Interface Requirements
 
-    UNIQUE(tenant_id, endpoint_id, source_event_id)
-);
+### Webhook Ingestion API
 
--- Delivery attempts for audit trail
-CREATE TABLE delivery_attempts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL REFERENCES webhook_events(id),
-    attempt_number INTEGER NOT NULL,
+**Endpoint Pattern**: `POST /ingest/{endpoint_id}`
 
-    -- Request details
-    request_url TEXT NOT NULL,
-    request_headers JSONB NOT NULL,
+**Requirements**:
 
-    -- Response details
-    response_status INTEGER,
-    response_headers JSONB,
-    response_body TEXT, -- Truncated to 1KB
+- Accept any valid HTTP POST request
+- Return 200 OK only after persistent storage
+- Include unique event identifier in response
+- Support standard webhook payload formats
 
-    -- Timing
-    attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    duration_ms INTEGER NOT NULL,
+### Management API
 
-    -- Error details
-    error_type TEXT, -- 'network', 'timeout', 'http_error'
-    error_message TEXT
-);
+**Authentication**: Bearer token with tenant scoping
 
--- Endpoint configuration
-CREATE TABLE endpoints (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL,
+**Core Operations**:
 
-    -- Configuration
-    url TEXT NOT NULL,
-    name TEXT NOT NULL,
+- Endpoint lifecycle management (create, update, delete, list)
+- Event status queries and filtering
+- Delivery attempt inspection and retry triggering
+- Configuration management and validation
 
-    -- Security
-    signing_secret TEXT, -- Encrypted
-    signature_header TEXT,
+### Webhook Delivery Interface
 
-    -- Retry policy
-    max_retries INTEGER NOT NULL DEFAULT 10,
-    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+**Protocol**: HTTP POST to configured destination URLs
 
-    -- Circuit breaker state
-    circuit_state TEXT NOT NULL DEFAULT 'closed',
-    circuit_failure_count INTEGER NOT NULL DEFAULT 0,
-    circuit_last_failure_at TIMESTAMPTZ,
-    circuit_half_open_at TIMESTAMPTZ,
+**Headers**: Preserve original headers plus delivery metadata
 
-    -- Metadata
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+- `X-Kapsel-Event-Id`: Unique event identifier
+- `X-Kapsel-Attempt`: Current attempt number
+- `X-Kapsel-Timestamp`: Original ingestion time
 
-    UNIQUE(tenant_id, name)
-);
-
--- Indexes for performance
-CREATE INDEX idx_webhook_events_status ON webhook_events(status, next_retry_at)
-    WHERE status IN ('pending', 'delivering');
-CREATE INDEX idx_webhook_events_tenant ON webhook_events(tenant_id, received_at DESC);
-CREATE INDEX idx_delivery_attempts_event ON delivery_attempts(event_id, attempt_number);
-```
-
-### TigerBeetle Schema
-
-```rust
-pub struct WebhookAuditEntry {
-    pub id: u128,                    // Unique event ID
-    pub timestamp: u64,               // Nanoseconds since epoch
-    pub tenant_id: u128,              // Tenant identifier
-    pub event_hash: [u8; 32],         // SHA256 of canonical event
-    pub flags: u16,                   // Bitflags for event properties
-    pub reserved: [u8; 14],           // Future expansion
+**Behavior**: Follow HTTP semantics for success/failure determination
 }
-```
 
-## API Specification
-
-### Authentication
-
-All API requests require Bearer token authentication:
-
-```
-Authorization: Bearer <api_key>
-```
-
-### Endpoints
-
-#### POST /v1/endpoints
-
-Create a new webhook endpoint.
-
-Request:
-
-```json
-{
-  "name": "production-orders",
-  "url": "https://api.example.com/webhooks",
-  "signing_secret": "whsec_abc123",
-  "signature_header": "X-Webhook-Signature",
-  "max_retries": 10,
-  "timeout_seconds": 30
-}
-```
-
-Response (201 Created):
-
-```json
-{
-  "id": "ep_abc123",
-  "ingestion_url": "https://hooks.example.com/ingest/ep_abc123",
-  "name": "production-orders",
-  "created_at": "2024-01-01T00:00:00Z"
-}
-```
+````
 
 #### POST /ingest/{endpoint_id}
 
@@ -335,7 +253,7 @@ Response:
     }
   ]
 }
-```
+````
 
 ## Error Taxonomy
 

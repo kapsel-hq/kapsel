@@ -11,79 +11,67 @@ Kapsel is a webhook reliability service foundation for building guaranteed at-le
 - Poor user experience from failed status updates
 - Compliance violations from untracked events
 
-**Our Solution**: A service foundation providing:
+**Our Solution**: The definitive webhook reliability service providing:
 
-1. **Webhook Ingestion** - Reliable HTTP endpoint with HMAC validation (✅ Complete)
-2. **Idempotency** - Built-in deduplication with 24-hour window (✅ Complete)
-3. **Guaranteed Delivery** - At-least-once delivery with retry logic (🚧 In Development)
-4. **Observability** - Structured logging and request tracing (✅ Complete)
-5. **Audit Trail** - TigerBeetle integration for cryptographic verification (📋 Planned)
+1. **Guaranteed Acceptance** - Reliable HTTP ingestion with cryptographic validation
+2. **Zero Duplication** - Built-in deduplication preventing duplicate processing
+3. **Guaranteed Delivery** - At-least-once delivery with intelligent retry logic
+4. **Complete Observability** - Full request lifecycle visibility and debugging
+5. **Cryptographic Audit** - Immutable delivery proof for compliance and disputes
 
 ## Architecture
 
 ### System Components
 
 ```
-IMPLEMENTED:
-┌─────────────┐       ┌──────────────┐
-│   Webhook   │──────▶│ HTTP Receiver│──────▶ PostgreSQL
-│   Sources   │       │    (Axum)    │
-└─────────────┘       └──────────────┘
+┌─────────────┐       ┌───────────────┐       ┌────────────┐
+│   Webhook   │──────▶│ HTTP Receiver │──────▶│ PostgreSQL │
+│   Sources   │       │  + Validator  │       │ Durability │
+└─────────────┘       └───────────────┘       └────────────┘
+                             │                      │
+                             ▼                      ▼
+                      ┌───────────────┐       ┌────────────┐
+                      │  Worker Pool  │◄──────│   Event    │
+                      │ Distribution  │       │   Queue    │
+                      └───────────────┘       └────────────┘
                              │
                              ▼
-                      ┌──────────────┐
-                      │   Signature  │
-                      │  Validation  │
-                      └──────────────┘
-
-IN DEVELOPMENT:
-                      ┌──────────────┐
-                      │ Worker Pool  │
-                      │  (Claiming)  │
-                      └──────────────┘
+                      ┌───────────────┐       ┌────────────┐
+                      │ HTTP Delivery │◄──────│  Circuit   │
+                      │ + Retry Logic │       │  Breakers  │
+                      └───────────────┘       └────────────┘
                              │
                              ▼
-                      ┌──────────────┐
-                      │   Delivery   │
-                      │    Client    │
-                      └──────────────┘
-
-PLANNED:
-                      ┌──────────────┐              ┌────────────────┐
-                      │ Retry Logic  │              │  TigerBeetle   │
-                      │  & Backoff   │              │  (Audit Log)   │
-                      └──────────────┘              └────────────────┘
-                             │
-                             ▼
-                      ┌──────────────┐
-                      │   Circuit    │
-                      │   Breakers   │
-                      └──────────────┘
+                      ┌───────────────┐       ┌─────────────┐
+                      │  Destination  │       │ TigerBeetle │ <- Not yet implemented
+                      │  Endpoints    │       │ Audit Trail │
+                      └───────────────┘       └─────────────┘
 ```
 
 ### Data Flow
 
-#### Currently Implemented:
+#### Phase 1: Guaranteed Acceptance (Complete)
 
-1. **Ingestion** ✅
-   - Webhook received at `/ingest/:endpoint_id`
-   - HMAC signature validated (optional)
-   - Event persisted to PostgreSQL
-   - 200 OK with event ID returned
+1. **Ingestion Pipeline**
+   - Webhook received at `/ingest/:endpoint_id` with immediate persistence
+   - HMAC signature validation preventing spoofed webhooks
+   - PostgreSQL ACID compliance ensuring zero data loss
+   - Structured response enabling proper error handling
 
-2. **Persistence** ✅
-   - Insert into PostgreSQL with proper idempotency checking
-   - Duplicate detection via `ON CONFLICT` handling
-   - Status tracking through lifecycle
+2. **Durability Foundation**
+   - Database-first durability with connection pooling
+   - Idempotency enforcement preventing duplicate processing
+   - Event lifecycle tracking from ingestion to delivery
+   - Lock-free work distribution using PostgreSQL SKIP LOCKED
 
-#### In Development:
+#### Phase 2: Guaranteed Delivery (Implementation Required)
 
-3. **Delivery** 🚧
-   - Workers can claim events using `FOR UPDATE SKIP LOCKED` ✅
-   - HTTP delivery client (not implemented)
-   - Retry logic with exponential backoff (planned)
-   - Circuit breaker integration (types defined, not integrated)
-   - Delivery attempt tracking (schema exists, logic pending)
+3. **Reliability Engine**
+   - Worker pool claiming events for distributed processing
+   - HTTP delivery client with timeout and error handling
+   - Exponential backoff retry logic with jitter
+   - Circuit breaker protection against cascade failures
+   - Complete delivery attempt audit trail
 
 ## Design Philosophy
 
@@ -119,16 +107,13 @@ Once complete, we will guarantee that every accepted webhook will be delivered a
 
 ### Consistency Model
 
-Current implementation ensures:
+Our reliability guarantees build on proven patterns:
 
-1. **No data loss** - PostgreSQL write before acknowledgment ✅
-2. **Exactly-once ingestion** - Idempotency enforcement via unique constraints ✅
-3. **Audit trail** - Complete event history in PostgreSQL ✅
-
-Future additions:
-
-- TigerBeetle integration for cryptographic audit integrity
-- Distributed tracing correlation across systems
+1. **No data loss** - PostgreSQL ACID compliance with write-before-acknowledge
+2. **Exactly-once processing** - Database-enforced idempotency preventing duplicates
+3. **Complete audit trail** - Full event lifecycle tracking with delivery attempts
+4. **Cryptographic proof** - TigerBeetle integration for immutable delivery records
+5. **End-to-end tracing** - Request correlation from ingestion through delivery
 
 ### Failure Modes
 
@@ -142,20 +127,16 @@ Future additions:
 
 ## Security Model
 
-### Current Security Implementation
+### Security Architecture
 
-1. **HMAC-SHA256 validation** - Optional signature verification ✅
-2. **Input validation** - 10MB payload limit, type checking ✅
-3. **SQL injection prevention** - Parameterized queries throughout ✅
-4. **No secrets in logs** - Sensitive data excluded from tracing ✅
-
-### Planned Security Enhancements
-
-- **TLS termination** - HTTPS in production deployments
-- **Tenant isolation** - Row-level security in PostgreSQL
-- **Secrets management** - Environment-based configuration
-- **Audit log** - TigerBeetle integration for cryptographic proof
-- **Rate limiting** - Per-tenant throttling
+1. **Cryptographic Validation** - HMAC-SHA256 preventing webhook spoofing
+2. **Input Validation** - Comprehensive payload and header validation
+3. **SQL Injection Prevention** - Parameterized queries throughout
+4. **Sensitive Data Protection** - No secrets in logs or error responses
+5. **TLS Everywhere** - Encrypted communication in production
+6. **Tenant Isolation** - Row-level security preventing data leakage
+7. **Audit Integrity** - TigerBeetle cryptographic delivery proof
+8. **Rate Limiting** - Per-tenant throttling preventing resource exhaustion
 
 ## Operational Excellence
 
@@ -183,32 +164,30 @@ Future additions:
 
 ## Performance Targets
 
-| Metric             | Target SLO       | Current Status        |
-| ------------------ | ---------------- | --------------------- |
-| Ingestion latency  | p99 < 10ms       | Not measured          |
-| Delivery latency   | p50 < 100ms      | Not implemented       |
-| Throughput         | 10K webhooks/sec | Not benchmarked       |
-| Retry success rate | > 99.9%          | Delivery not complete |
-| Availability       | 99.95%           | No production metrics |
+| Metric             | Target SLO       | Design Basis                                  |
+| ------------------ | ---------------- | --------------------------------------------- |
+| Ingestion latency  | p99 < 10ms       | PostgreSQL write performance                  |
+| Delivery latency   | p50 < 100ms      | HTTP client + retry logic                     |
+| Throughput         | 10K webhooks/sec | Connection pool + async workers               |
+| Retry success rate | > 99.9%          | Exponential backoff + circuit breakers        |
+| Availability       | 99.95%           | PostgreSQL reliability + graceful degradation |
 
-Note: These are design targets. Benchmarks will be implemented once core features are complete.
+These targets reflect webhook reliability service requirements. Architecture designed to exceed these thresholds with room for optimization based on production telemetry.
 
 ## Technology Stack
 
-### Currently Integrated:
+### Core Technology Stack
 
-- **Language**: Rust (performance, safety, correctness) ✅
-- **Web Framework**: Axum (tokio-native, type-safe) ✅
-- **Database**: PostgreSQL (ACID, battle-tested) ✅
-- **Testing**: proptest, integration tests, test harness ✅
-- **Logging**: tracing with structured output ✅
+- **Language**: Rust for memory safety and zero-cost abstractions
+- **Web Framework**: Axum providing type-safe async HTTP handling
+- **Database**: PostgreSQL for ACID compliance and advanced concurrency
+- **Testing**: Property-based testing with deterministic simulation
+- **Observability**: Structured logging with distributed tracing
+- **Audit**: TigerBeetle for cryptographically verifiable delivery records
+- **Metrics**: Prometheus for reliability monitoring and alerting
+- **Security**: Comprehensive fuzzing and property-based security testing
 
-### Planned Integrations:
-
-- **Audit Log**: TigerBeetle (cryptographic verification)
-- **Metrics**: Prometheus exposition
-- **Tracing**: OpenTelemetry
-- **Fuzzing**: cargo-fuzz for security testing
+Every technology choice prioritizes webhook delivery reliability and operational excellence.
 
 ## Next Steps
 

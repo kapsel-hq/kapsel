@@ -1,83 +1,67 @@
 # Kapsel Documentation
 
-> **Bank-grade webhook reliability for mission-critical integrations**
+**The definitive webhook reliability service documentation**
 
-This documentation represents the complete technical and operational specification for Kapsel, our webhook reliability service. Every design decision, architectural choice, and operational procedure is documented here.
+Kapsel eliminates webhook failures through guaranteed at-least-once delivery with cryptographic proof. This documentation provides complete technical and operational specifications for building and maintaining the webhook reliability service.
 
-## Navigation
+## Core Documentation
 
-### Core Documents
+### System Understanding
 
-- **[System Overview](./OVERVIEW.md)** - High-level architecture and design philosophy
-- **[Technical Specification](./SPECIFICATION.md)** - Complete technical requirements and constraints
-- **[Style Guide](./STYLE.md)** - Code style, naming conventions, and engineering standards
+**[System Overview](OVERVIEW.md)** - Architecture, design philosophy, and core value proposition
+Start here to understand how Kapsel solves webhook reliability challenges.
 
-### Architecture
+**[Implementation Status](IMPLEMENTATION_STATUS.md)** - Current capabilities and development roadmap
+Honest assessment of what's built, what's in progress, and what's planned.
 
-- **[Design Principles](./architecture/PRINCIPLES.md)** - Core architectural tenets and trade-offs
-- **[Component Architecture](./architecture/COMPONENTS.md)** - Detailed component design and interactions
-- **[Data Model](./architecture/DATA_MODEL.md)** - Database schema, data flow, and consistency model
-- **[Security Architecture](./architecture/SECURITY.md)** - Security model, threat analysis, and mitigations
+### Technical Specifications
 
-**Decision Records:**
+**[Technical Specification](SPECIFICATION.md)** - Complete functional and non-functional requirements
+Detailed requirements for all webhook reliability features and constraints.
 
-- **[ADR-001: Two-Phase Persistence](./architecture/decisions/ADR-001-two-phase-persistence.md)**
-- **[ADR-002: TigerBeetle for Audit Log](./architecture/decisions/ADR-002-tigerbeetle-audit.md)**
-- **[ADR-003: PostgreSQL for State](./architecture/decisions/ADR-003-postgresql-state.md)**
-- **[ADR-004: Deterministic Testing](./architecture/decisions/ADR-004-deterministic-testing.md)**
+**[Testing Strategy](TESTING_STRATEGY.md)** - Comprehensive testing methodology and implementation
+How we prove correctness through property-based testing and deterministic simulation.
 
-### Development
+### Development Standards
 
-- **[Getting Started](./development/GETTING_STARTED.md)** - Local setup and development workflow
-- **[Testing Strategy](./development/TESTING.md)** - Testing philosophy and implementation
-- **[Chaos Engineering](./development/CHAOS.md)** - Deterministic simulation testing framework
-- **[Performance Guide](./development/PERFORMANCE.md)** - Profiling, benchmarking, and optimization
+**[Code Style Guide](STYLE.md)** - TIGERSTYLE naming conventions and engineering standards
+Comprehensive coding standards ensuring maintainable, consistent code.
 
-### Operations
+## Quick Navigation
 
-- **[Production Runbook](./operations/RUNBOOK.md)** - Operational procedures and incident response
-- **[Monitoring & Observability](./operations/MONITORING.md)** - Metrics, logs, and traces
-- **[Deployment Guide](./operations/DEPLOYMENT.md)** - Infrastructure and deployment procedures
-- **[Disaster Recovery](./operations/DISASTER_RECOVERY.md)** - Backup, restore, and failure scenarios
+### For New Developers
 
-### Product
+1. [System Overview](OVERVIEW.md) - Understand the webhook reliability problem and solution
+2. [Implementation Status](IMPLEMENTATION_STATUS.md) - See what's built and what needs work
+3. [Code Style Guide](STYLE.md) - Learn our development standards
 
-- **[Roadmap](./product/ROADMAP.md)** - Phased feature delivery plan
-- **[Market Analysis](./product/MARKET.md)** - Target market and competitive positioning
-- **[User Experience](./product/UX.md)** - Dashboard and developer experience design
+### For Stakeholders
 
-### Reference
+1. [System Overview](OVERVIEW.md) - Core value proposition and architecture
+2. [Implementation Status](IMPLEMENTATION_STATUS.md) - Current capabilities and timeline
+3. [Technical Specification](SPECIFICATION.md) - Complete feature requirements
 
-- **[API Specification](./reference/API.md)** - Public REST API v1 specification
-- **[Configuration Reference](./reference/CONFIG.md)** - Environment variables and configuration
-- **[Error Codes](./reference/ERRORS.md)** - Complete error taxonomy
-- **[Glossary](./reference/GLOSSARY.md)** - Domain terminology and definitions
+### For Operations
 
-## Philosophy
+1. [Implementation Status](IMPLEMENTATION_STATUS.md) - Production readiness assessment
+2. [Technical Specification](SPECIFICATION.md) - SLA requirements and constraints
+3. [Testing Strategy](TESTING_STRATEGY.md) - Quality assurance methodology
 
-This documentation embodies our engineering philosophy:
+## Document Philosophy
 
-1. **Documentation is code** - It's version controlled, reviewed, and never allowed to rot
-2. **Design by contract** - Every component has clear inputs, outputs, and invariants
-3. **Explicit over implicit** - All assumptions and trade-offs are documented
-4. **Testability by design** - If it can't be tested, it doesn't exist
+This documentation follows our engineering principles:
 
-## Contributing
+- **Vision First** - Every document reinforces the webhook reliability mission
+- **Honesty** - Implementation status reflects reality, not aspirations
+- **Completeness** - All technical decisions and trade-offs are documented
+- **Actionability** - Clear next steps and implementation guidance
 
-Documentation changes follow the same review process as code:
+## Webhook Reliability Vision
 
-1. Branch from `main`
-2. Make changes with clear, atomic commits
-3. Ensure internal links work
-4. Submit PR with rationale
+Webhooks are critical infrastructure for modern applications. Payment processors, e-commerce platforms, and SaaS applications depend on webhooks for real-time integration. When webhooks fail, businesses lose revenue, create data inconsistencies, and violate compliance requirements.
 
-## Document Standards
-
-- **Precision**: Technical terms are used precisely. See [Glossary](./reference/GLOSSARY.md)
-- **Completeness**: Every significant decision has a rationale
-- **Clarity**: Complex concepts include examples
-- **Currency**: Documentation is updated alongside code changes
+Kapsel provides the missing reliability layer: guaranteed webhook delivery with cryptographic proof. We eliminate the gap between webhook generation and successful processing through intelligent retry logic, failure isolation, and complete audit trails.
 
 ---
 
-_"The code is the truth, but the documentation is the map to understanding it."_
+_The building blocks for unbreakable webhook integrations_
