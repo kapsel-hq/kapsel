@@ -115,6 +115,7 @@ impl WorkerPool {
     ///
     /// This method will signal cancellation to all workers and wait for them to
     /// complete their current work within the configured shutdown timeout.
+    #[allow(dead_code)]
     pub async fn shutdown_graceful(self, timeout: Duration) -> Result<()> {
         info!(
             worker_count = self.worker_handles.len(),
