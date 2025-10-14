@@ -151,25 +151,3 @@ async fn scenario_builder_executes_steps() {
     // Assert - Scenario should run without errors
     scenario.run(&env).await.expect("Scenario should execute successfully");
 }
-
-// This test will initially fail (RED phase of TDD)
-// Uncomment when implementing the health endpoint
-// #[tokio::test]
-// async fn health_endpoint_returns_ok() {
-// Arrange
-// let env = TestEnv::new().await.expect("Failed to create test environment");
-//
-// Act - Call health endpoint (this will fail initially - RED phase)
-// let response = env.client
-// .get("/health")
-// .send()
-// .await
-// .expect("Request should complete");
-//
-// Assert
-// assert_eq!(response.status(), 200, "Health endpoint should return 200 OK");
-//
-// let body: serde_json::Value = response.json().await.expect("Should parse
-// JSON"); assert_eq!(body["status"], "healthy", "Status should be healthy");
-// assert!(body["database"].as_bool().unwrap_or(false), "Database should be
-// healthy"); }

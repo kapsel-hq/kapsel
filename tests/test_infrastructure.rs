@@ -189,39 +189,6 @@ fn test_clock_deterministic_behavior() {
     assert_eq!(sys_elapsed, Duration::from_secs(60));
 }
 
-// RED phase test - this will fail until we implement the actual webhook
-// endpoint Uncomment when ready to implement ingestion logic
-// #[tokio::test]
-// async fn webhook_ingestion_endpoint_accepts_post() {
-// Arrange
-// let env = TestEnv::new().await.unwrap();
-// let endpoint_id = uuid::Uuid::new_v4();
-//
-// Act - Try to POST to ingestion endpoint (will fail - RED phase)
-// let response = env.client
-// .post(&format!("/ingest/{}", endpoint_id))
-// .header("Content-Type", "application/json")
-// .header("X-Idempotency-Key", "test-123")
-// .json(&json!({
-// "event": "test.webhook",
-// "data": {
-// "id": "123",
-// "message": "Hello webhook!"
-// }
-// }))
-// .send()
-// .await
-// .expect("Request should complete");
-//
-// Assert - Should return 200 OK when implemented
-// assert_eq!(response.status(), 200);
-//
-// Should return a webhook receipt
-// let body: serde_json::Value = response.json().await.unwrap();
-// assert!(body["event_id"].as_str().is_some());
-// assert_eq!(body["status"], "received");
-// }
-
 // Test demonstrating TDD cycle for retry logic
 #[tokio::test]
 async fn retry_logic_exponential_backoff_timing() {

@@ -27,7 +27,7 @@ impl TestDatabase {
         // Generate unique database name for test isolation
         let database_name = format!("kapsel_test_{}", Uuid::new_v4().simple());
 
-        // Read port from DATABASE_URL or default to 5432 (CI default)
+        // Read port from DATABASE_URL or default to 5433 (test instance port)
         let port = std::env::var("DATABASE_URL")
             .ok()
             .and_then(|url| {
@@ -36,7 +36,7 @@ impl TestDatabase {
                     .and_then(|port_str| port_str.split('/').next())
                     .and_then(|port_str| port_str.parse::<u16>().ok())
             })
-            .unwrap_or(5432);
+            .unwrap_or(5433);
 
         // First connect to postgres database to create test database
         let admin_options = PgConnectOptions::new()
@@ -443,7 +443,7 @@ mod tests {
                         .and_then(|port_str| port_str.split('/').next())
                         .and_then(|port_str| port_str.parse::<u16>().ok())
                 })
-                .unwrap_or(5432);
+                .unwrap_or(5433);
 
             assert_eq!(port, expected_port, "Failed to parse port from URL: {}", url);
         }
@@ -458,8 +458,8 @@ mod tests {
                     .and_then(|port_str| port_str.split('/').next())
                     .and_then(|port_str| port_str.parse::<u16>().ok())
             })
-            .unwrap_or(5432);
-        assert_eq!(port, 5432, "Should default to 5432 when DATABASE_URL is not set");
+            .unwrap_or(5433);
+        assert_eq!(port, 5433, "Should default to 5433 when DATABASE_URL is not set");
     }
 
     #[tokio::test]
