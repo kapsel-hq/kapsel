@@ -42,6 +42,7 @@ use crate::{
     client::{ClientConfig, DeliveryClient},
     error::{DeliveryError, Result},
     retry::{RetryContext, RetryPolicy},
+    worker::WorkerPool,
 };
 
 /// Configuration for the delivery engine.
@@ -104,6 +105,7 @@ pub struct DeliveryEngine {
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
     stats: Arc<RwLock<EngineStats>>,
     cancellation_token: CancellationToken,
+    worker_pool: Option<WorkerPool>,
 }
 
 impl DeliveryEngine {
@@ -115,48 +117,39 @@ impl DeliveryEngine {
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
 
-        Ok(Self { pool, config, client, circuit_manager, stats, cancellation_token })
+        Ok(Self {
+            pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            worker_pool: None,
+        })
     }
 
     /// Starts the delivery engine with configured worker pool.
     ///
     /// Returns immediately after spawning workers. Use `shutdown()` to stop
     /// gracefully, or drop the engine to cancel workers immediately.
-    pub async fn start(&self) -> Result<()> {
+    pub async fn start(&mut self) -> Result<()> {
         info!(
             worker_count = self.config.worker_count,
             batch_size = self.config.batch_size,
             "starting webhook delivery engine"
         );
 
-        // Update stats to show active workers
-        {
-            let mut stats = self.stats.write().await;
-            stats.active_workers = self.config.worker_count;
-        }
+        let mut worker_pool = WorkerPool::new(
+            self.pool.clone(),
+            self.config.clone(),
+            self.client.clone(),
+            self.circuit_manager.clone(),
+            self.stats.clone(),
+            self.cancellation_token.clone(),
+        );
 
-        // Spawn worker tasks
-        for worker_id in 0..self.config.worker_count {
-            let worker = DeliveryWorker {
-                id: worker_id,
-                pool: self.pool.clone(),
-                config: self.config.clone(),
-                client: self.client.clone(),
-                circuit_manager: self.circuit_manager.clone(),
-                stats: self.stats.clone(),
-                cancellation_token: self.cancellation_token.clone(),
-            };
-
-            tokio::spawn(async move {
-                if let Err(error) = worker.run().await {
-                    error!(
-                        worker_id,
-                        error = %error,
-                        "delivery worker terminated with error"
-                    );
-                }
-            });
-        }
+        worker_pool.spawn_workers().await?;
+        self.worker_pool = Some(worker_pool);
 
         info!("delivery engine started successfully");
         Ok(())
@@ -165,31 +158,20 @@ impl DeliveryEngine {
     /// Gracefully shuts down the delivery engine.
     ///
     /// Signals all workers to stop and waits for in-flight deliveries to
-    /// complete within the configured timeout.
-    pub async fn shutdown(&self) -> Result<()> {
-        info!("initiating delivery engine shutdown");
+    /// Gracefully shuts down the delivery engine, allowing in-flight deliveries
+    /// to complete within the configured timeout.
+    ///
+    /// This method signals all workers to stop processing new events and waits
+    /// for current deliveries to complete. If the shutdown timeout is exceeded,
+    /// workers may be terminated forcefully.
+    pub async fn shutdown(mut self) -> Result<()> {
+        info!("shutting down delivery engine");
 
-        // Signal all workers to stop
-        self.cancellation_token.cancel();
-
-        // Wait for workers to complete with timeout
-        let shutdown_future = async {
-            loop {
-                let stats = self.stats.read().await;
-                if stats.in_flight_deliveries == 0 {
-                    break;
-                }
-                drop(stats);
-                sleep(Duration::from_millis(100)).await;
-            }
-        };
-
-        if tokio::time::timeout(self.config.shutdown_timeout, shutdown_future).await == Ok(()) {
-            info!("delivery engine shutdown completed gracefully");
-            Ok(())
+        if let Some(worker_pool) = self.worker_pool.take() {
+            worker_pool.shutdown_graceful(self.config.shutdown_timeout).await
         } else {
-            warn!("delivery engine shutdown timed out, some deliveries may be incomplete");
-            Err(DeliveryError::internal("shutdown timeout exceeded"))
+            info!("delivery engine was not started, shutdown completed immediately");
+            Ok(())
         }
     }
 
@@ -214,7 +196,7 @@ impl DeliveryEngine {
 }
 
 /// Individual worker that processes webhook deliveries.
-struct DeliveryWorker {
+pub struct DeliveryWorker {
     id: usize,
     pool: PgPool,
     config: DeliveryConfig,
@@ -225,8 +207,21 @@ struct DeliveryWorker {
 }
 
 impl DeliveryWorker {
+    /// Creates a new delivery worker with the given configuration.
+    pub fn new(
+        id: usize,
+        pool: PgPool,
+        config: DeliveryConfig,
+        client: Arc<DeliveryClient>,
+        circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
+        stats: Arc<RwLock<EngineStats>>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
+        Self { id, pool, config, client, circuit_manager, stats, cancellation_token }
+    }
+
     /// Main worker loop - claims and processes events until cancelled.
-    async fn run(&self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         info!(worker_id = self.id, "delivery worker starting");
 
         loop {
@@ -677,7 +672,7 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
-        let engine =
+        let mut engine =
             DeliveryEngine::new(env.db.clone(), config).expect("engine creation should succeed");
         engine.start().await.expect("engine should start successfully");
 
@@ -691,7 +686,7 @@ mod tests {
     async fn engine_shuts_down_gracefully() {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
-        let engine =
+        let mut engine =
             DeliveryEngine::new(env.db.clone(), config).expect("engine creation should succeed");
 
         engine.start().await.expect("engine should start");

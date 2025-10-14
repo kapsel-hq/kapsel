@@ -86,6 +86,22 @@ pub enum DeliveryError {
     #[error("worker shutdown requested")]
     ShutdownRequested,
 
+    /// Worker task panicked during execution.
+    #[error("worker {worker_id} panicked: {error}")]
+    WorkerPanic {
+        /// ID of the worker that panicked
+        worker_id: usize,
+        /// Panic error message
+        error: String,
+    },
+
+    /// Worker pool shutdown timed out.
+    #[error("worker pool shutdown timed out after {timeout:?}")]
+    ShutdownTimeout {
+        /// Timeout duration that was exceeded
+        timeout: std::time::Duration,
+    },
+
     /// Unexpected internal error.
     #[error("internal delivery error: {message}")]
     InternalError {
@@ -166,6 +182,8 @@ impl DeliveryError {
             | Self::RetriesExhausted { .. }
             | Self::ConfigurationError { .. }
             | Self::ShutdownRequested
+            | Self::WorkerPanic { .. }
+            | Self::ShutdownTimeout { .. }
             | Self::InternalError { .. } => false,
         }
     }
@@ -215,9 +233,10 @@ impl From<&DeliveryError> for ErrorCategory {
             DeliveryError::CircuitOpen { .. } => Self::Circuit,
             DeliveryError::DatabaseError { .. } => Self::Database,
             DeliveryError::ConfigurationError { .. } => Self::Configuration,
-            DeliveryError::ShutdownRequested | DeliveryError::InternalError { .. } => {
-                Self::Internal
-            },
+            DeliveryError::ShutdownRequested
+            | DeliveryError::WorkerPanic { .. }
+            | DeliveryError::ShutdownTimeout { .. }
+            | DeliveryError::InternalError { .. } => Self::Internal,
         }
     }
 }

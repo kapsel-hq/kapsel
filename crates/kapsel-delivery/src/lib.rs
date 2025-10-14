@@ -31,7 +31,7 @@
 //!
 //! # async fn example(pool: PgPool) -> std::result::Result<(), DeliveryError> {
 //! let config = DeliveryConfig::default();
-//! let engine = DeliveryEngine::new(pool, config);
+//! let mut engine = DeliveryEngine::new(pool, config)?;
 //!
 //! // Start the delivery workers
 //! engine.start().await?;
@@ -44,7 +44,7 @@ pub mod client;
 pub mod engine;
 pub mod error;
 pub mod retry;
-// pub mod worker; // TODO: Implement worker pool
+mod worker;
 
 // Re-export main public API
 pub use engine::{DeliveryConfig, DeliveryEngine};
