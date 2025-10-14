@@ -40,31 +40,116 @@ Current test distribution:
 
 **Coverage Gaps:**
 
-- No delivery client tests (doesn't exist yet)
+- No delivery client tests (RESOLVED: comprehensive TDD suite added)
 - No circuit breaker integration tests
 - No load/stress tests
 - No chaos/failure injection tests
-- No deterministic simulation tests
+- ScenarioBuilder completely unused despite powerful capabilities
+
+## Comprehensive Testing Assessment
+
+### Executive Summary
+
+The testing infrastructure is exceptionally powerful and well-designed, reflecting a deep commitment to correctness and reliability. The existing tests, particularly the property tests and the "golden sample" test, demonstrate an advanced understanding of modern testing principles.
+
+However, the tests are **not yet using the full potential of the harness**. Several key features designed to improve test readability and expand coverage are currently underutilized or not used at all. While the foundation is world-class, the application of this foundation is inconsistent.
+
+**Overall State:** The testing culture is strong, and the foundation is excellent. The primary opportunity is to apply the harness's full capabilities more broadly to enhance readability, reduce boilerplate, and cover more complex failure scenarios.
+
+### Strengths: What Tests Are Doing Well
+
+1. **Property-Based Testing is Top-Tier:** The use of `proptest` in `tests/property_tests.rs` is exemplary.
+   - Exhaustively validates critical invariants like idempotency, retry bounds, and circuit breaker logic
+   - Includes fuzz tests that probe for edge cases in retry calculations and error handling
+   - This proactive approach to finding bugs in business logic is a sign of mature testing strategy
+
+2. **Deterministic Simulation is Masterful:** The `golden_sample_test.rs` is a showcase of deterministic testing.
+   - Simulates complex multi-step "fail-then-succeed" scenarios by manipulating database and using `TestClock`
+   - Allows exact verification of time-based logic like exponential backoff without flakiness
+   - This is the "gold standard" for testing reliability features
+
+3. **Database Isolation is Production-Grade:** The harness's `TestDatabase` provides transaction-based isolation used effectively in integration tests, ensuring tests are fast, independent, and don't conflict
+
+4. **Comprehensive CI Pipeline:** GitHub Actions workflow covers formatting, linting, security audits, dependency checks, and multi-OS/multi-version test matrix
+
+### Critical Opportunities for Improvement
+
+1. **The `ScenarioBuilder` is Completely Unused:**
+   - The test harness provides a powerful, declarative `ScenarioBuilder` for defining multi-step integration tests
+   - Currently, NO tests use this feature. The `golden_sample_test.rs` implements complex scenarios manually
+   - Refactoring to use `ScenarioBuilder` would make tests dramatically more readable and maintainable
+
+2. **Chaos Testing is Mentioned but Not Implemented:**
+   - Project documentation highlights chaos testing as a key capability
+   - However, there are NO actual chaos tests in the project. This is major untapped potential for testing system resilience to production-like failures in a controlled, deterministic way
+
+3. **Inconsistent Test Styles:**
+   - Two distinct styles: Full Server Tests vs Simulated Tests
+   - The simulated approach (like golden sample test) is more aligned with harness philosophy and generally faster/less flaky
+   - Project would benefit from favoring simulated style for most integration tests
+
+4. **Test Helpers are Underdeveloped:**
+   - Tests frequently use raw `sqlx::query()` calls to set up data
+   - While `TestEnv` has helpers like `create_tenant`, it lacks helpers for common actions like ingesting webhooks directly
+   - Expanding helpers would reduce boilerplate and make tests more resilient to schema changes
+
+### Actionable Testing Improvements
+
+1. **Refactor Golden Sample Test:** Convert to use `ScenarioBuilder` as practical example
+2. **Implement First Chaos Test:** Create `tests/chaos_delivery_test.rs` using `ScenarioBuilder`
+3. **Expand `TestEnv` Helpers:** Add `ingest_webhook_for_test()` and similar functions
+4. **Prioritize Simulated Integration Tests:** Use deterministic simulation over full server tests
+5. **Complete Draft Tests:** The `delivery_client_test.rs` needs completion for HTTP client behavior
 
 ## Implementation Strategy
 
-### Phase 1: Exponential Backoff & Circuit Breaker Integration (Week 1)
+### Phase 1: Testing Infrastructure Enhancement & Core Reliability (Week 1)
 
-**Objective:** Complete webhook reliability with retry logic and failure isolation
+**Objective:** Modernize test suite to use harness capabilities and complete webhook reliability
 
-**Status Update:** HTTP delivery client is COMPLETE and fully functional. TDD test suite confirms:
+**Status Update:** HTTP delivery client is COMPLETE and fully functional. However, testing infrastructure needs improvement to match the quality of the harness.
 
-- Successful webhook delivery
-- Connection timeout handling
-- HTTP error response processing
-- Rate limiting with Retry-After headers
-- Connection refused handling
-- Request validation and duration tracking
-- Large response body handling with truncation
+**Critical Testing Work (Days 1-2):**
+
+1. **Refactor Golden Sample Test to ScenarioBuilder:**
+
+   ```rust
+   // Before: Manual database manipulation
+   sqlx::query("INSERT ...").await?;
+   env.clock.advance(*expected_delay);
+
+   // After: Declarative scenario
+   ScenarioBuilder::new("golden webhook delivery")
+       .ingest(webhook)
+       .expect_failure(FailureKind::Http503)
+       .advance_time(Duration::from_secs(1))
+       .expect_success()
+       .run(&env).await?;
+   ```
+
+2. **Implement First Chaos Test:**
+
+   ```rust
+   #[tokio::test]
+   async fn chaos_database_disconnection_during_delivery() {
+       ScenarioBuilder::new("database failure recovery")
+           .ingest_batch(100)
+           .start_delivery()
+           .inject_failure(ChaosFailure::DatabaseDisconnect { duration: Duration::from_secs(5) })
+           .expect_no_data_loss()
+           .expect_eventual_delivery()
+           .run(&env).await?;
+   }
+   ```
+
+3. **Expand TestEnv Helpers:**
+   - Add `ingest_webhook_for_test()` helper
+   - Add `create_batch_webhooks()` for load testing
+   - Add `simulate_endpoint_failure()` for circuit breaker tests
 
 #### Day 1-2: Exponential Backoff Implementation (TDD)
 
-#### Day 1-2: Exponential Backoff Implementation
+#### Day 3-4: Exponential Backoff Implementation
 
 **Red Phase - Property tests:**
 
@@ -88,7 +173,7 @@ proptest! {
 - Configurable base delay and multiplier
 - Smart retry scheduling
 
-#### Day 3: Circuit Breaker Integration Tests
+#### Day 5: Circuit Breaker Integration Tests
 
 **Red Phase - Integration tests:**
 
@@ -100,11 +185,11 @@ async fn worker_probes_half_open_circuit()
 async fn circuit_opens_after_failure_threshold()
 ```
 
-### Phase 2: Production Operations (Days 4-7)
+### Phase 2: Production Operations (Days 6-7)
 
 **Objective:** Add essential production features for deployment readiness
 
-#### Day 4: Metrics & Monitoring
+#### Day 6: Metrics & Monitoring
 
 **Metrics to implement:**
 
@@ -120,7 +205,7 @@ async fn circuit_opens_after_failure_threshold()
 - /ready - Database connectivity
 - /metrics - Prometheus endpoint
 
-#### Day 5: Rate Limiting
+#### Day 7: Rate Limiting & Polish
 
 **Per-tenant limits:**
 
@@ -134,21 +219,11 @@ async fn circuit_opens_after_failure_threshold()
 - Redis-backed distributed limiting
 - Graceful degradation
 
-#### Days 6-7: Load Testing & Benchmarks
+**Load Testing Integration:**
 
-**Test scenarios:**
-
-- 10K webhooks/sec ingestion
-- 1K concurrent deliveries
-- Circuit breaker under load
-- Database connection saturation
-- Memory growth over time
-
-**Tools:**
-
-- k6 for load generation
-- pprof for profiling
-- flamegraph for bottlenecks
+- Use new TestEnv helpers for load test setup
+- ScenarioBuilder for complex load scenarios
+- Chaos testing for failure conditions under load
 
 ## Test-Driven Development Process
 
@@ -271,23 +346,27 @@ async fn circuit_opens_after_failure_threshold()
    - Confirmed HTTP client is fully functional
    - All individual tests pass
 
-3. **Start Exponential Backoff TDD** (Next)
+3. **URGENT: Fix Test Infrastructure** (Today)
+   - Fix database connection pool exhaustion in parallel tests
+   - Refactor golden sample test to use ScenarioBuilder
+   - Add first chaos test as proof of concept
+
+4. **Start Exponential Backoff TDD** (Next)
    - Write failing property tests for backoff calculation
    - Implement configurable backoff strategy
    - Integrate with worker delivery loop
 
 ### Tomorrow:
 
-1. Complete exponential backoff implementation
-2. Start circuit breaker integration tests
-3. Add first end-to-end reliability tests
+1. Complete test infrastructure improvements (ScenarioBuilder, chaos tests)
+2. Complete exponential backoff implementation 3. Start circuit breaker integration tests with new test patterns
 
 ### This Week:
 
-1. Complete Phase 1 (Retry Logic & Circuit Breaker)
+1. Complete Phase 1 (Testing Infrastructure & Core Reliability)
 2. Complete Phase 2 (Production Operations)
-3. Deploy to staging environment
-4. Run first load tests
+3. Deploy to staging environment with chaos testing validation
+4. Run first load tests using enhanced test harness
 
 ## Success Metrics
 
@@ -295,6 +374,8 @@ async fn circuit_opens_after_failure_threshold()
 
 - [x] ✅ 100% test coverage on delivery path
 - [x] ✅ Successful webhook delivery in tests
+- [ ] ScenarioBuilder refactoring complete
+- [ ] First chaos test implemented
 - [ ] Exponential backoff working
 - [ ] Circuit breaker integrated
 
@@ -335,13 +416,13 @@ Kapsel has a solid foundation but needs focused execution to complete the delive
 **Critical Path:**
 
 1. ~~HTTP client~~ ✅ COMPLETE
-2. Retry logic (2 days)
-3. Circuit breaker (2 days)
-4. Operations (3 days)
-5. Testing/Polish (1 day)
+2. Test infrastructure improvements (2 days)
+3. Retry logic (2 days)
+4. Circuit breaker (1 day)
+5. Operations (2 days)
 
 The test-first approach ensures we build exactly what's needed with confidence in correctness. Each feature will be proven through tests before implementation, reducing debugging time and increasing velocity.
 
 **Major Discovery:** HTTP client is already complete and fully functional! This accelerates our timeline significantly.
 
-Next step: Begin exponential backoff TDD cycle immediately.
+Next step: Fix test infrastructure and implement ScenarioBuilder patterns immediately.
