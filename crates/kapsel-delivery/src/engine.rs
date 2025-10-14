@@ -866,9 +866,36 @@ mod tests {
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
-        // Insert multiple test events
-        let (_tenant_id, _endpoint_id, event1_id) = setup_test_data(&env, &webhook_url).await;
-        let (_tenant_id, _endpoint_id, event2_id) = setup_test_data(&env, &webhook_url).await;
+        // Insert test tenant, endpoint, and first event
+        let (tenant_id, endpoint_id, event1_id) = setup_test_data(&env, &webhook_url).await;
+
+        // Insert second event under same tenant/endpoint
+        let event2_id = uuid::Uuid::new_v4();
+        let now = Utc::now();
+        sqlx::query(
+            r"
+            INSERT INTO webhook_events (
+                id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                status, failure_count, headers, body, content_type,
+                received_at, payload_size
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ",
+        )
+        .bind(event2_id)
+        .bind(tenant_id)
+        .bind(endpoint_id)
+        .bind("test-event-2")
+        .bind("header")
+        .bind("pending")
+        .bind(0)
+        .bind(serde_json::json!({"content-type": "application/json"}))
+        .bind(b"{\"test\": \"data2\"}")
+        .bind("application/json")
+        .bind(now)
+        .bind(17) // payload_size for "{\"test\": \"data2\"}"
+        .execute(&env.db)
+        .await
+        .expect("failed to insert second test event");
 
         // Mark events as pending (they should be pending by default, but make sure)
         sqlx::query("UPDATE webhook_events SET status = 'pending' WHERE id IN ($1, $2)")
@@ -948,9 +975,10 @@ mod tests {
         let event_id = uuid::Uuid::new_v4();
 
         // Insert tenant
+        let tenant_name = format!("test-tenant-{}", tenant_id.simple());
         sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
             .bind(tenant_id)
-            .bind("test-tenant")
+            .bind(tenant_name)
             .bind("free")
             .execute(&env.db)
             .await

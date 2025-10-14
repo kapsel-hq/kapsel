@@ -142,7 +142,6 @@ pub async fn start_server(db: PgPool, addr: SocketAddr) -> Result<(), std::io::E
 
     info!("HTTP server listening on {}", actual_addr);
 
-    // Serve with graceful shutdown
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
 
     info!("HTTP server stopped gracefully");

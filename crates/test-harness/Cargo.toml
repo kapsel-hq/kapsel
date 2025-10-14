@@ -16,7 +16,7 @@ default = []
 [dependencies]
 # Core testing infrastructure
 tokio = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls"] }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "migrate"] }
 
 # Test utilities
 wiremock = { workspace = true }

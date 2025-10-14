@@ -956,9 +956,10 @@ mod integration_tests {
             // Test with actual database operations
             runtime.block_on(async {
                 // Create tenant first (required for foreign key constraint)
+                let tenant_name = format!("test-tenant-{}", webhook.tenant_id.simple());
                 sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
                     .bind(webhook.tenant_id)
-                    .bind("test-tenant")
+                    .bind(tenant_name)
                     .bind("enterprise")
                     .execute(&env.db)
                     .await

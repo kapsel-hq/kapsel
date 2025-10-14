@@ -6,8 +6,10 @@
 //! Tests automatically connect to PostgreSQL on the port specified in
 //! DATABASE_URL environment variable (defaults to 5432).
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
-use sqlx::{postgres::PgConnectOptions, PgPool, Postgres};
+use sqlx::{migrate::Migrator, postgres::PgConnectOptions, PgPool, Postgres};
 use uuid::Uuid;
 
 /// Database backend abstraction for tests.
@@ -187,132 +189,19 @@ pub async fn setup_test_database() -> Result<DatabasePool> {
 
 /// PostgreSQL schema migrations.
 async fn run_postgres_migrations(pool: &PgPool) -> Result<()> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS tenants (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            plan TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
+    // Use actual migration files from workspace root
+    // CARGO_MANIFEST_DIR points to test-harness crate, go up to workspace root
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .context("Failed to find workspace root")?;
+    let migrations_path = workspace_root.join("migrations");
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS endpoints (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id UUID NOT NULL,
-            url TEXT NOT NULL,
-            name TEXT NOT NULL,
-            signing_secret TEXT,
-            signature_header TEXT,
-            max_retries INTEGER NOT NULL DEFAULT 10,
-            timeout_seconds INTEGER NOT NULL DEFAULT 30,
-            circuit_state TEXT NOT NULL DEFAULT 'closed',
-            circuit_failure_count INTEGER NOT NULL DEFAULT 0,
-            circuit_last_failure_at TIMESTAMPTZ,
-            circuit_half_open_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE(tenant_id, name)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
+    let migrator = Migrator::new(migrations_path)
+        .await
+        .context("Failed to load migrations from workspace migrations/ directory")?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS webhook_events (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id UUID NOT NULL,
-            endpoint_id UUID NOT NULL,
-            source_event_id TEXT NOT NULL,
-            idempotency_strategy TEXT NOT NULL,
-            status TEXT NOT NULL,
-            failure_count INTEGER NOT NULL DEFAULT 0,
-            last_attempt_at TIMESTAMPTZ,
-            next_retry_at TIMESTAMPTZ,
-            headers JSONB NOT NULL,
-            body BYTEA NOT NULL,
-            content_type TEXT NOT NULL,
-            payload_size INTEGER NOT NULL,
-            signature_valid BOOLEAN,
-            signature_error TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            delivered_at TIMESTAMPTZ,
-            failed_at TIMESTAMPTZ,
-            tigerbeetle_id UUID,
-            UNIQUE(tenant_id, endpoint_id, source_event_id),
-            CHECK (payload_size > 0 AND payload_size <= 10485760)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    // Add payload_size column if it doesn't exist (migration for existing test
-    // databases)
-    sqlx::query(
-        r#"
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'webhook_events' AND column_name = 'payload_size'
-            ) THEN
-                ALTER TABLE webhook_events ADD COLUMN payload_size INTEGER NOT NULL DEFAULT 1;
-                ALTER TABLE webhook_events ADD CONSTRAINT webhook_events_payload_size_check
-                    CHECK (payload_size > 0 AND payload_size <= 10485760);
-            END IF;
-        END $$;
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS delivery_attempts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            event_id UUID NOT NULL REFERENCES webhook_events(id),
-            attempt_number INTEGER NOT NULL,
-            request_url TEXT NOT NULL,
-            request_headers JSONB NOT NULL,
-            response_status INTEGER,
-            response_headers JSONB,
-            response_body TEXT,
-            attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            duration_ms INTEGER NOT NULL,
-            error_type TEXT,
-            error_message TEXT
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_webhook_events_status
-        ON webhook_events(status, next_retry_at)
-        WHERE status IN ('pending', 'delivering')
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_webhook_events_tenant ON webhook_events(tenant_id, received_at DESC)")
-        .execute(pool)
-        .await?;
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_delivery_attempts_event ON delivery_attempts(event_id, attempt_number)")
-        .execute(pool)
-        .await?;
+    migrator.run(pool).await.context("Failed to run database migrations")?;
 
     Ok(())
 }
