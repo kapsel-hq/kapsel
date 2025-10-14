@@ -176,7 +176,7 @@ tracing-subscriber = { workspace = true }
 kapsel-api = { path = "crates/kapsel-api" }
 
 [dev-dependencies]
-cargo-husky = "1.5"
+cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
 test-harness = { path = "crates/test-harness" }
 criterion = { workspace = true }
 kapsel-api = { path = "crates/kapsel-api" }
