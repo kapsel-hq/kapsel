@@ -20,20 +20,24 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```no_run
 //! use kapsel_delivery::circuit::{CircuitBreakerManager, CircuitConfig};
 //!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = CircuitConfig::default();
-//! let mut manager = CircuitBreakerManager::new(config);
+//! let manager = CircuitBreakerManager::new(config);
 //!
 //! // Check if request should be allowed
-//! if manager.should_allow_request("endpoint-123") {
-//!     // Make request and record outcome
-//!     match make_request().await {
-//!         Ok(_) => manager.record_success("endpoint-123"),
-//!         Err(_) => manager.record_failure("endpoint-123"),
+//! if manager.should_allow_request("endpoint-123").await {
+//!     // Make hypothetical request and record outcome
+//!     let request_result: Result<(), &str> = Ok(());
+//!     match request_result {
+//!         Ok(_) => manager.record_success("endpoint-123").await,
+//!         Err(_) => manager.record_failure("endpoint-123").await,
 //!     }
 //! }
+//! # Ok(())
+//! # }
 //! ```
 
 use std::{
