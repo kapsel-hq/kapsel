@@ -13,6 +13,7 @@ categories = ["web-programming", "network-programming", "data-structures"]
 [dependencies]
 # Serialization
 serde = { workspace = true }
+serde_json = { workspace = true }
 bytes = { workspace = true }
 
 # Data types

@@ -26,29 +26,9 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     let destination = MockServer::start().await;
 
     // Create endpoint with specific retry policy
-    let endpoint_id = Uuid::new_v4();
-    let tenant_id = Uuid::new_v4();
-
-    // Insert test tenant
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(&env.db.pool())
-        .await?;
-
-    // Insert endpoint configuration
-    sqlx::query("INSERT INTO endpoints (id, tenant_id, url, name, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)")
-        .bind(endpoint_id)
-        .bind(tenant_id)
-        .bind(destination.url())
-        .bind("test-endpoint")
-        .bind(10i32)
-        .bind(30i32)
-        .bind("closed")
-        .execute(&env.db.pool())
-        .await?;
+    // Create test tenant and endpoint using helpers
+    let tenant_id = env.create_tenant("test-tenant").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &destination.url()).await?;
 
     // Configure destination to fail 3 times with 503, then succeed with 200
     destination
@@ -90,8 +70,8 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(event_id)
-    .bind(tenant_id)
-    .bind(endpoint_id)
+    .bind(tenant_id.0)
+    .bind(endpoint_id.0)
     .bind(idempotency_key)
     .bind("header")
     .bind("pending")
@@ -304,7 +284,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     }
 
     // Invariant checks
-    verify_invariants(&env, event_id, tenant_id, endpoint_id).await?;
+    verify_invariants(&env, event_id, tenant_id.0, endpoint_id.0).await?;
 
     tracing::info!("Golden sample test completed successfully!");
     tracing::info!("  - Total processing time: {:?}", total_time);

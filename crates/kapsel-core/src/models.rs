@@ -24,6 +24,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// Type aliases for common sqlx types to reduce verbosity
+type PgDb = sqlx::Postgres;
+type PgRow = sqlx::postgres::PgRow;
+type PgValueRef<'r> = sqlx::postgres::PgValueRef<'r>;
+type PgTypeInfo = sqlx::postgres::PgTypeInfo;
+type PgArgumentBuffer = sqlx::postgres::PgArgumentBuffer;
+type EncodeResult =
+    Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync + 'static>>;
+type BoxDynError = sqlx::error::BoxDynError;
+
 /// Strongly-typed event identifier.
 ///
 /// Wraps a UUID to prevent mixing with other ID types. Events are immutable
@@ -66,6 +76,25 @@ impl From<Uuid> for EventId {
     }
 }
 
+impl sqlx::Type<PgDb> for EventId {
+    fn type_info() -> PgTypeInfo {
+        <Uuid as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for EventId {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let uuid = <Uuid as sqlx::Decode<PgDb>>::decode(value)?;
+        Ok(Self(uuid))
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for EventId {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <Uuid as sqlx::Encode<PgDb>>::encode_by_ref(&self.0, buf)
+    }
+}
+
 /// Strongly-typed tenant identifier.
 ///
 /// Provides multi-tenancy isolation. All operations are scoped to a tenant,
@@ -101,6 +130,25 @@ impl From<Uuid> for TenantId {
     }
 }
 
+impl sqlx::Type<PgDb> for TenantId {
+    fn type_info() -> PgTypeInfo {
+        <Uuid as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for TenantId {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let uuid = <Uuid as sqlx::Decode<PgDb>>::decode(value)?;
+        Ok(Self(uuid))
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for TenantId {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <Uuid as sqlx::Encode<PgDb>>::encode_by_ref(&self.0, buf)
+    }
+}
+
 /// Strongly-typed endpoint identifier.
 ///
 /// Each endpoint represents a unique webhook destination URL with its own
@@ -132,6 +180,25 @@ impl fmt::Display for EndpointId {
 impl From<Uuid> for EndpointId {
     fn from(uuid: Uuid) -> Self {
         Self(uuid)
+    }
+}
+
+impl sqlx::Type<PgDb> for EndpointId {
+    fn type_info() -> PgTypeInfo {
+        <Uuid as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for EndpointId {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let uuid = <Uuid as sqlx::Decode<PgDb>>::decode(value)?;
+        Ok(Self(uuid))
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for EndpointId {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <Uuid as sqlx::Encode<PgDb>>::encode_by_ref(&self.0, buf)
     }
 }
 
@@ -192,6 +259,27 @@ impl fmt::Display for EventStatus {
             Self::Delivered => write!(f, "delivered"),
             Self::Failed => write!(f, "failed"),
             Self::DeadLetter => write!(f, "dead_letter"),
+        }
+    }
+}
+
+impl sqlx::Type<PgDb> for EventStatus {
+    fn type_info() -> PgTypeInfo {
+        <&str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for EventStatus {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "received" => Ok(Self::Received),
+            "pending" => Ok(Self::Pending),
+            "delivering" => Ok(Self::Delivering),
+            "delivered" => Ok(Self::Delivered),
+            "failed" => Ok(Self::Failed),
+            "dead_letter" => Ok(Self::DeadLetter),
+            _ => Err(format!("invalid event status: {s}").into()),
         }
     }
 }
@@ -282,6 +370,54 @@ pub struct WebhookEvent {
     ///
     /// Populated after event is written to audit log for compliance.
     pub tigerbeetle_id: Option<Uuid>,
+}
+
+impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        use std::collections::HashMap;
+
+        use sqlx::Row;
+
+        // Handle headers JSONB -> HashMap conversion
+        let headers_value: serde_json::Value = row.try_get("headers")?;
+        let headers: HashMap<String, String> =
+            serde_json::from_value(headers_value).map_err(|e| sqlx::Error::ColumnDecode {
+                index: "headers".to_string(),
+                source: e.into(),
+            })?;
+
+        // Handle failure_count i32 -> u32 conversion
+        let failure_count_i32: i32 = row.try_get("failure_count")?;
+        let failure_count = u32::try_from(failure_count_i32).map_err(|e| {
+            sqlx::Error::ColumnDecode { index: "failure_count".to_string(), source: e.into() }
+        })?;
+
+        // Handle body BYTEA -> Bytes conversion
+        let body_vec: Vec<u8> = row.try_get("body")?;
+        let body = Bytes::from(body_vec);
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            endpoint_id: row.try_get("endpoint_id")?,
+            source_event_id: row.try_get("source_event_id")?,
+            idempotency_strategy: row.try_get("idempotency_strategy")?,
+            status: row.try_get("status")?,
+            failure_count,
+            last_attempt_at: row.try_get("last_attempt_at")?,
+            next_retry_at: row.try_get("next_retry_at")?,
+            headers,
+            body,
+            content_type: row.try_get("content_type")?,
+            received_at: row.try_get("received_at")?,
+            delivered_at: row.try_get("delivered_at")?,
+            failed_at: row.try_get("failed_at")?,
+            payload_size: row.try_get("payload_size")?,
+            signature_valid: row.try_get("signature_valid")?,
+            signature_error: row.try_get("signature_error")?,
+            tigerbeetle_id: row.try_get("tigerbeetle_id")?,
+        })
+    }
 }
 
 /// Webhook endpoint configuration.

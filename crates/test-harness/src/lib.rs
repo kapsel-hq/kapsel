@@ -15,8 +15,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use database::{TestDatabase, TestTransaction};
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
+use kapsel_core::models::{EndpointId, TenantId};
 pub use time::Clock;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 /// Test environment with all necessary infrastructure.
 pub struct TestEnv {
@@ -123,6 +125,60 @@ impl TestEnv {
             .await
             .context("Failed to insert tenant in PostgreSQL")?;
         Ok(tenant_id.to_string())
+    }
+
+    /// Creates a test tenant with modern typed return value.
+    pub async fn create_tenant(&self, name: &str) -> Result<TenantId> {
+        self.create_tenant_with_plan(name, "enterprise").await
+    }
+
+    /// Creates a test tenant with specific plan.
+    pub async fn create_tenant_with_plan(&self, name: &str, plan: &str) -> Result<TenantId> {
+        let tenant_id = Uuid::new_v4();
+
+        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+            .bind(tenant_id)
+            .bind(name)
+            .bind(plan)
+            .execute(&self.db.pool())
+            .await
+            .context("Failed to create test tenant")?;
+
+        Ok(TenantId(tenant_id))
+    }
+
+    /// Creates a test endpoint for the given tenant.
+    pub async fn create_endpoint(&self, tenant_id: TenantId, url: &str) -> Result<EndpointId> {
+        self.create_endpoint_with_config(tenant_id, url, "test-endpoint", 10, 30).await
+    }
+
+    /// Creates a test endpoint with full configuration.
+    pub async fn create_endpoint_with_config(
+        &self,
+        tenant_id: TenantId,
+        url: &str,
+        name: &str,
+        max_retries: i32,
+        timeout_seconds: i32,
+    ) -> Result<EndpointId> {
+        let endpoint_id = Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO endpoints (id, tenant_id, url, name, max_retries, timeout_seconds, circuit_state)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        )
+        .bind(endpoint_id)
+        .bind(tenant_id.0)
+        .bind(url)
+        .bind(name)
+        .bind(max_retries)
+        .bind(timeout_seconds)
+        .bind("closed")
+        .execute(&self.db.pool())
+        .await
+        .context("Failed to create test endpoint")?;
+
+        Ok(EndpointId(endpoint_id))
     }
 
     /// Explicitly closes database connections to prevent connection pool
