@@ -296,27 +296,43 @@ impl DeliveryWorker {
     async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
         let now = Utc::now();
 
-        // Claim pending events using FOR UPDATE SKIP LOCKED for lock-free distribution
+        // First, select events to claim using FOR UPDATE SKIP LOCKED
+        let event_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+            r"
+            SELECT id FROM webhook_events
+            WHERE status = 'pending'
+              AND (next_retry_at IS NULL OR next_retry_at <= $1)
+            ORDER BY received_at ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            ",
+        )
+        .bind(now)
+        .bind(i32::try_from(self.config.batch_size).unwrap_or(100))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            DeliveryError::database(format!("failed to select events for claiming: {e}"))
+        })?;
+
+        // If no events to process, return empty vec
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Update selected events to delivering status and fetch full data
         let rows = sqlx::query(
             r"
             UPDATE webhook_events
             SET status = 'delivering'
-            WHERE id IN (
-                SELECT id FROM webhook_events
-                WHERE status = 'pending'
-                  AND (next_retry_at IS NULL OR next_retry_at <= $1)
-                ORDER BY received_at ASC
-                LIMIT $2
-                FOR UPDATE SKIP LOCKED
-            )
+            WHERE id = ANY($1)
             RETURNING id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                 status, failure_count, last_attempt_at, next_retry_at,
                 headers, body, content_type, received_at, delivered_at, failed_at,
                 payload_size, signature_valid, signature_error, tigerbeetle_id
             ",
         )
-        .bind(now)
-        .bind(i32::try_from(self.config.batch_size).unwrap_or(100))
+        .bind(&event_ids)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DeliveryError::database(format!("failed to claim events: {e}")))?;

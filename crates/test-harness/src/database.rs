@@ -46,7 +46,10 @@ impl TestDatabase {
             .password("postgres")
             .database("postgres");
 
-        let admin_pool = sqlx::PgPool::connect_with(admin_options)
+        let admin_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2) // Minimal connections for admin operations
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_with(admin_options)
             .await
             .context("Failed to connect to PostgreSQL admin database")?;
 
@@ -59,7 +62,7 @@ impl TestDatabase {
 
         admin_pool.close().await;
 
-        // Now connect to the test database
+        // Now connect to the test database with limited pool size for tests
         let connect_options = PgConnectOptions::new()
             .host("127.0.0.1")
             .port(port)
@@ -67,7 +70,13 @@ impl TestDatabase {
             .password("postgres")
             .database(&database_name);
 
-        let pool = sqlx::PgPool::connect_with(connect_options)
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5) // Limit connections for tests
+            .min_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .idle_timeout(Some(std::time::Duration::from_secs(30)))
+            .max_lifetime(Some(std::time::Duration::from_secs(300)))
+            .connect_with(connect_options)
             .await
             .context("Failed to connect to PostgreSQL test database")?;
 

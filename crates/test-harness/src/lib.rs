@@ -125,6 +125,12 @@ impl TestEnv {
             .context("Failed to insert tenant in PostgreSQL")?;
         Ok(tenant_id.to_string())
     }
+
+    /// Explicitly closes database connections to prevent connection pool
+    /// exhaustion.
+    pub async fn cleanup(&self) {
+        self.db.close().await;
+    }
 }
 
 /// Test configuration options.

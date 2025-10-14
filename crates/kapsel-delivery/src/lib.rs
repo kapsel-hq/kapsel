@@ -51,7 +51,7 @@ pub use engine::{DeliveryConfig, DeliveryEngine};
 pub use error::{DeliveryError, Result};
 
 /// Default number of concurrent delivery workers.
-pub const DEFAULT_WORKER_COUNT: usize = 100;
+pub const DEFAULT_WORKER_COUNT: usize = 3;
 
 /// Default batch size for claiming events from database.
 pub const DEFAULT_BATCH_SIZE: usize = 10;

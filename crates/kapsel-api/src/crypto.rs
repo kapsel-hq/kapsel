@@ -61,9 +61,9 @@ impl std::error::Error for SignatureError {}
 /// Validates webhook signature using HMAC-SHA256.
 ///
 /// Supports multiple signature formats:
-/// - GitHub: "sha256=&lt;hex&gt;"
-/// - Stripe: "v1=&lt;hex&gt;"
-/// - Raw: "&lt;hex&gt;"
+/// - GitHub: `"sha256=<hex>"`
+/// - Stripe: `"v1=<hex>"`
+/// - Raw: `"<hex>"`
 ///
 /// Compares the provided signature against the expected HMAC-SHA256 of the
 /// payload using the given secret. Returns validation result with error
