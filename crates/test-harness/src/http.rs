@@ -13,7 +13,7 @@ use wiremock::{
 
 /// HTTP mock server for testing webhook deliveries.
 pub struct MockServer {
-    server: WiremockServer,
+    pub server: WiremockServer,
     recorded_requests: Arc<RwLock<Vec<RecordedRequest>>>,
 }
 
@@ -41,6 +41,9 @@ impl MockServer {
                     response = response.insert_header("Retry-After", seconds.as_secs().to_string());
                 }
                 response
+            },
+            MockResponse::ServerError { status, body } => {
+                ResponseTemplate::new(status).set_body_bytes(body)
             },
             MockResponse::Timeout => ResponseTemplate::new(StatusCode::REQUEST_TIMEOUT.as_u16())
                 .set_delay(Duration::from_secs(35)),
@@ -81,6 +84,18 @@ impl MockServer {
     /// Creates a mock sequence builder for chaining multiple responses.
     pub fn mock_sequence(&self) -> MockSequenceBuilder<'_> {
         MockSequenceBuilder { server: &self.server, responses: Vec::new() }
+    }
+
+    /// Convenience method to mock an endpoint with a path and response.
+    pub async fn mock_simple(&self, path: &str, response: MockResponse) {
+        let endpoint =
+            MockEndpoint { path: path.to_string(), expected_headers: HashMap::new(), response };
+        self.mock_endpoint(endpoint).await;
+    }
+
+    /// Returns the full URL for a given endpoint path.
+    pub fn endpoint_url(&self, path: &str) -> String {
+        format!("{}{}", self.server.uri(), path)
     }
 
     /// Configures an endpoint to always fail with the given status code.
@@ -145,6 +160,7 @@ impl MockEndpoint {
 pub enum MockResponse {
     Success { status: StatusCode, body: Bytes },
     Failure { status: StatusCode, retry_after: Option<Duration> },
+    ServerError { status: u16, body: Vec<u8> },
     Timeout,
 }
 

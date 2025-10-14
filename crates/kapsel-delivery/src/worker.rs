@@ -366,6 +366,7 @@ impl DeliveryWorker {
 
     /// Attempts delivery of a webhook event.
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
+        let start_time = std::time::Instant::now();
         let endpoint_key = event.endpoint_id.to_string();
         let attempt_number = event.failure_count + 1;
 
@@ -380,7 +381,7 @@ impl DeliveryWorker {
         }
 
         // 2. Get endpoint URL from database
-        let endpoint_url = self.get_endpoint_url(&event.endpoint_id).await?;
+        let endpoint_url = self.endpoint_url(&event.endpoint_id).await?;
 
         debug!(
             worker_id = self.id,
@@ -407,8 +408,15 @@ impl DeliveryWorker {
         // 4. Make HTTP delivery and record attempt
         let delivery_result = self.client.deliver(delivery_request).await;
 
-        // 5. Record delivery attempt for audit trail (simplified for now)
-        // TODO: Implement full audit trail recording once schema is confirmed
+        // 5. Record delivery attempt for audit trail
+        self.record_delivery_attempt(
+            &event,
+            &endpoint_url,
+            event.failure_count + 1,
+            &delivery_result,
+            start_time.elapsed(),
+        )
+        .await;
 
         // 6. Handle result and update event status
         // Important: We always update the database state, even on failure
@@ -489,7 +497,7 @@ impl DeliveryWorker {
     }
 
     /// Gets the endpoint URL from the database.
-    async fn get_endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
+    async fn endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
         let url = sqlx::query_scalar::<_, String>("SELECT url FROM endpoints WHERE id = $1")
             .bind(endpoint_id.0)
             .fetch_one(&self.pool)
@@ -562,16 +570,75 @@ impl DeliveryWorker {
     }
 
     /// Records a delivery attempt in the audit trail.
-    /// Simplified implementation until full schema is confirmed.
-    #[allow(dead_code)]
-    fn record_delivery_attempt(
-        _event: &WebhookEvent,
-        _url: &str,
-        _attempt_number: u32,
-        _result: &Result<crate::client::DeliveryResponse>,
+    /// Records a delivery attempt in the audit trail.
+    async fn record_delivery_attempt(
+        &self,
+        event: &WebhookEvent,
+        url: &str,
+        attempt_number: u32,
+        result: &Result<crate::client::DeliveryResponse>,
+        duration: std::time::Duration,
     ) {
-        // TODO: Implement full audit trail recording
-        // For now, skip detailed recording to avoid schema issues
+        let duration_ms = duration.as_millis() as i32;
+        let (response_status, response_body, error_message) = match result {
+            Ok(response) => (Some(response.status_code as i32), response.body.clone(), None),
+            Err(e) => (None, String::new(), Some(e.to_string())),
+        };
+
+        if let Err(e) = sqlx::query(
+            r"
+            INSERT INTO delivery_attempts (
+                event_id, attempt_number, request_url, request_headers,
+                response_status, response_headers, response_body,
+                attempted_at, duration_ms, error_type, error_message
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+            )
+            ",
+        )
+        .bind(&event.id)
+        .bind(attempt_number as i32)
+        .bind(url)
+        .bind(serde_json::json!({})) // Empty headers for now
+        .bind(response_status)
+        .bind(serde_json::json!({})) // Empty response headers for now
+        .bind(response_body)
+        .bind(chrono::Utc::now())
+        .bind(duration_ms)
+        .bind(self.categorize_error(result))
+        .bind(error_message)
+        .execute(&self.pool)
+        .await
+        {
+            warn!(
+                worker_id = self.id,
+                event_id = %event.id,
+                url = url,
+                error = %e,
+                "failed to record delivery attempt"
+            );
+        }
+    }
+
+    /// Categorizes delivery errors for audit trail.
+    fn categorize_error(&self, result: &Result<crate::client::DeliveryResponse>) -> Option<String> {
+        match result {
+            Ok(_) => None,
+            Err(e) => {
+                let error_str = e.to_string().to_lowercase();
+                if error_str.contains("timeout") {
+                    Some("timeout".to_string())
+                } else if error_str.contains("connection") {
+                    Some("connection_refused".to_string())
+                } else if error_str.contains("dns") {
+                    Some("dns".to_string())
+                } else if error_str.contains("ssl") || error_str.contains("tls") {
+                    Some("ssl".to_string())
+                } else {
+                    Some("network".to_string())
+                }
+            },
+        }
     }
 }
 
@@ -635,12 +702,12 @@ mod tests {
         let worker = create_test_worker(&env).await;
 
         // Get the event and attempt delivery
-        let event = get_event_by_id(&env, &event_id).await;
+        let event = event_by_id(&env, &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(result.is_ok(), "delivery should succeed: {:?}", result.err());
 
         // Verify event is marked as delivered
-        let updated_event = get_event_by_id(&env, &event_id).await;
+        let updated_event = event_by_id(&env, &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivered);
         assert!(updated_event.delivered_at.is_some());
 
@@ -670,7 +737,7 @@ mod tests {
         let worker = create_test_worker(&env).await;
 
         // Get event and attempt delivery
-        let event = get_event_by_id(&env, &event_id).await;
+        let event = event_by_id(&env, &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -679,7 +746,7 @@ mod tests {
         );
 
         // Verify event is marked for retry
-        let updated_event = get_event_by_id(&env, &event_id).await;
+        let updated_event = event_by_id(&env, &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Pending);
         assert_eq!(updated_event.failure_count, 1);
         assert!(updated_event.next_retry_at.is_some());
@@ -720,7 +787,7 @@ mod tests {
         let worker = create_test_worker_with_config(&env, config).await;
 
         // Get event and attempt delivery (this will be attempt #10)
-        let event = get_event_by_id(&env, &event_id).await;
+        let event = event_by_id(&env, &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -729,7 +796,7 @@ mod tests {
         );
 
         // Verify event is marked as permanently failed
-        let updated_event = get_event_by_id(&env, &event_id).await;
+        let updated_event = event_by_id(&env, &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
 
@@ -762,7 +829,7 @@ mod tests {
             .expect("failed to set event to delivering status");
 
         // Get event and attempt delivery
-        let event = get_event_by_id(&env, &event_id).await;
+        let event = event_by_id(&env, &event_id).await;
         let result = worker.attempt_delivery(&event).await;
 
         // Should fail with circuit open error
@@ -774,7 +841,7 @@ mod tests {
         }
 
         // Event should remain in delivering status (unchanged)
-        let updated_event = get_event_by_id(&env, &event_id).await;
+        let updated_event = event_by_id(&env, &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivering);
     }
 
@@ -865,7 +932,7 @@ mod tests {
         let worker = create_test_worker(&env).await;
 
         // Get event and attempt delivery
-        let event = get_event_by_id(&env, &event_id).await;
+        let event = event_by_id(&env, &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -874,7 +941,7 @@ mod tests {
         );
 
         // Verify event is marked as failed immediately (no retry)
-        let updated_event = get_event_by_id(&env, &event_id).await;
+        let updated_event = event_by_id(&env, &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
         assert!(updated_event.next_retry_at.is_none());
@@ -968,7 +1035,7 @@ mod tests {
         }
     }
 
-    async fn get_event_by_id(env: &TestEnv, event_id: &uuid::Uuid) -> WebhookEvent {
+    async fn event_by_id(env: &TestEnv, event_id: &uuid::Uuid) -> WebhookEvent {
         let row = sqlx::query(
             r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,

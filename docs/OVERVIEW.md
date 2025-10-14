@@ -99,11 +99,11 @@ Kapsel is a webhook reliability service foundation for building guaranteed at-le
 
 Once complete, we will guarantee that every accepted webhook will be delivered at least once to its destination endpoint, or marked as permanently failed after exhausting all retry attempts. This will be achieved through:
 
-- Persistent retry state in PostgreSQL (✅ Schema ready)
-- Idempotency keys to prevent duplicate processing (✅ Implemented)
-- Worker pool with claim-based processing (✅ Claiming works)
-- Exponential backoff retry logic (🚧 Not implemented)
-- Reconciliation loops for crash recovery (📋 Planned)
+- Persistent retry state in PostgreSQL (Schema ready)
+- Idempotency keys to prevent duplicate processing (Implemented)
+- Worker pool with claim-based processing (Claiming works)
+- Exponential backoff retry logic (Not implemented)
+- Reconciliation loops for crash recovery (Planned)
 
 ### Consistency Model
 

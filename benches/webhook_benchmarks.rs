@@ -236,7 +236,7 @@ fn bench_memory_usage(c: &mut Criterion) {
                 let env = TestEnv::new().await.unwrap();
 
                 // Measure baseline memory
-                let baseline = get_memory_usage();
+                let baseline = current_memory_usage();
 
                 // Create 1000 webhooks
                 let webhooks: Vec<_> = (0..1000).map(|_| create_test_webhook()).collect();
@@ -249,7 +249,7 @@ fn bench_memory_usage(c: &mut Criterion) {
                 }
 
                 // Measure memory after insertion
-                let after = get_memory_usage();
+                let after = current_memory_usage();
                 let memory_used = after.saturating_sub(baseline);
 
                 // Verify we're under 200MB for 1K webhooks
@@ -447,7 +447,7 @@ fn calculate_backoff_with_jitter(attempt: u32, jitter_factor: f32) -> Duration {
     Duration::from_millis(base.as_millis() as u64 + jitter_ms)
 }
 
-fn get_memory_usage() -> usize {
+fn current_memory_usage() -> usize {
     // Simplified memory measurement
     // In production, use proper memory profiling
     1024 * 1024 * 10 // Mock 10MB

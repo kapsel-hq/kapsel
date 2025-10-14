@@ -47,6 +47,7 @@ pub mod worker;
 pub mod worker_pool;
 
 // Re-export main public API
+pub use client::{ClientConfig, DeliveryClient, DeliveryRequest, DeliveryResponse};
 pub use error::{DeliveryError, Result};
 pub use worker::{DeliveryConfig, DeliveryEngine};
 pub use worker_pool::WorkerPool;
