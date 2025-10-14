@@ -26,10 +26,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
+//! use kapsel_delivery::{DeliveryConfig, DeliveryEngine, DeliveryError};
 //! use sqlx::PgPool;
 //!
-//! # async fn example(pool: PgPool) -> anyhow::Result<()> {
+//! # async fn example(pool: PgPool) -> std::result::Result<(), DeliveryError> {
 //! let config = DeliveryConfig::default();
 //! let engine = DeliveryEngine::new(pool, config);
 //!

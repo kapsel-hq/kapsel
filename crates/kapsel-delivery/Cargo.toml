@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 # Workspace dependencies
-anyhow = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
