@@ -9,22 +9,25 @@ pub mod http;
 pub mod invariants;
 pub mod time;
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
+use chrono::Utc;
+use database::TestDatabase;
+pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
+use kapsel_core::models::{EndpointId, EventId, TenantId};
+use sqlx::{PgPool, Postgres, Row};
+pub use time::Clock;
+use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
+
+use crate::fixtures::TestWebhook;
 
 /// Type alias for invariant check functions to reduce complexity
 type InvariantCheckFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 
 /// Type alias for assertion functions to reduce complexity
 type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
-use database::TestDatabase;
-pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
-use kapsel_core::models::{EndpointId, TenantId};
-use sqlx::{PgPool, Postgres, Row};
-pub use time::Clock;
-use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 /// Test environment with transaction-based database isolation.
 ///
@@ -115,6 +118,16 @@ impl TestEnv {
         self.clock.now()
     }
 
+    /// Get the current system time from the test clock.
+    pub fn now_system(&self) -> std::time::SystemTime {
+        self.clock.now_system()
+    }
+
+    /// Get elapsed time since the test clock was created.
+    pub fn elapsed(&self) -> Duration {
+        self.clock.elapsed()
+    }
+
     /// Create a test tenant with default configuration.
     pub async fn create_tenant(&mut self, name: &str) -> Result<TenantId> {
         self.create_tenant_with_plan(name, "enterprise").await
@@ -183,6 +196,181 @@ impl TestEnv {
         Ok((tenant_id, endpoint_id))
     }
 
+    /// Ingests a test webhook, persisting it to the database transaction.
+    ///
+    /// Handles idempotency by returning existing event ID if duplicate
+    /// source_event_id.
+    pub async fn ingest_webhook(&mut self, webhook: &TestWebhook) -> Result<EventId> {
+        let event_id = Uuid::new_v4();
+        let body_bytes = webhook.body.clone();
+        let payload_size = (body_bytes.len() as i32).max(1); // Ensure minimum size of 1
+
+        let result: (Uuid,) = sqlx::query_as(
+            "INSERT INTO webhook_events
+             (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+              status, failure_count, headers, body, content_type, payload_size, received_at)
+             VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, $7, $8, $9, $10)
+             ON CONFLICT (tenant_id, endpoint_id, source_event_id)
+             DO UPDATE SET id = webhook_events.id
+             RETURNING id",
+        )
+        .bind(event_id)
+        .bind(webhook.tenant_id)
+        .bind(webhook.endpoint_id)
+        .bind(&webhook.source_event_id)
+        .bind(&webhook.idempotency_strategy)
+        .bind(serde_json::to_value(&webhook.headers)?)
+        .bind(&body_bytes[..])
+        .bind(&webhook.content_type)
+        .bind(payload_size)
+        .bind(chrono::DateTime::<Utc>::from(self.now_system()))
+        .fetch_one(&mut **self.db())
+        .await
+        .context("failed to ingest test webhook")?;
+
+        Ok(EventId(result.0))
+    }
+
+    /// Gets the current status of a webhook event.
+    pub async fn get_webhook_status(&mut self, event_id: EventId) -> Result<String> {
+        let status: (String,) = sqlx::query_as("SELECT status FROM webhook_events WHERE id = $1")
+            .bind(event_id.0)
+            .fetch_one(&mut **self.db())
+            .await
+            .context("failed to get webhook status")?;
+        Ok(status.0)
+    }
+
+    /// Gets the number of delivery attempts for a webhook event.
+    pub async fn get_delivery_attempts_count(&mut self, event_id: EventId) -> Result<i64> {
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
+                .bind(event_id.0)
+                .fetch_one(&mut **self.db())
+                .await
+                .context("failed to get delivery attempts count")?;
+        Ok(count.0)
+    }
+
+    /// Simulates a single run of the delivery worker pool.
+    ///
+    /// Finds pending webhooks ready for delivery and processes them.
+    pub async fn run_delivery_cycle(&mut self) -> Result<()> {
+        // Find webhooks ready for delivery
+        let ready_webhooks: Vec<(EventId, Uuid, String, Vec<u8>, i32, String)> = sqlx::query_as(
+            "SELECT we.id, e.id as endpoint_id, e.url, we.body, we.failure_count, e.name
+             FROM webhook_events we
+             JOIN endpoints e ON we.endpoint_id = e.id
+             WHERE we.status = 'pending'
+             AND (we.next_retry_at IS NULL OR we.next_retry_at <= $1)
+             ORDER BY we.received_at
+             LIMIT 10",
+        )
+        .bind(chrono::DateTime::<Utc>::from(self.now_system()))
+        .fetch_all(&mut **self.db())
+        .await
+        .context("failed to fetch ready webhooks")?;
+
+        let webhook_count = ready_webhooks.len();
+        for (event_id, _endpoint_id, url, body, failure_count, _endpoint_name) in ready_webhooks {
+            // Make HTTP request to the mock server
+            let client = reqwest::Client::new();
+            let response_result = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("X-Kapsel-Event-Id", event_id.0.to_string())
+                .body(body.clone())
+                .send()
+                .await;
+
+            let (status_code, response_body, duration_ms, error_type) = match response_result {
+                Ok(response) => {
+                    let status = response.status().as_u16() as i32;
+                    let body = response.text().await.unwrap_or_default();
+                    let error_type = if status >= 500 {
+                        Some("http_error")
+                    } else if status >= 400 {
+                        Some("client_error")
+                    } else {
+                        None
+                    };
+                    (Some(status), Some(body), 75i32, error_type)
+                },
+                Err(_) => (None, None, 1000i32, Some("network_error")),
+            };
+
+            // Record delivery attempt
+            let attempt_number = failure_count + 1;
+            let attempt_id = Uuid::new_v4();
+            let attempted_at = chrono::DateTime::<Utc>::from(self.now_system());
+
+            sqlx::query(
+                "INSERT INTO delivery_attempts
+                 (id, event_id, attempt_number, request_url, request_headers,
+                  response_status, response_body, attempted_at, duration_ms, error_type)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            )
+            .bind(attempt_id)
+            .bind(event_id.0)
+            .bind(attempt_number)
+            .bind(&url)
+            .bind(serde_json::json!({"X-Kapsel-Event-Id": event_id.0.to_string()}))
+            .bind(status_code)
+            .bind(response_body)
+            .bind(attempted_at)
+            .bind(duration_ms)
+            .bind(error_type)
+            .execute(&mut **self.db())
+            .await
+            .context("failed to record delivery attempt")?;
+
+            // Update webhook status based on response
+            let (new_status, next_retry_at) = match status_code {
+                Some(200..=299) => ("delivered".to_string(), None),
+                _ => {
+                    let backoff_delay =
+                        time::backoff::deterministic_webhook_backoff(failure_count as u32);
+                    let current_time = chrono::DateTime::<Utc>::from(self.now_system());
+                    let next_retry =
+                        Some(current_time + chrono::Duration::from_std(backoff_delay)?);
+                    ("pending".to_string(), next_retry)
+                },
+            };
+
+            if new_status == "delivered" {
+                sqlx::query(
+                    "UPDATE webhook_events
+                     SET status = $1, delivered_at = $2, failure_count = $3, last_attempt_at = $4
+                     WHERE id = $5",
+                )
+                .bind(new_status)
+                .bind(attempted_at)
+                .bind(attempt_number)
+                .bind(attempted_at)
+                .bind(event_id.0)
+                .execute(&mut **self.db())
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE webhook_events
+                     SET status = $1, failure_count = $2, last_attempt_at = $3, next_retry_at = $4
+                     WHERE id = $5",
+                )
+                .bind(new_status)
+                .bind(attempt_number)
+                .bind(attempted_at)
+                .bind(next_retry_at)
+                .bind(event_id.0)
+                .execute(&mut **self.db())
+                .await?;
+            }
+        }
+
+        tracing::debug!("Processed {} webhooks in delivery cycle", webhook_count);
+        tokio::task::yield_now().await;
+        Ok(())
+    }
+
     /// Count rows in a table by ID.
     pub async fn count_by_id(&mut self, table: &str, id_column: &str, id: Uuid) -> Result<i64> {
         let query = format!("SELECT COUNT(*) as count FROM {} WHERE {} = $1", table, id_column);
@@ -229,23 +417,13 @@ pub struct ScenarioBuilder {
 }
 
 enum Step {
-    IngestWebhook {
-        endpoint_id: String,
-        #[allow(dead_code)]
-        payload: bytes::Bytes,
-    },
-    ExpectDelivery {
-        timeout: Duration,
-    },
-    InjectFailure {
-        kind: FailureKind,
-    },
-    AdvanceTime {
-        duration: Duration,
-    },
-    AssertState {
-        assertion: AssertionFn,
-    },
+    IngestWebhook(TestWebhook),
+    RunDeliveryCycle,
+    AdvanceTime(Duration),
+    InjectHttpFailure(http::MockResponse),
+    AssertState(AssertionFn),
+    ExpectStatus(EventId, String),
+    ExpectDeliveryAttempts(EventId, i64),
 }
 
 #[derive(Debug, Clone)]
@@ -263,26 +441,38 @@ impl ScenarioBuilder {
     }
 
     /// Add a webhook ingestion step.
-    pub fn ingest(mut self, endpoint_id: impl Into<String>, payload: bytes::Bytes) -> Self {
-        self.steps.push(Step::IngestWebhook { endpoint_id: endpoint_id.into(), payload });
+    pub fn ingest(mut self, webhook: TestWebhook) -> Self {
+        self.steps.push(Step::IngestWebhook(webhook));
         self
     }
 
-    /// Expect delivery within timeout.
-    pub fn expect_delivery(mut self, timeout: Duration) -> Self {
-        self.steps.push(Step::ExpectDelivery { timeout });
-        self
-    }
-
-    /// Inject a failure condition.
-    pub fn inject_failure(mut self, kind: FailureKind) -> Self {
-        self.steps.push(Step::InjectFailure { kind });
+    /// Run a delivery cycle to process pending webhooks.
+    pub fn run_delivery_cycle(mut self) -> Self {
+        self.steps.push(Step::RunDeliveryCycle);
         self
     }
 
     /// Advance test time.
     pub fn advance_time(mut self, duration: Duration) -> Self {
-        self.steps.push(Step::AdvanceTime { duration });
+        self.steps.push(Step::AdvanceTime(duration));
+        self
+    }
+
+    /// Inject an HTTP failure response.
+    pub fn inject_http_failure(mut self, response: http::MockResponse) -> Self {
+        self.steps.push(Step::InjectHttpFailure(response));
+        self
+    }
+
+    /// Expect a webhook to have a specific status.
+    pub fn expect_status(mut self, event_id: EventId, expected_status: impl Into<String>) -> Self {
+        self.steps.push(Step::ExpectStatus(event_id, expected_status.into()));
+        self
+    }
+
+    /// Expect a specific number of delivery attempts.
+    pub fn expect_delivery_attempts(mut self, event_id: EventId, expected_count: i64) -> Self {
+        self.steps.push(Step::ExpectDeliveryAttempts(event_id, expected_count));
         self
     }
 
@@ -291,7 +481,7 @@ impl ScenarioBuilder {
     where
         F: Fn(&mut TestEnv) -> Result<()> + 'static,
     {
-        self.steps.push(Step::AssertState { assertion: Box::new(assertion) });
+        self.steps.push(Step::AssertState(Box::new(assertion)));
         self
     }
 
@@ -308,28 +498,51 @@ impl ScenarioBuilder {
     pub async fn run(self, env: &mut TestEnv) -> Result<()> {
         tracing::info!("running scenario: {}", self.name);
 
+        // Use a HashMap to store event IDs created during the scenario
+        let mut event_ids: HashMap<String, EventId> = HashMap::new();
+
         for (i, step) in self.steps.into_iter().enumerate() {
             tracing::debug!("executing step {}", i + 1);
 
             match step {
-                Step::IngestWebhook { endpoint_id, payload: _ } => {
-                    tracing::debug!("ingesting webhook for endpoint {}", endpoint_id);
-                    // Actual ingestion logic would go here
+                Step::IngestWebhook(webhook) => {
+                    let source_id = webhook.source_event_id.clone();
+                    tracing::debug!("ingesting webhook with source_id {}", source_id);
+                    let event_id = env.ingest_webhook(&webhook).await?;
+                    event_ids.insert(source_id, event_id);
                 },
-                Step::ExpectDelivery { timeout } => {
-                    tracing::debug!("waiting for delivery within {:?}", timeout);
-                    // Delivery verification would go here
+                Step::RunDeliveryCycle => {
+                    tracing::debug!("running delivery cycle");
+                    env.run_delivery_cycle().await?;
                 },
-                Step::InjectFailure { kind } => {
-                    tracing::debug!("injecting failure: {:?}", kind);
-                    // Mock configuration would go here
-                },
-                Step::AdvanceTime { duration } => {
+                Step::AdvanceTime(duration) => {
                     env.advance_time(duration);
                     tracing::debug!("advanced time by {:?}", duration);
                 },
-                Step::AssertState { assertion } => {
+                Step::InjectHttpFailure(_response) => {
+                    tracing::debug!("injecting HTTP failure response");
+                    // This would configure the mock server with the failure
+                    // response For now, this is a
+                    // placeholder
+                },
+                Step::AssertState(assertion) => {
                     assertion(env).context("state assertion failed")?;
+                },
+                Step::ExpectStatus(event_id, expected) => {
+                    let actual = env.get_webhook_status(event_id).await?;
+                    assert_eq!(
+                        actual, expected,
+                        "Webhook status mismatch for event {}: expected '{}', got '{}'",
+                        event_id.0, expected, actual
+                    );
+                },
+                Step::ExpectDeliveryAttempts(event_id, expected) => {
+                    let actual = env.get_delivery_attempts_count(event_id).await?;
+                    assert_eq!(
+                        actual, expected,
+                        "Delivery attempt count mismatch for event {}: expected {}, got {}",
+                        event_id.0, expected, actual
+                    );
                 },
             }
 
@@ -398,7 +611,7 @@ mod tests {
         let mut env2 = TestEnv::new().await.unwrap();
 
         // Create data in first environment
-        let tenant1 = env1.create_tenant("env1-tenant").await.unwrap();
+        let _tenant1 = env1.create_tenant("env1-tenant").await.unwrap();
 
         // Query in first environment - should find it
         let count1: i64 =
@@ -433,16 +646,20 @@ mod tests {
         let mut env = TestEnv::new().await.unwrap();
 
         let scenario = ScenarioBuilder::new("test scenario")
-            .ingest("endpoint_1", bytes::Bytes::from("test payload"))
             .advance_time(Duration::from_secs(1))
-            .expect_delivery(Duration::from_secs(5))
             .assert_state(|env| {
                 // Custom assertion
-                assert!(env.clock.now().elapsed() >= Duration::from_secs(1));
+                assert!(env.elapsed() >= Duration::from_secs(1));
+                Ok(())
+            })
+            .advance_time(Duration::from_secs(2))
+            .assert_state(|env| {
+                // Verify cumulative time
+                assert!(env.elapsed() >= Duration::from_secs(3));
                 Ok(())
             })
             .check_invariant(|_env| {
-                // Invariant check
+                // Invariant check runs after each step
                 Ok(())
             });
 

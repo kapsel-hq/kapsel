@@ -196,6 +196,14 @@ pub mod backoff {
     pub fn standard_webhook_backoff(attempt: u32) -> Duration {
         exponential_with_jitter(attempt, Duration::from_secs(1), Duration::from_secs(512), 0.25)
     }
+
+    /// Deterministic exponential backoff without jitter for tests.
+    pub fn deterministic_webhook_backoff(attempt: u32) -> Duration {
+        let base = Duration::from_secs(1);
+        let capped_attempt = min(attempt, 10);
+        let delay = base * 2u32.pow(capped_attempt);
+        min(delay, Duration::from_secs(512))
+    }
 }
 
 #[cfg(test)]

@@ -1112,27 +1112,6 @@ mod tests {
         (tenant_id, endpoint_id, event_id)
     }
 
-    async fn create_test_worker(env: &TestEnv) -> DeliveryWorker {
-        create_test_worker_with_config(env, DeliveryConfig::default()).await
-    }
-
-    async fn create_test_worker_with_config(
-        env: &TestEnv,
-        config: DeliveryConfig,
-    ) -> DeliveryWorker {
-        DeliveryWorker {
-            id: 0,
-            pool: env.create_pool(),
-            config,
-            client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
-            circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
-                CircuitConfig::default(),
-            ))),
-            stats: Arc::new(RwLock::new(EngineStats::default())),
-            cancellation_token: CancellationToken::new(),
-        }
-    }
-
     async fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
         DeliveryWorker {
             id: 0,
