@@ -8,7 +8,7 @@ use test_harness::{fixtures::WebhookBuilder, Clock, TestEnv};
 #[tokio::test]
 async fn test_environment_initializes() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
 
     // Act - verify components are accessible
     let health_check = env.database_health_check().await.expect("Health check should work");
@@ -21,7 +21,7 @@ async fn test_environment_initializes() {
 #[tokio::test]
 async fn database_migrations_applied() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
 
     // Act - check if core tables exist
     let tables = env.list_tables().await.expect("Should query tables");
@@ -102,30 +102,28 @@ async fn webhook_fixture_builder_creates_valid_data() {
 #[tokio::test]
 async fn database_transaction_rollback_works() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
     let tenant_id = uuid::Uuid::new_v4();
 
     // Act - Test that transactions properly isolate operations
     // For this test, we'll verify that a transaction exists and can be created
-    let _tx = env.transaction().await.expect("Should create transaction");
+    let _tx = env.db();
 
     // The transaction will be dropped and rollback automatically
     // The key test is that our transaction infrastructure works
 
     // Test that normal operations work (not in transaction)
-    let initial_count = env
-        .count_rows_by_id("tenants", "id", &tenant_id.to_string())
-        .await
-        .expect("Should query count");
+    let initial_count =
+        env.count_by_id("tenants", "id", tenant_id).await.expect("Should query count");
 
     assert_eq!(initial_count, 0, "Tenant should not exist initially");
 
     // Test that a committed operation does persist
-    let tenant_id = env.create_tenant("Test Tenant").await.expect("Insert should work");
-    let tenant_id_str = tenant_id.0.to_string();
+    let created_tenant_id = env.create_tenant("Test Tenant").await.expect("Insert should work");
+    let _tenant_id_str = created_tenant_id.0.to_string();
 
     let final_count =
-        env.count_rows_by_id("tenants", "id", &tenant_id_str).await.expect("Should query count");
+        env.count_by_id("tenants", "id", created_tenant_id.0).await.expect("Should query count");
 
     assert_eq!(final_count, 1, "Tenant should exist after commit");
 }
@@ -137,7 +135,7 @@ async fn scenario_builder_executes_steps() {
     use test_harness::ScenarioBuilder;
 
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
 
     // Act - Build and run a simple scenario
     let scenario = ScenarioBuilder::new("test health check scenario")
@@ -149,5 +147,5 @@ async fn scenario_builder_executes_steps() {
         });
 
     // Assert - Scenario should run without errors
-    scenario.run(&env).await.expect("Scenario should execute successfully");
+    scenario.run(&mut env).await.expect("Scenario should execute successfully");
 }

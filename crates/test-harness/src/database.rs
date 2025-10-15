@@ -17,7 +17,6 @@ use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 /// Shared PostgreSQL container and connection pool for the entire test process.
 ///
@@ -228,6 +227,8 @@ impl TestDatabase {
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::*;
 
     #[tokio::test]
@@ -254,14 +255,14 @@ mod tests {
 
         // Insert in first transaction
         let tenant_id = Uuid::new_v4();
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
              VALUES ($1, $2, $3, $4, NOW(), NOW())",
-            tenant_id,
-            "isolated-tenant",
-            "enterprise",
-            "test-key"
         )
+        .bind(tenant_id)
+        .bind("isolated-tenant")
+        .bind("enterprise")
+        .bind("test-key")
         .execute(&mut *tx1)
         .await
         .unwrap();
@@ -285,14 +286,14 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
 
-            sqlx::query!(
+            sqlx::query(
                 "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
                  VALUES ($1, $2, $3, $4, NOW(), NOW())",
-                tenant_id,
-                "committed-tenant",
-                "enterprise",
-                "test-key"
             )
+            .bind(tenant_id)
+            .bind("committed-tenant")
+            .bind("enterprise")
+            .bind("test-key")
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -312,6 +313,10 @@ mod tests {
         assert_eq!(count.0, 1, "committed data should be visible");
 
         // Clean up the committed data
-        sqlx::query!("DELETE FROM tenants WHERE id = $1", tenant_id).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

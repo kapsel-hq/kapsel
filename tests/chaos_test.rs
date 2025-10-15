@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// from transient failures.
 #[tokio::test]
 async fn database_connectivity_resilience() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let mut env = TestEnv::new().await?;
 
     // Verify initial health
     let initial_health = env.database_health_check().await?;
@@ -30,16 +30,16 @@ async fn database_connectivity_resilience() -> Result<()> {
     assert!(tables.contains(&"tenants".to_string()));
     assert!(tables.contains(&"endpoints".to_string()));
 
-    // Verify the endpoint was created
+    // Verify the endpoint was created (within the same transaction)
     let endpoint_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
         .bind(endpoint_id.0)
-        .fetch_one(&env.db.pool())
+        .fetch_one(&mut **env.db())
         .await?;
     assert_eq!(endpoint_count, 1, "Endpoint should be created successfully");
 
     // Test transaction handling
     {
-        let mut tx = env.transaction().await?;
+        let tx = env.db();
 
         // Insert test data in transaction
         let test_id = Uuid::new_v4();
@@ -48,23 +48,23 @@ async fn database_connectivity_resilience() -> Result<()> {
             .bind("tx-test")
             .bind("free")
             .bind("test-key")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
 
         // Verify data exists in transaction
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
+        let count_in_tx: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
             .bind(test_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
-        assert_eq!(count, 1, "Data should exist in transaction");
+        assert_eq!(count_in_tx, 1, "Data should exist in transaction");
 
         // Transaction auto-rollbacks when dropped
     }
 
-    // Verify data was rolled back
+    // Verify data was rolled back (using a fresh pool to check committed state)
     let count_after_rollback: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE name = 'tx-test'")
-            .fetch_one(&env.db.pool())
+            .fetch_one(&env.create_pool())
             .await?;
     assert_eq!(count_after_rollback, 0, "Data should be rolled back");
 
@@ -81,7 +81,7 @@ async fn database_connectivity_resilience() -> Result<()> {
 /// properly handle timeout scenarios.
 #[tokio::test]
 async fn database_timeout_handling() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let mut env = TestEnv::new().await?;
 
     // Test that database operations complete within reasonable time
     let health_check_result = timeout(Duration::from_secs(5), env.database_health_check()).await;
@@ -90,10 +90,14 @@ async fn database_timeout_handling() -> Result<()> {
     assert!(health_check_result.unwrap()?, "Database should be healthy");
 
     // Test transaction timeout
-    let tx_result = timeout(Duration::from_secs(5), env.transaction()).await;
+    let tx_result: Result<(), tokio::time::error::Elapsed> =
+        timeout(Duration::from_secs(5), async {
+            // Simulate database operation that should not timeout
+            let _: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&mut **env.db()).await.unwrap();
+        })
+        .await;
 
     assert!(tx_result.is_ok(), "Transaction creation should not timeout");
-    let _tx = tx_result.unwrap()?;
 
     Ok(())
 }
@@ -104,7 +108,7 @@ async fn database_timeout_handling() -> Result<()> {
 /// operations without exhaustion.
 #[tokio::test]
 async fn connection_pool_resilience() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let mut env = TestEnv::new().await?;
 
     // Test multiple concurrent health checks without cloning TestEnv
     let mut results = Vec::new();
@@ -137,76 +141,97 @@ async fn connection_pool_resilience() -> Result<()> {
 }
 
 /// Tests transaction rollback consistency.
+/// Test transaction consistency and isolation guarantees under chaos scenarios.
 ///
-/// Verifies that failed transactions don't leave the database in
+/// This test verifies that transactions maintain ACID properties even when the
+/// system is under stress or experiences failures, ensuring no data is left in
 /// an inconsistent state.
 #[tokio::test]
 async fn transaction_consistency() -> Result<()> {
-    let env = TestEnv::new().await?;
+    // Test 1: Transaction isolation - data not visible outside transaction
+    let mut env1 = TestEnv::new().await?;
+    let tenant_id = env1.create_tenant("consistency-test").await?;
 
-    let tenant_id = env.create_tenant("consistency-test").await?;
+    let test_endpoint_id = Uuid::new_v4();
 
-    // Test successful transaction
+    // Insert data in transaction
+    sqlx::query(
+        r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#,
+    )
+    .bind(test_endpoint_id)
+    .bind(tenant_id.0)
+    .bind("test-endpoint")
+    .bind("http://test.com")
+    .bind(5i32)
+    .bind(30i32)
+    .bind("closed")
+    .execute(&mut **env1.db())
+    .await?;
+
+    // Data should not be visible from another connection
+    let external_pool = env1.create_pool();
+    let count_external: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
+        .bind(test_endpoint_id)
+        .fetch_one(&external_pool)
+        .await?;
+    assert_eq!(count_external, 0, "Transaction data should not be visible externally");
+
+    // Test 2: Transaction rollback (automatic on drop)
+    drop(env1); // This rolls back the transaction
+
+    // Verify data was rolled back
+    let env2 = TestEnv::new().await?;
+    let pool = env2.create_pool();
+    let count_after_rollback: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
+            .bind(test_endpoint_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(count_after_rollback, 0, "Data should be rolled back");
+
+    // Test 3: Transaction commit persistence
     {
-        let mut tx = env.transaction().await?;
-        let test_endpoint_id = Uuid::new_v4();
+        let mut env3 = TestEnv::new().await?;
+        let tenant_id = env3.create_tenant("commit-test").await?;
+        let commit_endpoint_id = Uuid::new_v4();
 
         sqlx::query(
-            r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
+            r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#,
         )
-        .bind(test_endpoint_id)
+        .bind(commit_endpoint_id)
         .bind(tenant_id.0)
-        .bind("test-endpoint")
-        .bind("http://test.com")
-        .bind(5i32)
-        .bind(30i32)
-        .execute(&mut *tx)
+        .bind("commit-endpoint")
+        .bind("http://commit.test")
+        .bind(3i32)
+        .bind(15i32)
+        .bind("closed")
+        .execute(&mut **env3.db())
         .await?;
 
-        tx.commit().await?;
+        // Commit the transaction
+        env3.commit().await?;
 
-        // Verify data was committed
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-            .bind(test_endpoint_id)
-            .fetch_one(&env.db.pool())
+        // Verify data persists after commit
+        let verify_pool = env2.create_pool();
+        let count_committed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
+                .bind(commit_endpoint_id)
+                .fetch_one(&verify_pool)
+                .await?;
+        assert_eq!(count_committed, 1, "Committed data should persist");
+
+        // Clean up committed data
+        sqlx::query("DELETE FROM endpoints WHERE id = $1")
+            .bind(commit_endpoint_id)
+            .execute(&verify_pool)
             .await?;
-        assert_eq!(count, 1, "Committed transaction should persist data");
-    }
-
-    // Test rollback scenario
-    {
-        let mut tx = env.transaction().await?;
-        let test_endpoint_id = Uuid::new_v4();
-
-        // Insert valid data
-        sqlx::query(
-            r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
-        )
-        .bind(test_endpoint_id)
-        .bind(tenant_id.0)
-        .bind("rollback-endpoint")
-        .bind("http://rollback.com")
-        .bind(5i32)
-        .bind(30i32)
-        .execute(&mut *tx)
-        .await?;
-
-        // Explicitly rollback
-        tx.rollback().await?;
-
-        // Verify data was not persisted
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-            .bind(test_endpoint_id)
-            .fetch_one(&env.db.pool())
+        sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(tenant_id.0)
+            .execute(&verify_pool)
             .await?;
-        assert_eq!(count, 0, "Rolled back transaction should not persist data");
     }
-
-    // Verify database is still consistent
-    let health = env.database_health_check().await?;
-    assert!(health, "Database should remain healthy after rollbacks");
 
     Ok(())
 }
@@ -217,34 +242,39 @@ async fn transaction_consistency() -> Result<()> {
 /// without corrupting the database state.
 #[tokio::test]
 async fn constraint_violation_handling() -> Result<()> {
-    let env = TestEnv::new().await?;
-
+    // Phase 1: Create and commit initial data
+    let mut env = TestEnv::new().await?;
     let tenant_id = env.create_tenant("constraint-test").await?;
-
-    // Create first endpoint with unique name
     let endpoint1_id = env.create_endpoint(tenant_id, "http://test1.com").await?;
 
+    // Commit this data so it's visible to external connections
+    env.commit().await?;
+
+    // Phase 2: Test constraint violation in a fresh environment
+    let mut env2 = TestEnv::new().await?;
+
     // Attempt to create endpoint with duplicate name (should fail)
-    let mut tx = env.transaction().await?;
     let duplicate_result: Result<sqlx::postgres::PgQueryResult, sqlx::Error> = sqlx::query(
-        r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds)
-           VALUES ($1, $2, $3, $4, $5, $6)"#
+        r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#
     )
     .bind(Uuid::new_v4())
     .bind(tenant_id.0)
-    .bind("test-endpoint") // This name already exists
+    .bind("test-endpoint") // This name conflicts with the committed endpoint
     .bind("http://duplicate.com")
     .bind(5i32)
     .bind(30i32)
-    .execute(&mut *tx)
+    .bind("closed")
+    .execute(&mut **env2.db())
     .await;
 
     assert!(duplicate_result.is_err(), "Duplicate endpoint name should be rejected");
 
-    // Verify original data is still intact and specifically our endpoint
+    // Phase 3: Verify original data is still intact (using external connection)
+    let pool = env2.create_pool();
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE tenant_id = $1")
         .bind(tenant_id.0)
-        .fetch_one(&env.db.pool())
+        .fetch_one(&pool)
         .await?;
     assert_eq!(count, 1, "Original endpoint should still exist");
 
@@ -252,13 +282,18 @@ async fn constraint_violation_handling() -> Result<()> {
     let endpoint_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM endpoints WHERE id = $1)")
             .bind(endpoint1_id.0)
-            .fetch_one(&env.db.pool())
+            .fetch_one(&pool)
             .await?;
     assert!(endpoint_exists, "Original endpoint should still exist after constraint violation");
 
-    // Verify database health after constraint violation
-    let health = env.database_health_check().await?;
-    assert!(health, "Database should be healthy after constraint violations");
+    // Verify database health after constraint violation (using fresh environment)
+    let mut env3 = TestEnv::new().await?;
+    let health = env3.database_health_check().await?;
+    assert!(health, "Database should remain healthy after constraint violations");
+
+    // Clean up committed data
+    sqlx::query("DELETE FROM endpoints WHERE id = $1").bind(endpoint1_id.0).execute(&pool).await?;
+    sqlx::query("DELETE FROM tenants WHERE id = $1").bind(tenant_id.0).execute(&pool).await?;
 
     Ok(())
 }

@@ -10,19 +10,11 @@ use test_harness::{
     fixtures::{scenarios, EndpointBuilder, WebhookBuilder},
     http::{MockEndpoint, ScenarioBuilder as HttpScenarioBuilder},
     time::{backoff, Clock, TestClock},
-    TestConfig,
 };
 
 #[tokio::test]
 async fn test_infrastructure_components_work() {
-    // Arrange - Create test environment without database
-    let _config = TestConfig {
-        enable_tracing: false,
-        database_name: None,
-        seed: Some(12345), // Deterministic seed
-    };
-
-    // This will skip database setup and only test in-memory components
+    // Test infrastructure components without database setup
     let clock = TestClock::new();
 
     // Act & Assert - Test time manipulation

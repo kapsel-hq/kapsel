@@ -12,6 +12,12 @@ pub mod time;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+/// Type alias for invariant check functions to reduce complexity
+type InvariantCheckFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
+
+/// Type alias for assertion functions to reduce complexity
+type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 use database::TestDatabase;
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 use kapsel_core::models::{EndpointId, TenantId};
@@ -118,14 +124,14 @@ impl TestEnv {
     pub async fn create_tenant_with_plan(&mut self, name: &str, plan: &str) -> Result<TenantId> {
         let tenant_id = Uuid::new_v4();
 
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
              VALUES ($1, $2, $3, $4, NOW(), NOW())",
-            tenant_id,
-            name,
-            plan,
-            format!("test-key-{}", tenant_id.simple())
         )
+        .bind(tenant_id)
+        .bind(name)
+        .bind(plan)
+        .bind(format!("test-key-{}", tenant_id.simple()))
         .execute(&mut **self.db())
         .await
         .context("failed to create test tenant")?;
@@ -149,17 +155,17 @@ impl TestEnv {
     ) -> Result<EndpointId> {
         let endpoint_id = Uuid::new_v4();
 
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO endpoints (id, tenant_id, url, name, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())",
-            endpoint_id,
-            tenant_id.0,
-            url,
-            name,
-            max_retries,
-            timeout_seconds,
-            "closed"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"
         )
+        .bind(endpoint_id)
+        .bind(tenant_id.0)
+        .bind(url)
+        .bind(name)
+        .bind(max_retries)
+        .bind(timeout_seconds)
+        .bind("closed")
         .execute(&mut **self.db())
         .await
         .context("failed to create test endpoint")?;
@@ -219,15 +225,27 @@ impl TestEnv {
 pub struct ScenarioBuilder {
     name: String,
     steps: Vec<Step>,
-    invariant_checks: Vec<Box<dyn Fn(&mut TestEnv) -> Result<()>>>,
+    invariant_checks: Vec<InvariantCheckFn>,
 }
 
 enum Step {
-    IngestWebhook { endpoint_id: String, payload: bytes::Bytes },
-    ExpectDelivery { timeout: Duration },
-    InjectFailure { kind: FailureKind },
-    AdvanceTime { duration: Duration },
-    AssertState { assertion: Box<dyn Fn(&mut TestEnv) -> Result<()>> },
+    IngestWebhook {
+        endpoint_id: String,
+        #[allow(dead_code)]
+        payload: bytes::Bytes,
+    },
+    ExpectDelivery {
+        timeout: Duration,
+    },
+    InjectFailure {
+        kind: FailureKind,
+    },
+    AdvanceTime {
+        duration: Duration,
+    },
+    AssertState {
+        assertion: AssertionFn,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -268,8 +268,9 @@ proptest! {
             half_open_max_requests: 3,
         };
 
+        // Create a new runtime to avoid nested runtime issues
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
+        rt.block_on(async {
             let manager = CircuitBreakerManager::new(config);
             let endpoint_id = "test-endpoint";
 
@@ -311,8 +312,9 @@ proptest! {
         let failed_requests = failed_requests.min(total_requests);
         let expected_rate = failed_requests as f64 / total_requests as f64;
 
+        // Create a new runtime to avoid nested runtime issues
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
+        rt.block_on(async {
             let manager = CircuitBreakerManager::new(CircuitConfig::default());
             let endpoint_id = "test-endpoint";
 
@@ -433,8 +435,7 @@ proptest! {
             half_open_max_requests: 5,
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
+        tokio::runtime::Handle::current().block_on(async {
             let manager = CircuitBreakerManager::new(config);
             let endpoint_id = "fuzz-endpoint";
 

@@ -7,6 +7,7 @@ use insta::assert_snapshot;
 use kapsel_core::TenantId;
 use serde_json::json;
 use test_harness::TestEnv;
+use tokio_util::sync::CancellationToken;
 
 /// Deterministic test data for consistent snapshot testing
 struct DeterministicTestData {
@@ -15,6 +16,82 @@ struct DeterministicTestData {
     event_id: uuid::Uuid,
     timestamp: DateTime<Utc>,
     host_port: String,
+}
+
+/// Helper to manage server lifecycle for tests
+struct TestServer {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    shutdown_token: CancellationToken,
+    addr: std::net::SocketAddr,
+}
+
+impl TestServer {
+    async fn start(pool: sqlx::PgPool) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+
+        let shutdown_token = CancellationToken::new();
+        let shutdown_token_clone = shutdown_token.clone();
+
+        let handle = tokio::spawn(async move {
+            let app = kapsel_api::create_router(pool);
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_token_clone.cancelled().await;
+                })
+                .await
+                .expect("Server failed");
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        Self { handle: Some(handle), shutdown_token, addr }
+    }
+
+    fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+
+    /// Gracefully shutdown the test server and wait for completion
+    #[allow(dead_code)]
+    async fn shutdown(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Signal shutdown
+        self.shutdown_token.cancel();
+
+        // Take the handle to move it
+        if let Some(handle) = self.handle.take() {
+            // Wait for server to complete
+            match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+                Ok(result) => {
+                    result.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                },
+                Err(_) => {
+                    return Err("Server shutdown timed out".into());
+                },
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        // Signal cancellation but can't await in Drop (sync context)
+        self.shutdown_token.cancel();
+
+        // If the handle is still running, we're in a problematic state
+        if let Some(handle) = &self.handle {
+            if !handle.is_finished() {
+                tracing::warn!(
+                    "TestServer dropped with active handle - call shutdown() explicitly"
+                );
+                // Force abort the task to prevent it from running forever
+                handle.abort();
+            }
+        }
+    }
 }
 
 impl DeterministicTestData {
@@ -35,21 +112,14 @@ impl DeterministicTestData {
 
 #[tokio::test]
 async fn webhook_ingestion_returns_200_with_event_id() {
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
 
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
-
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Create tenant with deterministic ID
     sqlx::query("INSERT INTO tenants (id, name, api_key) VALUES ($1, $2, $3)")
@@ -74,7 +144,7 @@ async fn webhook_ingestion_returns_200_with_event_id() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&json!({
             "user_id": 123,
@@ -104,15 +174,9 @@ async fn webhook_ingestion_persists_to_database() {
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
 
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Insert tenant first to satisfy foreign key constraint
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
@@ -142,9 +206,8 @@ async fn webhook_ingestion_persists_to_database() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
-        .header("Host", &test_data.host_port)
         .json(&json!({
             "order_id": "ord_123",
             "status": "completed"
@@ -154,9 +217,10 @@ async fn webhook_ingestion_persists_to_database() {
         .expect("Request should complete");
 
     assert_eq!(response.status(), 200);
-
     let body: serde_json::Value = response.json().await.unwrap();
     let event_id = body["event_id"].as_str().expect("event_id should be present");
+
+    assert!(!event_id.is_empty(), "Event ID should not be empty");
 
     // Verify webhook persisted to database
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -195,21 +259,14 @@ async fn webhook_ingestion_persists_to_database() {
 
 #[tokio::test]
 async fn webhook_ingestion_includes_payload_size() {
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
 
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
-
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Create tenant with deterministic ID
     sqlx::query("INSERT INTO tenants (id, name, api_key) VALUES ($1, $2, $3)")
@@ -238,7 +295,7 @@ async fn webhook_ingestion_includes_payload_size() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&test_payload)
         .send()
@@ -266,21 +323,14 @@ async fn webhook_ingestion_includes_payload_size() {
 
 #[tokio::test]
 async fn webhook_ingestion_validates_hmac_signature_success() {
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
 
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
-
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Create tenant with deterministic ID
     sqlx::query("INSERT INTO tenants (id, name, api_key) VALUES ($1, $2, $3)")
@@ -312,7 +362,7 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .header("X-Webhook-Signature", format!("sha256={}", signature))
         .json(&payload)
@@ -337,21 +387,14 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
 
 #[tokio::test]
 async fn webhook_ingestion_rejects_invalid_hmac_signature() {
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
 
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
-
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Create tenant with deterministic ID
     sqlx::query("INSERT INTO tenants (id, name, api_key) VALUES ($1, $2, $3)")
@@ -377,7 +420,7 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .header("X-Webhook-Signature", "sha256=invalid_signature_here")
         .json(&payload)
@@ -396,21 +439,14 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
 
 #[tokio::test]
 async fn webhook_ingestion_requires_signature_when_configured() {
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
 
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("Failed to bind");
-    let actual_addr = listener.local_addr().expect("Failed to get local addr");
-
-    let db_clone = pool.clone();
-    tokio::spawn(async move {
-        let app = kapsel_api::create_router(db_clone);
-        axum::serve(listener, app).await.expect("Server failed");
-    });
+    // Start test server
+    let server = TestServer::start(pool.clone()).await;
 
     // Create tenant with deterministic ID
     sqlx::query("INSERT INTO tenants (id, name, api_key) VALUES ($1, $2, $3)")
@@ -435,7 +471,7 @@ async fn webhook_ingestion_requires_signature_when_configured() {
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
+        .post(format!("http://{}/ingest/{}", server.addr(), test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
