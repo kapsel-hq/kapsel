@@ -37,6 +37,8 @@ testcontainers-modules = { workspace = true }
 
 # Additional utilities
 rand = { workspace = true }
+once_cell = "1.19"
+futures = "0.3"
 proptest = { workspace = true }
 
 # HTTP testing

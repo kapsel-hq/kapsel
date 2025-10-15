@@ -1,0 +1,13 @@
+# Cargo configuration for Kapsel workspace
+#
+# This file configures environment variables and build settings
+# that are used by cargo, rust-analyzer, and other tooling.
+
+[env]
+# Database URL for sqlx compile-time query checking
+# This allows rust-analyzer to validate sqlx macros without running tests
+DATABASE_URL = "postgres://postgres:postgres@localhost:5433/kapsel_test"
+
+[target.'cfg(target_os = "macos")']
+# macOS-specific settings for better performance
+rustflags = ["-C", "link-arg=-Wl,-ld_classic"]

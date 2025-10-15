@@ -35,8 +35,14 @@ async fn worker_pool_explicit_shutdown() -> Result<()> {
     let stats = Arc::new(RwLock::new(EngineStats::default()));
     let cancellation_token = CancellationToken::new();
 
-    let mut pool =
-        WorkerPool::new(env.db.pool(), config, client, circuit_manager, stats, cancellation_token);
+    let mut pool = WorkerPool::new(
+        env.create_pool(),
+        config,
+        client,
+        circuit_manager,
+        stats,
+        cancellation_token,
+    );
 
     pool.spawn_workers().await?;
     assert!(pool.has_active_workers(), "Workers should be active after spawning");
@@ -72,7 +78,7 @@ async fn worker_pool_drop_cleanup() -> Result<()> {
 
     {
         let mut pool = WorkerPool::new(
-            env.db.pool(),
+            env.create_pool(),
             config,
             client,
             circuit_manager,
@@ -113,7 +119,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
 
     let client1 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
     let mut pool1 = WorkerPool::new(
-        env1.db.pool(),
+        env1.create_pool(),
         config.clone(),
         client1,
         Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
@@ -123,7 +129,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
 
     let client2 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
     let mut pool2 = WorkerPool::new(
-        env2.db.pool(),
+        env2.create_pool(),
         config,
         client2,
         Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
@@ -170,7 +176,7 @@ async fn worker_pool_shutdown_timeout() -> Result<()> {
 
     let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
     let mut pool = WorkerPool::new(
-        env.db.pool(),
+        env.create_pool(),
         config,
         client,
         Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),

@@ -247,8 +247,7 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
-        let pg_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+        let pg_pool = env.create_pool();
 
         WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token)
     }
@@ -261,8 +260,7 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
-        let pg_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+        let pg_pool = env.create_pool();
 
         let mut pool =
             WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
@@ -286,8 +284,7 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
-        let pg_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+        let pg_pool = env.create_pool();
 
         let mut pool =
             WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
@@ -342,8 +339,7 @@ mod tests {
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let cancellation_token = CancellationToken::new();
-        let pg_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+        let pg_pool = env.create_pool();
 
         let mut pool = WorkerPool::new(
             pg_pool,
@@ -398,8 +394,7 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
-        let pg_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+        let pg_pool = env.create_pool();
 
         // Create and initialize worker pool
         let mut pool = WorkerPool::new(

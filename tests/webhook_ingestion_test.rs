@@ -35,8 +35,8 @@ impl DeterministicTestData {
 
 #[tokio::test]
 async fn webhook_ingestion_returns_200_with_event_id() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -72,8 +72,8 @@ async fn webhook_ingestion_returns_200_with_event_id() {
     // Set deterministic time on test clock
     env.clock.advance(std::time::Duration::from_secs(0));
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&json!({
@@ -99,8 +99,8 @@ async fn webhook_ingestion_returns_200_with_event_id() {
 
 #[tokio::test]
 async fn webhook_ingestion_persists_to_database() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -119,11 +119,12 @@ async fn webhook_ingestion_persists_to_database() {
         .bind(test_data.tenant_id.0)
         .bind("test-tenant")
         .bind("enterprise")
-        .execute(&pool)
+        .execute(&mut **env.db())
         .await
         .expect("Failed to insert test tenant");
 
-    sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+    // Endpoint WITH signature secret configured
+    sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, signature_secret) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
         .bind(test_data.endpoint_id)
         .bind(test_data.tenant_id.0)
         .bind("test-endpoint")
@@ -131,15 +132,16 @@ async fn webhook_ingestion_persists_to_database() {
         .bind(10i32)
         .bind(30i32)
         .bind("closed")
-        .execute(&pool)
+        .bind("configured_secret".to_string())
+        .execute(&mut **env.db())
         .await
         .expect("Failed to insert test endpoint");
 
     // Set deterministic time on test clock
     env.clock.advance(std::time::Duration::from_secs(0));
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .header("Host", &test_data.host_port)
@@ -159,7 +161,7 @@ async fn webhook_ingestion_persists_to_database() {
     // Verify webhook persisted to database
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
         .bind(uuid::Uuid::parse_str(event_id).unwrap())
-        .fetch_one(&pool)
+        .fetch_one(&mut **env.db())
         .await
         .expect("Should query database");
 
@@ -171,7 +173,7 @@ async fn webhook_ingestion_persists_to_database() {
         "SELECT to_jsonb(row_to_json(webhook_events)) FROM webhook_events WHERE id = $1",
     )
     .bind(uuid::Uuid::parse_str(event_id).unwrap())
-    .fetch_one(&pool)
+    .fetch_one(&mut **env.db())
     .await
     .expect("Should fetch persisted webhook event");
 
@@ -193,8 +195,8 @@ async fn webhook_ingestion_persists_to_database() {
 
 #[tokio::test]
 async fn webhook_ingestion_includes_payload_size() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -234,8 +236,8 @@ async fn webhook_ingestion_includes_payload_size() {
         }
     });
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&test_payload)
@@ -264,8 +266,8 @@ async fn webhook_ingestion_includes_payload_size() {
 
 #[tokio::test]
 async fn webhook_ingestion_validates_hmac_signature_success() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -308,8 +310,8 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
     let signature = kapsel_api::crypto::generate_hmac_hex(&payload_bytes, signing_secret)
         .expect("HMAC generation should succeed in test");
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .header("X-Webhook-Signature", format!("sha256={}", signature))
@@ -335,8 +337,8 @@ async fn webhook_ingestion_validates_hmac_signature_success() {
 
 #[tokio::test]
 async fn webhook_ingestion_rejects_invalid_hmac_signature() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -373,8 +375,8 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
 
     let payload = json!({"user_id": 123, "action": "user.created"});
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .header("X-Webhook-Signature", "sha256=invalid_signature_here")
@@ -394,8 +396,8 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {
 
 #[tokio::test]
 async fn webhook_ingestion_requires_signature_when_configured() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
-    let pool = env.db.pool();
+    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let pool = env.create_pool();
 
     // Setup deterministic test data
     let test_data = DeterministicTestData::new();
@@ -431,8 +433,8 @@ async fn webhook_ingestion_requires_signature_when_configured() {
 
     let payload = json!({"user_id": 123, "action": "user.created"});
 
-    let response = env
-        .client
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{}/ingest/{}", actual_addr, test_data.endpoint_id))
         .header("Content-Type", "application/json")
         .json(&payload)
