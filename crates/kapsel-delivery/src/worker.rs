@@ -287,7 +287,7 @@ impl DeliveryWorker {
     }
 
     /// Claims pending events from the database for processing.
-    async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
+    pub async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
         let now = Utc::now();
 
         // First, select events to claim using FOR UPDATE SKIP LOCKED
@@ -560,7 +560,7 @@ impl DeliveryWorker {
         Ok(())
     }
 
-    /// Gets the endpoint URL from the database.
+    /// Endpoint URL from the database.
     async fn endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
         let url = sqlx::query_scalar::<_, String>("SELECT url FROM endpoints WHERE id = $1")
             .bind(endpoint_id.0)
@@ -837,11 +837,13 @@ mod tests {
         let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&env, &webhook_url).await;
 
         // Update event to be at max retry limit (assuming default max_attempts = 10)
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
         sqlx::query("UPDATE webhook_events SET failure_count = 9 WHERE id = $1")
             .bind(event_id)
-            .execute(&env.db.pool())
+            .execute(&mut *tx)
             .await
             .expect("failed to update failure count");
+        tx.commit().await.expect("failed to commit transaction");
 
         // Create worker with low retry policy for testing
         let config = DeliveryConfig {
@@ -923,6 +925,7 @@ mod tests {
         // Insert second event under same tenant/endpoint
         let event2_id = uuid::Uuid::new_v4();
         let now = Utc::now();
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
         sqlx::query(
             r"
             INSERT INTO webhook_events (
@@ -944,7 +947,7 @@ mod tests {
         .bind("application/json")
         .bind(now)
         .bind(17) // payload_size for "{\"test\": \"data\"}"
-        .execute(&env.db.pool())
+        .execute(&mut *tx)
         .await
         .expect("failed to insert second test event");
 
@@ -952,9 +955,10 @@ mod tests {
         sqlx::query("UPDATE webhook_events SET status = 'pending' WHERE id IN ($1, $2)")
             .bind(event1_id)
             .bind(event2_id)
-            .execute(&env.db.pool())
+            .execute(&mut *tx)
             .await
             .expect("failed to set events to pending");
+        tx.commit().await.expect("failed to commit transaction");
 
         // Create worker
         let worker = create_test_worker(&env).await;
@@ -966,12 +970,13 @@ mod tests {
         assert_eq!(claimed_events.len(), 2);
 
         // Events should be marked as delivering in database
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
         let delivering_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM webhook_events WHERE status = 'delivering' AND id IN ($1, $2)",
         )
         .bind(event1_id)
         .bind(event2_id)
-        .fetch_one(&env.db.pool())
+        .fetch_one(&mut *tx)
         .await
         .expect("failed to count delivering events");
 
@@ -1092,12 +1097,9 @@ mod tests {
         env: &TestEnv,
         config: DeliveryConfig,
     ) -> DeliveryWorker {
-        let schema_aware_pool =
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
-
         DeliveryWorker {
             id: 0,
-            pool: schema_aware_pool,
+            pool: env.db.pool(),
             config,
             client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
             circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
@@ -1109,7 +1111,8 @@ mod tests {
     }
 
     async fn event_by_id(env: &TestEnv, event_id: &uuid::Uuid) -> WebhookEvent {
-        let mut tx = env.transaction().await.expect("failed to begin transaction");
+        let mut tx = env.db.begin_transaction().await.expect("failed to begin transaction");
+
         let row = sqlx::query(
             r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,

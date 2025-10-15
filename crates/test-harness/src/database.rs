@@ -1,247 +1,151 @@
-//! Database testing infrastructure with pre-allocated schema pool.
+//! Database testing infrastructure using Testcontainers for perfect isolation.
 //!
-//! This module provides scalable database testing by maintaining a fixed pool
-//! of pre-created database schemas. Tests claim a schema, use it in isolation,
-//! then return it for cleanup and reuse.
-//!
-//! Architecture:
-//! - Single shared connection pool (eliminates connection fragmentation)
-//! - Pre-allocated schemas (schema_001, schema_002, ..., schema_N)
-//! - Schema-based isolation via PostgreSQL search_path
-//! - Deterministic cleanup between tests
-
-use std::{collections::VecDeque, path::Path, sync::Arc};
+//! Each test gets its own PostgreSQL container, providing complete isolation
+//! and eliminating connection pool exhaustion issues.
 
 use anyhow::{Context, Result};
-use sqlx::{migrate::Migrator, postgres::PgConnectOptions, PgPool, Postgres, Transaction};
-use tokio::sync::{Mutex, OnceCell};
+use sqlx::{postgres::PgConnectOptions, PgPool};
+use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers_modules::postgres::Postgres;
 
-/// Number of pre-allocated schemas in the pool.
-/// Should be >= number of concurrent tests for optimal performance.
-const SCHEMA_POOL_SIZE: usize = 50;
-
-/// Shared database connection pool for all tests.
-static SHARED_POOL: OnceCell<PgPool> = OnceCell::const_new();
-
-/// Pool of available schema names for test isolation.
-static SCHEMA_POOL: OnceCell<Arc<Mutex<VecDeque<String>>>> = OnceCell::const_new();
-
-/// Get or initialize the shared database connection pool.
-async fn get_shared_pool() -> Result<&'static PgPool> {
-    SHARED_POOL
-        .get_or_try_init(|| async {
-            let connect_options = PgConnectOptions::new()
-                .host("localhost")
-                .port(5433)
-                .username("postgres")
-                .password("postgres")
-                .database("kapsel_test")
-                .ssl_mode(sqlx::postgres::PgSslMode::Disable);
-
-            let pool = sqlx::postgres::PgPoolOptions::new()
-                .max_connections(20)
-                .min_connections(5)
-                .acquire_timeout(std::time::Duration::from_secs(30))
-                .idle_timeout(Some(std::time::Duration::from_secs(600)))
-                .connect_with(connect_options)
-                .await
-                .context("Failed to connect to test database")?;
-
-            // Enable required extensions
-            sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
-                .execute(&pool)
-                .await
-                .context("Failed to enable UUID extension")?;
-
-            sqlx::query("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
-                .execute(&pool)
-                .await
-                .context("Failed to enable pgcrypto extension")?;
-
-            Ok(pool)
-        })
-        .await
-}
-
-/// Initialize the schema pool with pre-created schemas.
-async fn initialize_schema_pool() -> Result<Arc<Mutex<VecDeque<String>>>> {
-    let pool = get_shared_pool().await?;
-    let mut schema_names = VecDeque::with_capacity(SCHEMA_POOL_SIZE);
-
-    for i in 1..=SCHEMA_POOL_SIZE {
-        let schema_name = format!("test_schema_{:03}", i);
-
-        // Create schema if it doesn't exist
-        sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {}", schema_name))
-            .execute(pool)
-            .await
-            .with_context(|| format!("Failed to create schema {}", schema_name))?;
-
-        // Clean any existing data (in case of previous test failures)
-        cleanup_schema(&schema_name).await?;
-
-        // Run migrations in the schema
-        run_migrations_in_schema(&schema_name).await?;
-
-        schema_names.push_back(schema_name);
-    }
-
-    Ok(Arc::new(Mutex::new(schema_names)))
-}
-
-/// Get or initialize the schema pool.
-async fn get_schema_pool() -> Result<&'static Arc<Mutex<VecDeque<String>>>> {
-    SCHEMA_POOL.get_or_try_init(|| async { initialize_schema_pool().await }).await
-}
-
-/// Clean all data from a schema while preserving structure.
-async fn cleanup_schema(schema_name: &str) -> Result<()> {
-    let pool = get_shared_pool().await?;
-
-    // Set search_path to target schema
-    sqlx::query(&format!("SET search_path TO {}, public", schema_name)).execute(pool).await?;
-
-    // Delete data in dependency order (children first, parents last)
-    sqlx::query("DELETE FROM delivery_attempts").execute(pool).await?;
-    sqlx::query("DELETE FROM webhook_events").execute(pool).await?;
-    sqlx::query("DELETE FROM endpoints").execute(pool).await?;
-    sqlx::query("DELETE FROM tenants").execute(pool).await?;
-
-    Ok(())
-}
-
-/// Run database migrations in the specified schema.
-async fn run_migrations_in_schema(schema_name: &str) -> Result<()> {
-    let pool = get_shared_pool().await?;
-
-    // Set search_path to target schema for migrations
-    sqlx::query(&format!("SET search_path TO {}, public", schema_name)).execute(pool).await?;
-
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-
-    let migrations_path = workspace_root.join("migrations");
-    let migrator = Migrator::new(migrations_path).await?;
-
-    migrator
-        .run(pool)
-        .await
-        .with_context(|| format!("Failed to run migrations in schema {}", schema_name))?;
-
-    Ok(())
-}
-
-/// Guard that automatically returns schema to pool on drop.
-pub struct SchemaGuard {
-    schema_name: String,
-    returned: bool,
-}
-
-impl SchemaGuard {
-    fn new(schema_name: String) -> Self {
-        Self { schema_name, returned: false }
-    }
-
-    /// Get the schema name for this guard.
-    pub fn schema_name(&self) -> &str {
-        &self.schema_name
-    }
-
-    /// Manually return schema to pool (automatic on drop).
-    pub async fn release(mut self) -> Result<()> {
-        if !self.returned {
-            self.return_to_pool().await?;
-            self.returned = true;
-        }
-        Ok(())
-    }
-
-    async fn return_to_pool(&self) -> Result<()> {
-        // Clean the schema before returning it
-        cleanup_schema(&self.schema_name).await?;
-
-        // Return schema to available pool
-        let pool = get_schema_pool().await?;
-        let mut available_schemas = pool.lock().await;
-        available_schemas.push_back(self.schema_name.clone());
-
-        Ok(())
-    }
-}
-
-impl Drop for SchemaGuard {
-    fn drop(&mut self) {
-        if !self.returned {
-            // Best-effort cleanup on drop - can't propagate errors
-            let schema_name = self.schema_name.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cleanup_schema(&schema_name).await {
-                    eprintln!("Failed to cleanup schema {} on drop: {}", schema_name, e);
-                }
-
-                // Return to pool
-                if let Ok(pool) = get_schema_pool().await {
-                    let mut available_schemas = pool.lock().await;
-                    available_schemas.push_back(schema_name);
-                }
-            });
-        }
-    }
-}
-
-/// Test database with isolated schema from pre-allocated pool.
+/// Test database with its own PostgreSQL container.
+///
+/// Each instance creates its own PostgreSQL container, providing complete
+/// isolation. The container is automatically cleaned up when dropped.
 pub struct TestDatabase {
     pool: PgPool,
-    _schema_guard: SchemaGuard,
+    _container: ContainerAsync<Postgres>,
+    port: u16,
 }
 
 impl TestDatabase {
-    /// Claim a schema from the pool for isolated testing.
+    /// Create a new test database with its own PostgreSQL container.
     pub async fn new() -> Result<Self> {
-        let pool = get_shared_pool().await?;
-        let schema_pool = get_schema_pool().await?;
+        // Start PostgreSQL container
+        let postgres_image = Postgres::default().with_tag("16-alpine");
+        let container: ContainerAsync<Postgres> = AsyncRunner::start(postgres_image)
+            .await
+            .context("Failed to start PostgreSQL container")?;
 
-        // Claim a schema from the pool
-        let schema_name = {
-            let mut available_schemas = schema_pool.lock().await;
-            available_schemas.pop_front()
-                .context("No available schemas in pool - increase SCHEMA_POOL_SIZE or reduce test concurrency")?
-        };
+        let port =
+            container.get_host_port_ipv4(5432).await.context("Failed to get PostgreSQL port")?;
 
-        // Set connection search_path to use the claimed schema
-        let guard = SchemaGuard::new(schema_name);
+        // Connect to container
+        let connect_options = PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(port)
+            .username("postgres")
+            .password("postgres")
+            .database("postgres")
+            .ssl_mode(sqlx::postgres::PgSslMode::Disable);
 
-        Ok(Self { pool: pool.clone(), _schema_guard: guard })
+        let pool = Self::wait_and_connect(connect_options).await?;
+
+        // Enable extensions
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+            .execute(&pool)
+            .await
+            .context("Failed to enable UUID extension")?;
+
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
+            .execute(&pool)
+            .await
+            .context("Failed to enable pgcrypto extension")?;
+
+        // Run migrations
+        Self::run_migrations(&pool).await?;
+
+        Ok(Self { pool, _container: container, port })
     }
 
-    /// Get the database connection pool.
+    /// Wait for PostgreSQL to be ready and establish connection.
+    async fn wait_and_connect(options: PgConnectOptions) -> Result<PgPool> {
+        let mut retries = 30;
+        let mut last_error = None;
+
+        while retries > 0 {
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(20)
+                .min_connections(5)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .connect_with(options.clone())
+                .await
+            {
+                Ok(pool) => {
+                    // Verify connection works
+                    if sqlx::query("SELECT 1").execute(&pool).await.is_ok() {
+                        return Ok(pool);
+                    }
+                    pool.close().await;
+                },
+                Err(e) => last_error = Some(e),
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            retries -= 1;
+        }
+
+        Err(last_error
+            .map(|e| anyhow::anyhow!("Failed to connect to PostgreSQL: {}", e))
+            .unwrap_or_else(|| anyhow::anyhow!("Failed to connect to PostgreSQL after 30 retries")))
+    }
+
+    /// Run database migrations.
+    async fn run_migrations(pool: &PgPool) -> Result<()> {
+        let workspace_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let migrations_path = workspace_root.join("migrations");
+
+        sqlx::migrate::Migrator::new(migrations_path)
+            .await?
+            .run(pool)
+            .await
+            .context("Failed to run migrations")?;
+
+        Ok(())
+    }
+
+    /// Database connection pool for this test database.
     pub fn pool(&self) -> PgPool {
         self.pool.clone()
     }
 
-    /// Get the schema name for this test database.
+    /// Schema name (always 'public' for isolated containers).
     pub fn schema_name(&self) -> &str {
-        self._schema_guard.schema_name()
+        "public"
     }
 
-    /// Execute a query with automatic search_path set to test schema.
+    /// Begin a transaction.
+    pub async fn begin_transaction(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        self.pool.begin().await.context("Failed to begin transaction")
+    }
+
+    /// Execute a query in this database.
     pub async fn execute_in_schema(&self, query: &str) -> Result<sqlx::postgres::PgQueryResult> {
-        let search_path_query = format!("SET search_path TO {}, public", self.schema_name());
-        sqlx::query(&search_path_query).execute(&self.pool).await?;
-
-        sqlx::query(query)
-            .execute(&self.pool)
-            .await
-            .context("Failed to execute query in test schema")
+        sqlx::query(query).execute(&self.pool).await.context("Failed to execute query")
     }
 
-    /// Begin a transaction with search_path set to test schema.
-    pub async fn begin_transaction(&self) -> Result<Transaction<'_, Postgres>> {
-        let mut tx = self.pool.begin().await?;
+    /// Create a new connection pool for components that need their own.
+    ///
+    /// Essential for testing DeliveryWorker and similar components.
+    pub async fn create_schema_aware_pool(&self) -> Result<PgPool> {
+        let connect_options = PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(self.port)
+            .username("postgres")
+            .password("postgres")
+            .database("postgres")
+            .ssl_mode(sqlx::postgres::PgSslMode::Disable);
 
-        let search_path_query = format!("SET search_path TO {}, public", self.schema_name());
-        sqlx::query(&search_path_query).execute(&mut *tx).await?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(10)
+            .min_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect_with(connect_options)
+            .await
+            .context("Failed to create additional connection pool")?;
 
-        Ok(tx)
+        Ok(pool)
     }
 
     /// Seed test data into the database.
@@ -272,37 +176,12 @@ impl TestDatabase {
             "https://api.example.com/webhooks",
             3i32,
             "closed"
-        ).execute(&mut *tx).await?;
+        )
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(())
-    }
-
-    /// Create a new connection pool with search_path set to this test schema.
-    ///
-    /// This is useful for components like workers that need their own pool
-    /// but must operate within the test schema isolation.
-    pub async fn create_schema_aware_pool(&self) -> Result<PgPool> {
-        let search_path = format!("{},public", self.schema_name());
-        let connect_options = PgConnectOptions::new()
-            .host("localhost")
-            .port(5433)
-            .username("postgres")
-            .password("postgres")
-            .database("kapsel_test")
-            .options([("search_path", &search_path)])
-            .ssl_mode(sqlx::postgres::PgSslMode::Disable);
-
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .min_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-            .idle_timeout(Some(std::time::Duration::from_secs(60)))
-            .connect_with(connect_options)
-            .await
-            .context("Failed to create schema-aware connection pool")?;
-
-        Ok(pool)
     }
 }
 
@@ -311,48 +190,65 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_schema_pool_initialization() {
-        let schema_pool = get_schema_pool().await.unwrap();
-        let schemas = schema_pool.lock().await;
-        assert_eq!(schemas.len(), SCHEMA_POOL_SIZE);
+    async fn test_database_creation() {
+        let db = TestDatabase::new().await.unwrap();
+
+        // Verify we can execute queries
+        let result: (i32,) =
+            sqlx::query_as("SELECT 1 as test").fetch_one(&db.pool()).await.unwrap();
+        assert_eq!(result.0, 1);
     }
 
     #[tokio::test]
-    async fn test_database_isolation() {
+    async fn test_complete_isolation() {
+        // Create two databases - each with its own container
         let db1 = TestDatabase::new().await.unwrap();
         let db2 = TestDatabase::new().await.unwrap();
 
-        // Schemas should be different
-        assert_ne!(db1.schema_name(), db2.schema_name());
-
-        // Each database should be isolated
+        // Seed data in db1
         db1.seed_test_data().await.unwrap();
 
-        // db2 should not see db1's data
-        let mut tx2 = db2.begin_transaction().await.unwrap();
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(&mut *tx2).await.unwrap();
-        assert_eq!(count, 0);
+        // db2 should only have the system tenant (different container)
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants")
+            .fetch_one(&db2.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
-    async fn test_schema_cleanup_on_drop() {
-        let _schema_name = {
-            let db = TestDatabase::new().await.unwrap();
-            db.seed_test_data().await.unwrap();
-            db.schema_name().to_string()
-        }; // db drops here, should trigger cleanup
-
-        // Give cleanup time to complete
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Create new database that might reuse the cleaned schema
+    async fn test_worker_pool_creation() {
         let db = TestDatabase::new().await.unwrap();
-        let mut tx = db.begin_transaction().await.unwrap();
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(&mut *tx).await.unwrap();
 
-        // Schema should be clean (either reused and cleaned, or different schema)
-        assert_eq!(count, 0);
+        // Seed data
+        db.seed_test_data().await.unwrap();
+
+        // Create worker pool
+        let worker_pool = db.create_schema_aware_pool().await.unwrap();
+
+        // Worker pool should see system tenant + seeded tenant
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants")
+            .fetch_one(&worker_pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+
+        worker_pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn test_seed_data() {
+        let db = TestDatabase::new().await.unwrap();
+
+        // Initially has system tenant
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(&db.pool()).await.unwrap();
+        assert_eq!(count, 1);
+
+        // After seeding has system tenant + test tenant
+        db.seed_test_data().await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(&db.pool()).await.unwrap();
+        assert_eq!(count, 2);
     }
 }

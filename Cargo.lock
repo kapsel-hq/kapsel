@@ -3161,6 +3161,8 @@ dependencies = [
  "reqwest",
  "serde_json",
  "sqlx",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
  "tracing-subscriber",

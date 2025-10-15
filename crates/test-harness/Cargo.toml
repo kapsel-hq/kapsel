@@ -32,6 +32,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # Database testing - PostgreSQL via static container
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
 
 # Additional utilities
 rand = { workspace = true }

@@ -408,17 +408,17 @@ impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
 }
 
 impl WebhookEvent {
-    /// Get the headers as a regular HashMap for easy access.
+    /// Headers as a regular HashMap for easy access.
     pub fn headers(&self) -> &HashMap<String, String> {
         &self.headers.0
     }
 
-    /// Get the body as Bytes for zero-copy operations.
+    /// Body as Bytes for zero-copy operations.
     pub fn body_bytes(&self) -> Bytes {
         Bytes::from(self.body.clone())
     }
 
-    /// Get the raw body as a byte slice.
+    /// Raw body as a byte slice.
     pub fn body(&self) -> &[u8] {
         &self.body
     }

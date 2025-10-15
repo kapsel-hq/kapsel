@@ -247,15 +247,10 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
+        let pg_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
 
-        WorkerPool::new(
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool"),
-            config,
-            client,
-            circuit_manager,
-            stats,
-            cancellation_token,
-        )
+        WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token)
     }
 
     #[tokio::test]
@@ -266,15 +261,11 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
+        let pg_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
 
-        let mut pool = WorkerPool::new(
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool"),
-            config,
-            client,
-            circuit_manager,
-            stats,
-            cancellation_token,
-        );
+        let mut pool =
+            WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
 
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
@@ -295,15 +286,11 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
+        let pg_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
 
-        let mut pool = WorkerPool::new(
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool"),
-            config,
-            client,
-            circuit_manager,
-            stats,
-            cancellation_token,
-        );
+        let mut pool =
+            WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
         // Small delay to ensure workers are running
@@ -355,9 +342,11 @@ mod tests {
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let cancellation_token = CancellationToken::new();
+        let pg_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
 
         let mut pool = WorkerPool::new(
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool"),
+            pg_pool,
             config,
             client,
             circuit_manager,
@@ -409,10 +398,12 @@ mod tests {
         let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
+        let pg_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
 
         // Create and initialize worker pool
         let mut pool = WorkerPool::new(
-            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool"),
+            pg_pool,
             config,
             client,
             circuit_manager,
