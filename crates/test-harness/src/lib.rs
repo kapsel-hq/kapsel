@@ -62,7 +62,7 @@ impl TestEnv {
 
     /// Creates a test transaction that auto-rollbacks.
     pub async fn transaction(&self) -> Result<TestTransaction> {
-        self.db.transaction().await
+        self.db.begin_test_transaction().await
     }
 
     /// Attaches a running Axum server to this test environment.
@@ -87,10 +87,11 @@ impl TestEnv {
     pub async fn list_tables(&self) -> Result<Vec<String>> {
         sqlx::query_scalar(
             "SELECT table_name FROM information_schema.tables
-             WHERE table_schema = 'public'
+             WHERE table_schema = $1
              AND table_type = 'BASE TABLE'
              ORDER BY table_name",
         )
+        .bind(self.db.schema_name())
         .fetch_all(&self.db.pool())
         .await
         .context("Failed to query PostgreSQL tables")
