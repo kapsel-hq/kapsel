@@ -4,7 +4,6 @@
 //! or become unavailable. Simplified to use existing TestEnv API.
 
 use anyhow::{Context, Result};
-// Types are inferred from TestEnv method returns
 use test_harness::TestEnv;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;

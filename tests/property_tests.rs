@@ -824,8 +824,6 @@ proptest! {
     }
 }
 
-// Helper functions for property tests
-
 #[derive(Debug, Clone)]
 struct MockResponse {
     event_id: Uuid,

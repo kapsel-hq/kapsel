@@ -21,11 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -34,13 +32,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -56,39 +51,12 @@ jobs:
             rust: nightly
             experimental: true
     continue-on-error: ${{ matrix.experimental == true }}
-
-    services:
-      postgres:
-        # GitHub Actions services only work on Linux
-        image: ${{ matrix.os == 'ubuntu-latest' && 'postgres:15' || '' }}
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-
       - uses: Swatinem/rust-cache@v2
-
-      - name: Start PostgreSQL (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          docker-compose up -d postgres-test
-          # Wait for PostgreSQL to be ready
-          sleep 10
-
       - name: Install sqlx-cli
         run: |
           cargo install sqlx-cli \
@@ -96,79 +64,21 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
-
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-
-      - name: Setup database (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo sqlx database create
-          cargo sqlx migrate run
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
-      - name: Setup database (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          cargo sqlx database create
-          cargo sqlx migrate run
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5433/kapsel_test
-
-      - name: Run tests (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Run tests
         run: cargo nextest run --workspace --no-fail-fast
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
-      - name: Run tests (macOS)
-        if: matrix.os == 'macos-latest'
-        run: cargo nextest run --workspace --no-fail-fast
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5433/kapsel_test
-
-      - name: Run doc tests (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Run doc tests
         run: cargo test --doc --workspace
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
-      - name: Run doc tests (macOS)
-        if: matrix.os == 'macos-latest'
-        run: cargo test --doc --workspace
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5433/kapsel_test
-
-      - name: Stop PostgreSQL (macOS)
-        if: matrix.os == 'macos-latest' && always()
-        run: docker-compose down
 
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Install dependencies
         run: |
           cargo install cargo-llvm-cov
@@ -177,24 +87,12 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
-
       - name: Install nextest
         uses: taiki-e/install-action@nextest
-
-      - name: Setup database
-        run: |
-          cargo sqlx database create
-          cargo sqlx migrate run
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
       - name: Generate coverage
         run: |
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
       - name: Upload to codecov
         uses: codecov/codecov-action@v3
         with:
@@ -206,14 +104,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-audit
         run: cargo install cargo-audit
-
       - name: Run audit
         run: cargo audit
 
@@ -222,11 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-machete
         run: cargo install cargo-machete
 
@@ -238,11 +129,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Check documentation
         run: cargo doc --no-deps --all-features --workspace
         env:
@@ -251,28 +139,10 @@ jobs:
   sqlx-prepare:
     name: SQLx Prepare Check
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Install sqlx-cli
         run: |
           cargo install sqlx-cli \
@@ -280,31 +150,18 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
-
-      - name: Setup database
-        run: |
-          cargo sqlx database create
-          cargo sqlx migrate run
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
-
       - name: Check sqlx prepare
         run: cargo sqlx prepare --check --workspace
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/kapsel_test
 
   msrv:
     name: Minimum Supported Rust Version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Check MSRV
         run: cargo check --workspace
 

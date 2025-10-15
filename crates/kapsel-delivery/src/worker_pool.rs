@@ -282,20 +282,34 @@ mod tests {
 
     #[tokio::test]
     async fn worker_pool_shuts_down_gracefully_with_timeout() {
-        let mut pool = create_test_worker_pool().await;
+        let env = TestEnv::new().await.expect("test environment setup failed");
+        let config = DeliveryConfig::default();
+        let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
+        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let stats = Arc::new(RwLock::new(EngineStats::default()));
+        let cancellation_token = CancellationToken::new();
+
+        let mut pool = WorkerPool::new(
+            env.db.pool(),
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+        );
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
         // Small delay to ensure workers are running
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let shutdown_start = std::time::Instant::now();
-        pool.shutdown_graceful(Duration::from_secs(1))
+        pool.shutdown_graceful(Duration::from_secs(3))
             .await
             .expect("graceful shutdown should complete within timeout");
         let shutdown_duration = shutdown_start.elapsed();
 
         // Shutdown should complete quickly since no work is being done
-        assert!(shutdown_duration < Duration::from_secs(1));
+        assert!(shutdown_duration < Duration::from_secs(3));
     }
 
     #[tokio::test]

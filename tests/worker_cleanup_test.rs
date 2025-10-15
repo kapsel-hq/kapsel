@@ -16,7 +16,6 @@ use test_harness::TestEnv;
 use tokio::{sync::RwLock, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-/// Test that worker pool spawns workers and shuts them down gracefully.
 #[tokio::test]
 async fn worker_pool_explicit_shutdown() -> Result<()> {
     let env = TestEnv::new().await?;
@@ -39,10 +38,7 @@ async fn worker_pool_explicit_shutdown() -> Result<()> {
     let mut pool =
         WorkerPool::new(env.db.pool(), config, client, circuit_manager, stats, cancellation_token);
 
-    // Spawn workers
     pool.spawn_workers().await?;
-
-    // Verify workers are active
     assert!(pool.has_active_workers(), "Workers should be active after spawning");
 
     // Let workers run briefly to ensure they're actually working
@@ -54,7 +50,6 @@ async fn worker_pool_explicit_shutdown() -> Result<()> {
     Ok(())
 }
 
-/// Test that worker pool Drop implementation prevents orphaned tasks.
 #[tokio::test]
 async fn worker_pool_drop_cleanup() -> Result<()> {
     let env = TestEnv::new().await?;
@@ -85,16 +80,11 @@ async fn worker_pool_drop_cleanup() -> Result<()> {
             cancellation_token,
         );
 
-        // Spawn workers
         pool.spawn_workers().await?;
-
-        // Verify workers are active
         assert!(pool.has_active_workers(), "Workers should be active after spawning");
 
         // Let workers run briefly
         tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Don't call shutdown_graceful - let Drop handle cleanup
     } // WorkerPool goes out of scope here, Drop should be called
 
     // Give the Drop implementation time to cancel workers
@@ -106,7 +96,6 @@ async fn worker_pool_drop_cleanup() -> Result<()> {
     Ok(())
 }
 
-/// Test that multiple worker pools don't interfere with each other.
 #[tokio::test]
 async fn multiple_worker_pools_isolation() -> Result<()> {
     let env1 = TestEnv::new().await?;
@@ -122,7 +111,6 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         shutdown_timeout: Duration::from_secs(5),
     };
 
-    // Create first pool
     let client1 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
     let mut pool1 = WorkerPool::new(
         env1.db.pool(),
@@ -133,7 +121,6 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         CancellationToken::new(),
     );
 
-    // Create second pool
     let client2 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
     let mut pool2 = WorkerPool::new(
         env2.db.pool(),
@@ -144,14 +131,12 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         CancellationToken::new(),
     );
 
-    // Spawn workers on both pools
     pool1.spawn_workers().await?;
     pool2.spawn_workers().await?;
 
     assert!(pool1.has_active_workers(), "Pool 1 should have active workers");
     assert!(pool2.has_active_workers(), "Pool 2 should have active workers");
 
-    // Let them run briefly
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Verify pool2 is still active before shutting down pool1
@@ -169,7 +154,6 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
     Ok(())
 }
 
-/// Test that shutdown timeout works correctly.
 #[tokio::test]
 async fn worker_pool_shutdown_timeout() -> Result<()> {
     let env = TestEnv::new().await?;
