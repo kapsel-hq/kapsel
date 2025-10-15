@@ -183,6 +183,7 @@ kapsel-api = { path = "crates/kapsel-api" }
 kapsel-delivery = { path = "crates/kapsel-delivery" }
 axum = { workspace = true }
 serde_json = { workspace = true }
+tokio-util = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }

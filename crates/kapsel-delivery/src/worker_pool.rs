@@ -116,7 +116,7 @@ impl WorkerPool {
     /// This method will signal cancellation to all workers and wait for them to
     /// complete their current work within the configured shutdown timeout.
     #[allow(dead_code)]
-    pub async fn shutdown_graceful(self, timeout: Duration) -> Result<()> {
+    pub async fn shutdown_graceful(mut self, timeout: Duration) -> Result<()> {
         info!(
             worker_count = self.worker_handles.len(),
             timeout_seconds = timeout.as_secs(),
@@ -130,7 +130,9 @@ impl WorkerPool {
         let shutdown_future = async {
             let mut results = Vec::new();
 
-            for (worker_id, handle) in self.worker_handles.into_iter().enumerate() {
+            for (worker_id, handle) in
+                std::mem::take(&mut self.worker_handles).into_iter().enumerate()
+            {
                 match handle.await {
                     Ok(worker_result) => {
                         if let Err(error) = worker_result {
@@ -186,6 +188,38 @@ impl WorkerPool {
                 );
                 Err(DeliveryError::ShutdownTimeout { timeout })
             },
+        }
+    }
+
+    /// Check if any workers are still running.
+    pub fn has_active_workers(&self) -> bool {
+        self.worker_handles.iter().any(|h| !h.is_finished())
+    }
+}
+
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
+        // Check if we have active workers that weren't shut down properly
+        if !self.worker_handles.is_empty() {
+            let active_count = self.worker_handles.iter().filter(|h| !h.is_finished()).count();
+
+            if active_count > 0 && !self.cancellation_token.is_cancelled() {
+                // This is a programming error - workers should be explicitly shut down
+                error!(
+                    active_workers = active_count,
+                    "WorkerPool dropped with {} active workers! Forcing cancellation to prevent orphaned tasks",
+                    active_count
+                );
+
+                // Force cancellation to prevent workers from running forever
+                self.cancellation_token.cancel();
+
+                // Note: We can't await the workers here since Drop is sync,
+                // but at least we've signaled them to stop
+                warn!(
+                    "WorkerPool was not shut down gracefully. Call shutdown_graceful() before dropping to ensure clean shutdown."
+                );
+            }
         }
     }
 }
