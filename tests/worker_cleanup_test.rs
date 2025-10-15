@@ -1,0 +1,220 @@
+//! Tests for worker pool cleanup and orphaned task prevention.
+//!
+//! This test verifies that worker pools properly clean up their background
+//! tasks and don't leave orphaned workers running after tests complete.
+
+use std::{sync::Arc, time::Duration};
+
+use anyhow::Result;
+use kapsel_delivery::{
+    circuit::CircuitBreakerManager,
+    client::{ClientConfig, DeliveryClient},
+    worker::{DeliveryConfig, EngineStats},
+    worker_pool::WorkerPool,
+};
+use test_harness::TestEnv;
+use tokio::{sync::RwLock, time::timeout};
+use tokio_util::sync::CancellationToken;
+
+/// Test that worker pool spawns workers and shuts them down gracefully.
+#[tokio::test]
+async fn worker_pool_explicit_shutdown() -> Result<()> {
+    let env = TestEnv::new().await?;
+
+    let config = DeliveryConfig {
+        worker_count: 2,
+        batch_size: 10,
+        poll_interval: Duration::from_millis(100),
+        client_config: ClientConfig { timeout: Duration::from_secs(5), ..Default::default() },
+        default_retry_policy: Default::default(),
+
+        shutdown_timeout: Duration::from_secs(5),
+    };
+
+    let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+    let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+    let stats = Arc::new(RwLock::new(EngineStats::default()));
+    let cancellation_token = CancellationToken::new();
+
+    let mut pool =
+        WorkerPool::new(env.db.pool(), config, client, circuit_manager, stats, cancellation_token);
+
+    // Spawn workers
+    pool.spawn_workers().await?;
+
+    // Verify workers are active
+    assert!(pool.has_active_workers(), "Workers should be active after spawning");
+
+    // Let workers run briefly to ensure they're actually working
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Explicitly shut down workers (consumes pool, guaranteeing cleanup)
+    pool.shutdown_graceful(Duration::from_secs(5)).await?;
+
+    Ok(())
+}
+
+/// Test that worker pool Drop implementation prevents orphaned tasks.
+#[tokio::test]
+async fn worker_pool_drop_cleanup() -> Result<()> {
+    let env = TestEnv::new().await?;
+
+    let config = DeliveryConfig {
+        worker_count: 2,
+        batch_size: 10,
+        poll_interval: Duration::from_millis(100),
+        client_config: ClientConfig::default(),
+        default_retry_policy: Default::default(),
+
+        shutdown_timeout: Duration::from_secs(5),
+    };
+
+    let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+    let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+    let stats = Arc::new(RwLock::new(EngineStats::default()));
+    let cancellation_token = CancellationToken::new();
+    let cancellation_token_clone = cancellation_token.clone();
+
+    {
+        let mut pool = WorkerPool::new(
+            env.db.pool(),
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+        );
+
+        // Spawn workers
+        pool.spawn_workers().await?;
+
+        // Verify workers are active
+        assert!(pool.has_active_workers(), "Workers should be active after spawning");
+
+        // Let workers run briefly
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Don't call shutdown_graceful - let Drop handle cleanup
+    } // WorkerPool goes out of scope here, Drop should be called
+
+    // Give the Drop implementation time to cancel workers
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify cancellation token was triggered by Drop
+    assert!(cancellation_token_clone.is_cancelled(), "Drop should have cancelled the token");
+
+    Ok(())
+}
+
+/// Test that multiple worker pools don't interfere with each other.
+#[tokio::test]
+async fn multiple_worker_pools_isolation() -> Result<()> {
+    let env1 = TestEnv::new().await?;
+    let env2 = TestEnv::new().await?;
+
+    let config = DeliveryConfig {
+        worker_count: 1,
+        batch_size: 5,
+        poll_interval: Duration::from_millis(100),
+        client_config: ClientConfig::default(),
+        default_retry_policy: Default::default(),
+
+        shutdown_timeout: Duration::from_secs(5),
+    };
+
+    // Create first pool
+    let client1 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+    let mut pool1 = WorkerPool::new(
+        env1.db.pool(),
+        config.clone(),
+        client1,
+        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(EngineStats::default())),
+        CancellationToken::new(),
+    );
+
+    // Create second pool
+    let client2 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+    let mut pool2 = WorkerPool::new(
+        env2.db.pool(),
+        config,
+        client2,
+        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(EngineStats::default())),
+        CancellationToken::new(),
+    );
+
+    // Spawn workers on both pools
+    pool1.spawn_workers().await?;
+    pool2.spawn_workers().await?;
+
+    assert!(pool1.has_active_workers(), "Pool 1 should have active workers");
+    assert!(pool2.has_active_workers(), "Pool 2 should have active workers");
+
+    // Let them run briefly
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify pool2 is still active before shutting down pool1
+    assert!(pool2.has_active_workers(), "Pool 2 should still be running");
+
+    // Shutdown pool1 (consumes pool1)
+    pool1.shutdown_graceful(Duration::from_secs(5)).await?;
+
+    // Pool2 should still be running
+    assert!(pool2.has_active_workers(), "Pool 2 should still be running after pool1 shutdown");
+
+    // Shutdown pool2 (consumes pool2)
+    pool2.shutdown_graceful(Duration::from_secs(5)).await?;
+
+    Ok(())
+}
+
+/// Test that shutdown timeout works correctly.
+#[tokio::test]
+async fn worker_pool_shutdown_timeout() -> Result<()> {
+    let env = TestEnv::new().await?;
+
+    let config = DeliveryConfig {
+        worker_count: 1,
+        batch_size: 10,
+        poll_interval: Duration::from_millis(100),
+        client_config: ClientConfig::default(),
+        default_retry_policy: Default::default(),
+
+        shutdown_timeout: Duration::from_secs(5),
+    };
+
+    let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+    let mut pool = WorkerPool::new(
+        env.db.pool(),
+        config,
+        client,
+        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(EngineStats::default())),
+        CancellationToken::new(),
+    );
+
+    pool.spawn_workers().await?;
+
+    // Shutdown should complete within reasonable time
+    let shutdown_result = timeout(
+        Duration::from_secs(10), // Generous timeout for the test itself
+        pool.shutdown_graceful(Duration::from_millis(100)), // Short timeout for workers
+    )
+    .await;
+
+    match shutdown_result {
+        Ok(Ok(())) => {
+            // Successful shutdown
+        },
+        Ok(Err(e)) => {
+            // Worker shutdown may have timed out, which is acceptable for this test
+            tracing::info!("Worker shutdown timed out as expected: {}", e);
+        },
+        Err(_) => {
+            panic!("Test itself timed out - shutdown_graceful took too long");
+        },
+    }
+
+    Ok(())
+}
