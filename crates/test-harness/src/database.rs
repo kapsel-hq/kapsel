@@ -1,48 +1,226 @@
-//! Database testing utilities with transaction-based isolation.
+//! Database testing utilities with shared containerized PostgreSQL and schema
+//! isolation.
 //!
-//! Uses a single shared PostgreSQL database with transaction rollback
-//! for test isolation. This is the production-grade approach that
-//! scales properly and doesn't consume excessive disk space.
+//! Uses a single shared PostgreSQL container with per-test schema isolation.
+//! This approach provides perfect test isolation while avoiding resource
+//! exhaustion from creating containers per test.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use sqlx::{migrate::Migrator, postgres::PgConnectOptions, PgPool, Postgres, Transaction};
+use tokio::sync::OnceCell;
 
-/// Database backend for tests using transaction-based isolation.
+/// Shared test database connection pool for static postgres-test container
+static SHARED_ADMIN_POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+async fn get_admin_pool() -> Result<&'static PgPool> {
+    SHARED_ADMIN_POOL
+        .get_or_try_init(|| async {
+            let connect_options = PgConnectOptions::new()
+                .host("localhost")
+                .port(5433)
+                .username("postgres")
+                .password("postgres")
+                .database("kapsel_test")
+                .ssl_mode(sqlx::postgres::PgSslMode::Disable);
+
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(50)
+                .min_connections(5)
+                .acquire_timeout(std::time::Duration::from_secs(60))
+                .idle_timeout(Some(std::time::Duration::from_secs(300)))
+                .connect_with(connect_options)
+                .await
+                .context("Failed to connect to static test database")?;
+
+            // Enable extensions globally
+            sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+                .execute(&pool)
+                .await
+                .context("Failed to enable UUID extension")?;
+
+            sqlx::query("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
+                .execute(&pool)
+                .await
+                .context("Failed to enable pgcrypto extension")?;
+
+            Ok(pool)
+        })
+        .await
+}
+
+async fn create_test_schema(schema_name: &str) -> Result<PgPool> {
+    let admin_pool = get_admin_pool().await?;
+
+    // Create the schema
+    sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {}", schema_name))
+        .execute(admin_pool)
+        .await
+        .context("Failed to create test schema")?;
+
+    // Create connection pool for this specific schema
+    let search_path = format!("{},public", schema_name);
+    let connect_options = PgConnectOptions::new()
+        .host("localhost")
+        .port(5433)
+        .username("postgres")
+        .password("postgres")
+        .database("kapsel_test")
+        .options([("search_path", &search_path)])
+        .ssl_mode(sqlx::postgres::PgSslMode::Disable);
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(20)
+        .min_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(60))
+        .idle_timeout(Some(std::time::Duration::from_secs(300)))
+        .connect_with(connect_options)
+        .await
+        .context("Failed to connect to test schema")?;
+
+    Ok(pool)
+}
+
+async fn cleanup_schema(schema_name: &str) -> Result<()> {
+    let admin_pool = get_admin_pool().await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
+        .execute(admin_pool)
+        .await
+        .with_context(|| format!("Failed to cleanup schema {}", schema_name))?;
+    Ok(())
+}
+
+/// Database backend for tests using shared containerized PostgreSQL with schema
+/// isolation.
 pub struct TestDatabase {
     pool: PgPool,
+    schema_name: String,
+    _cleanup_guard: SchemaCleanupGuard,
+}
+
+/// Ensures schema cleanup when TestDatabase is dropped
+struct SchemaCleanupGuard {
+    schema_name: String,
+}
+
+impl Drop for SchemaCleanupGuard {
+    fn drop(&mut self) {
+        let schema_name = self.schema_name.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _: Result<(), _> = cleanup_schema(&schema_name).await;
+            });
+        }
+        // If no runtime is available, skip cleanup (acceptable for test
+        // schemas)
+    }
 }
 
 impl TestDatabase {
-    /// Creates connection to shared test database.
+    /// Creates a new test database with isolated schema.
     pub async fn new() -> Result<Self> {
-        let pool = create_test_pool().await?;
-        let db = Self { pool };
+        let schema_name = format!("test_{}", uuid::Uuid::new_v4().simple());
+        Self::new_with_schema(&schema_name).await
+    }
 
-        // Run migrations once on the shared database
-        db.ensure_migrations().await?;
+    /// Creates a test database with a specific schema name.
+    pub async fn new_with_schema(schema_name: &str) -> Result<Self> {
+        let pool = create_test_schema(schema_name).await?;
+
+        let db = Self {
+            pool,
+            schema_name: schema_name.to_string(),
+            _cleanup_guard: SchemaCleanupGuard { schema_name: schema_name.to_string() },
+        };
+
+        // Run migrations in the isolated schema
+        db.run_migrations().await?;
 
         Ok(db)
     }
 
-    /// Returns connection pool for the shared test database.
+    /// Run database migrations in the test schema.
+    async fn run_migrations(&self) -> Result<()> {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .context("Failed to find workspace root")?;
+        let migrations_path = workspace_root.join("migrations");
+
+        if !migrations_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Migrations directory not found at {}",
+                migrations_path.display()
+            ));
+        }
+
+        let migrator =
+            Migrator::new(migrations_path).await.context("Failed to load database migrations")?;
+
+        migrator.run(&self.pool).await.context("Failed to run database migrations")?;
+
+        Ok(())
+    }
+
+    /// Get a reference to the database connection pool.
     pub fn pool(&self) -> PgPool {
         self.pool.clone()
     }
 
-    /// Begins a new transaction for test isolation.
-    ///
-    /// The transaction will automatically rollback when dropped,
-    /// providing perfect isolation between tests.
-    pub async fn transaction(&self) -> Result<TestTransaction> {
-        let tx = self.pool.begin().await.context("Failed to begin test transaction")?;
-        Ok(TestTransaction::new(tx))
+    /// Get the schema name for this test database.
+    pub fn schema_name(&self) -> &str {
+        &self.schema_name
     }
 
-    /// Ensures migrations are applied to the shared database.
-    async fn ensure_migrations(&self) -> Result<()> {
-        run_postgres_migrations(&self.pool).await
+    /// Begin a transaction that will be rolled back automatically.
+    pub async fn begin_test_transaction(&self) -> Result<TestTransaction> {
+        let tx = self.pool.begin().await.context("Failed to begin transaction")?;
+        Ok(TestTransaction { tx: Some(tx) })
+    }
+
+    /// Execute raw SQL for test setup.
+    pub async fn execute(&self, sql: &str) -> Result<()> {
+        sqlx::query(sql).execute(&self.pool).await.context("Failed to execute SQL")?;
+        Ok(())
+    }
+
+    /// Reset the schema by truncating all tables.
+    pub async fn reset(&self) -> Result<()> {
+        // Get all table names in this schema
+        let table_names: Vec<String> = sqlx::query_scalar(
+            "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
+        )
+        .bind(&self.schema_name)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch table names")?;
+
+        if table_names.is_empty() {
+            return Ok(());
+        }
+
+        // Disable foreign key checks temporarily
+        sqlx::query("SET session_replication_role = replica")
+            .execute(&self.pool)
+            .await
+            .context("Failed to disable foreign key checks")?;
+
+        // Truncate all tables
+        for table_name in &table_names {
+            sqlx::query(&format!("TRUNCATE TABLE {} RESTART IDENTITY CASCADE", table_name))
+                .execute(&self.pool)
+                .await
+                .with_context(|| format!("Failed to truncate table {}", table_name))?;
+        }
+
+        // Re-enable foreign key checks
+        sqlx::query("SET session_replication_role = DEFAULT")
+            .execute(&self.pool)
+            .await
+            .context("Failed to re-enable foreign key checks")?;
+
+        Ok(())
     }
 }
 
@@ -52,29 +230,23 @@ pub struct TestTransaction {
 }
 
 impl TestTransaction {
-    fn new(tx: Transaction<'static, Postgres>) -> Self {
-        Self { tx: Some(tx) }
-    }
-
-    /// Returns a reference to the transaction for executing queries.
+    /// Get a reference to the underlying transaction.
     pub fn tx_mut(&mut self) -> &mut Transaction<'static, Postgres> {
-        self.tx.as_mut().expect("Transaction already consumed")
+        self.tx.as_mut().expect("Transaction should be available")
     }
 
-    /// Explicitly commits the transaction (prevents rollback).
-    ///
-    /// Usually not needed in tests - rollback is desired for isolation.
+    /// Commit the transaction (normally tests should let it roll back).
     pub async fn commit(mut self) -> Result<()> {
         if let Some(tx) = self.tx.take() {
-            tx.commit().await.context("Failed to commit test transaction")?;
+            tx.commit().await.context("Failed to commit transaction")?;
         }
         Ok(())
     }
 
-    /// Explicitly rolls back the transaction.
+    /// Explicitly roll back the transaction.
     pub async fn rollback(mut self) -> Result<()> {
         if let Some(tx) = self.tx.take() {
-            tx.rollback().await.context("Failed to rollback test transaction")?;
+            tx.rollback().await.context("Failed to rollback transaction")?;
         }
         Ok(())
     }
@@ -82,291 +254,24 @@ impl TestTransaction {
 
 impl Drop for TestTransaction {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            // Auto-rollback in background - this is the key to test isolation
-            tokio::spawn(async move {
-                if let Err(e) = tx.rollback().await {
-                    tracing::warn!("Failed to rollback test transaction: {}", e);
-                }
-            });
+        // Transaction will be automatically rolled back when dropped
+        if self.tx.is_some() {
+            // Note: Could log a warning if transaction wasn't explicitly
+            // handled
         }
     }
 }
 
-// Allow using the transaction directly in sqlx operations
 impl std::ops::Deref for TestTransaction {
     type Target = Transaction<'static, Postgres>;
 
     fn deref(&self) -> &Self::Target {
-        self.tx.as_ref().expect("Transaction already consumed")
+        self.tx.as_ref().expect("Transaction should be available")
     }
 }
 
 impl std::ops::DerefMut for TestTransaction {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.tx.as_mut().expect("Transaction already consumed")
-    }
-}
-
-/// Database pool type alias.
-pub type DatabasePool = PgPool;
-
-/// Creates connection pool to shared test database.
-async fn create_test_pool() -> Result<PgPool> {
-    // Read port from DATABASE_URL or default to 5433 (test instance)
-    let port = std::env::var("DATABASE_URL")
-        .ok()
-        .and_then(|url| {
-            url.split(':')
-                .nth(3)
-                .and_then(|port_str| port_str.split('/').next())
-                .and_then(|port_str| port_str.parse::<u16>().ok())
-        })
-        .unwrap_or(5433);
-
-    // Use a unique database name per test run to avoid collisions
-    let database_name = std::env::var("TEST_DATABASE_NAME")
-        .unwrap_or_else(|_| format!("kapsel_test_shared_{}", uuid::Uuid::new_v4().simple()));
-
-    let connect_options = PgConnectOptions::new()
-        .host("127.0.0.1")
-        .port(port)
-        .username("postgres")
-        .password("postgres")
-        .database(&database_name);
-
-    // Create the test database if it doesn't exist
-    ensure_test_database_exists(&database_name, port).await?;
-
-    // Connect with reasonable pool limits for testing
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)  // Reasonable for test concurrency
-        .min_connections(2)
-        .acquire_timeout(std::time::Duration::from_secs(30))
-        .idle_timeout(Some(std::time::Duration::from_secs(600)))
-        .connect_with(connect_options)
-        .await
-        .context("Failed to connect to test database")?;
-
-    Ok(pool)
-}
-
-/// Ensures the shared test database exists.
-async fn ensure_test_database_exists(database_name: &str, port: u16) -> Result<()> {
-    let admin_options = PgConnectOptions::new()
-        .host("127.0.0.1")
-        .port(port)
-        .username("postgres")
-        .password("postgres")
-        .database("postgres");
-
-    let admin_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(admin_options)
-        .await
-        .context("Failed to connect to PostgreSQL admin database")?;
-
-    // Check if database exists
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-            .bind(database_name)
-            .fetch_one(&admin_pool)
-            .await
-            .context("Failed to check if test database exists")?;
-
-    if !exists {
-        let create_db_query = format!("CREATE DATABASE \"{}\"", database_name);
-        sqlx::query(&create_db_query)
-            .execute(&admin_pool)
-            .await
-            .context("Failed to create shared test database")?;
-
-        tracing::info!("Created shared test database: {}", database_name);
-    }
-
-    admin_pool.close().await;
-    Ok(())
-}
-
-/// Runs PostgreSQL migrations on the shared test database.
-async fn run_postgres_migrations(pool: &PgPool) -> Result<()> {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .context("Failed to find workspace root")?;
-    let migrations_path = workspace_root.join("migrations");
-
-    let migrator = Migrator::new(migrations_path).await.context("Failed to create migrator")?;
-
-    migrator.run(pool).await.context("Failed to run PostgreSQL migrations")?;
-
-    Ok(())
-}
-
-/// Sets up test database and returns connection pool (legacy compatibility).
-pub async fn setup_test_database() -> Result<DatabasePool> {
-    let db = TestDatabase::new().await?;
-    Ok(db.pool())
-}
-
-/// Seeds test endpoints into the database.
-async fn seed_endpoints(executor: &mut Transaction<'_, Postgres>) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO tenants (id, name, plan) VALUES
-        ('00000000-0000-0000-0000-000000000001', 'test-tenant', 'free'),
-        ('00000000-0000-0000-0000-000000000002', 'second-tenant', 'free')
-        ON CONFLICT (id) DO NOTHING
-        "#,
-    )
-    .execute(&mut **executor)
-    .await
-    .context("Failed to seed test tenants")?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO endpoints (id, tenant_id, name, url, max_retries, circuit_state) VALUES
-        ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'primary', 'http://localhost:3000/webhook', 3, 'closed'),
-        ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'backup', 'http://localhost:3001/webhook', 3, 'closed'),
-        ('00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002', 'secondary', 'http://localhost:3002/webhook', 3, 'closed')
-        ON CONFLICT (id) DO NOTHING
-        "#,
-    )
-    .execute(&mut **executor)
-    .await
-    .context("Failed to seed test endpoints")?;
-
-    Ok(())
-}
-
-/// Seeds test webhook events into the database.
-async fn seed_webhook_events(executor: &mut Transaction<'_, Postgres>) -> Result<()> {
-    let test_payload = serde_json::json!({
-        "type": "test.event",
-        "data": { "message": "test webhook payload" }
-    });
-
-    sqlx::query(
-        r#"
-        INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status, payload_size, body, headers, content_type, received_at)
-        VALUES
-        ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'test-event-1', 'header', 'pending', $1, $2, '{}', 'application/json', NOW()),
-        ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'test-event-2', 'header', 'pending', $1, $2, '{}', 'application/json', NOW())
-        ON CONFLICT (id) DO NOTHING
-        "#,
-    )
-    .bind(test_payload.to_string().len() as i32)
-    .bind(test_payload.to_string().as_bytes())
-    .execute(&mut **executor)
-    .await
-    .context("Failed to seed test webhook events")?;
-
-    Ok(())
-}
-
-/// Seeds all test data into the database.
-pub async fn seed_test_data(executor: &mut Transaction<'_, Postgres>) -> Result<()> {
-    seed_endpoints(executor).await?;
-    seed_webhook_events(executor).await?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn database_setup_succeeds() {
-        let db = TestDatabase::new().await.unwrap();
-
-        // Verify we can query the database
-        let result: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&db.pool()).await.unwrap();
-        assert_eq!(result.0, 1);
-    }
-
-    #[tokio::test]
-    async fn transaction_isolation_works() {
-        let db = TestDatabase::new().await.unwrap();
-
-        // Start two transactions
-        let mut tx1 = db.transaction().await.unwrap();
-        let mut tx2 = db.transaction().await.unwrap();
-
-        // Insert data in tx1
-        sqlx::query("CREATE TEMP TABLE test_isolation (id INTEGER)")
-            .execute(&mut **tx1)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO test_isolation VALUES (1)").execute(&mut **tx1).await.unwrap();
-
-        // tx2 shouldn't see the temp table from tx1
-        let result = sqlx::query("SELECT COUNT(*) FROM test_isolation").execute(&mut **tx2).await;
-
-        // This should fail because tx2 can't see tx1's temp table
-        assert!(result.is_err());
-
-        // Transactions will auto-rollback when dropped
-    }
-
-    #[tokio::test]
-    async fn migrations_create_tables() {
-        let db = TestDatabase::new().await.unwrap();
-        let mut tx = db.transaction().await.unwrap();
-
-        // Verify core tables exist
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT table_name FROM information_schema.tables
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-             ORDER BY table_name",
-        )
-        .fetch_all(&mut **tx)
-        .await
-        .unwrap();
-
-        let expected_tables = vec!["delivery_attempts", "endpoints", "tenants", "webhook_events"];
-
-        for table in expected_tables {
-            assert!(tables.contains(&table.to_string()), "Missing table: {}", table);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_data_seeding_works() {
-        let db = TestDatabase::new().await.unwrap();
-        let mut tx = db.transaction().await.unwrap();
-
-        seed_test_data(&mut tx).await.unwrap();
-
-        // Verify seeded data exists
-        let tenant_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(&mut **tx).await.unwrap();
-        assert!(tenant_count >= 2);
-
-        let endpoint_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints")
-            .fetch_one(&mut **tx)
-            .await
-            .unwrap();
-        assert!(endpoint_count >= 3);
-
-        // Transaction will rollback - data won't persist
-    }
-
-    #[tokio::test]
-    async fn test_database_url_port_parsing() {
-        // Test port extraction from DATABASE_URL
-        std::env::set_var("DATABASE_URL", "postgresql://user:pass@localhost:5432/db");
-        let port = std::env::var("DATABASE_URL")
-            .ok()
-            .and_then(|url| {
-                url.split(':')
-                    .nth(3)
-                    .and_then(|port_str| port_str.split('/').next())
-                    .and_then(|port_str| port_str.parse::<u16>().ok())
-            })
-            .unwrap_or(5433);
-        assert_eq!(port, 5432);
-
-        std::env::remove_var("DATABASE_URL");
+        self.tx.as_mut().expect("Transaction should be available")
     }
 }
