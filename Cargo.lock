@@ -1389,6 +1389,7 @@ dependencies = [
  "sqlx",
  "test-harness",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
