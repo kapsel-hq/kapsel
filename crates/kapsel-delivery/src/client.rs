@@ -192,41 +192,27 @@ impl DeliveryClient {
             // Parse response
             let delivery_response = self.parse_response(response, duration).await?;
 
-            // Check for error conditions
+            // Log appropriate messages based on status code
             match delivery_response.status_code {
                 200..=299 => {
                     tracing::info!("Webhook delivered successfully");
-                    Ok(delivery_response)
-                },
-                429 => {
-                    let retry_after = extract_retry_after(&delivery_response.headers);
-                    Err(DeliveryError::rate_limited(retry_after))
                 },
                 400..=499 => {
                     tracing::warn!(status = delivery_response.status_code, "Client error response");
-                    Err(DeliveryError::client_error(
-                        delivery_response.status_code,
-                        delivery_response.body,
-                    ))
                 },
                 500..=599 => {
                     tracing::warn!(status = delivery_response.status_code, "Server error response");
-                    Err(DeliveryError::server_error(
-                        delivery_response.status_code,
-                        delivery_response.body,
-                    ))
                 },
                 _ => {
                     tracing::warn!(
                         status = delivery_response.status_code,
                         "Unexpected status code"
                     );
-                    Err(DeliveryError::server_error(
-                        delivery_response.status_code,
-                        delivery_response.body,
-                    ))
                 },
             }
+
+            // Always return response for HTTP transactions - let caller decide retry logic
+            Ok(delivery_response)
         }
         .instrument(span)
         .await
@@ -247,9 +233,15 @@ impl DeliveryClient {
         // Read body with size limit to prevent memory exhaustion
         let body = match response.bytes().await {
             Ok(bytes) => {
-                const MAX_RESPONSE_BODY_SIZE: usize = 64 * 1024; // 64KB
+                const MAX_RESPONSE_BODY_SIZE: usize = 64 * 1024; // 64KB - reasonable for webhook responses
+                const MAX_AUDIT_SIZE: usize = 1024; // 1KB for audit storage
+
                 if bytes.len() > MAX_RESPONSE_BODY_SIZE {
-                    format!("[Response body too large: {} bytes]", bytes.len())
+                    // For very large responses, truncate to fit in audit size
+                    let suffix = "... (truncated)";
+                    let max_content = MAX_AUDIT_SIZE - suffix.len();
+                    let truncated = String::from_utf8_lossy(&bytes[..max_content]);
+                    format!("{truncated}{suffix}")
                 } else {
                     String::from_utf8_lossy(&bytes).into_owned()
                 }
@@ -297,21 +289,21 @@ fn is_managed_header(header_name: &str) -> bool {
     )
 }
 
-/// Extracts the Retry-After header value in seconds.
-///
-/// HTTP 429 responses may include a Retry-After header indicating when the
-/// client should retry. This can be either a delay in seconds or an HTTP date.
 /// Returns the delay in seconds, defaulting to 60 if parsing fails.
-fn extract_retry_after(headers: &HashMap<String, String>) -> u64 {
+/// Extracts retry-after delay from response headers.
+///
+/// Returns the delay in seconds, or a default value if parsing fails.
+/// Supports both seconds format and HTTP-date format.
+pub fn extract_retry_after_seconds<S: std::hash::BuildHasher>(
+    headers: &HashMap<String, String, S>,
+) -> Option<u64> {
     const DEFAULT_RETRY_AFTER: u64 = 60;
 
     if let Some(retry_after) = headers.get("retry-after").or_else(|| headers.get("Retry-After")) {
-        // Try parsing as seconds first
         if let Ok(seconds) = retry_after.parse::<u64>() {
-            return seconds;
+            return Some(seconds);
         }
 
-        // Try parsing as HTTP date
         if let Ok(date_time) = chrono::DateTime::parse_from_rfc2822(retry_after) {
             let now = chrono::Utc::now();
             let retry_time = date_time.with_timezone(&chrono::Utc);
@@ -319,13 +311,15 @@ fn extract_retry_after(headers: &HashMap<String, String>) -> u64 {
             if retry_time > now {
                 let duration = retry_time.signed_duration_since(now);
                 if let Ok(std_duration) = duration.to_std() {
-                    return std_duration.as_secs();
+                    return Some(std_duration.as_secs());
                 }
             }
         }
-    }
 
-    DEFAULT_RETRY_AFTER
+        Some(DEFAULT_RETRY_AFTER)
+    } else {
+        None // No header found
+    }
 }
 
 #[cfg(test)]
@@ -385,14 +379,12 @@ mod tests {
         let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
 
         let result = client.deliver(request).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
 
-        if let Err(DeliveryError::ClientError { status_code, body }) = result {
-            assert_eq!(status_code, 404);
-            assert_eq!(body, "Not Found");
-        } else {
-            panic!("Expected ClientError");
-        }
+        let response = result.unwrap();
+        assert_eq!(response.status_code, 404);
+        assert_eq!(response.body, "Not Found");
+        assert!(!response.is_success);
     }
 
     #[tokio::test]
@@ -408,14 +400,12 @@ mod tests {
         let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
 
         let result = client.deliver(request).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
 
-        if let Err(DeliveryError::ServerError { status_code, body }) = result {
-            assert_eq!(status_code, 500);
-            assert_eq!(body, "Internal Server Error");
-        } else {
-            panic!("Expected ServerError");
-        }
+        let response = result.unwrap();
+        assert_eq!(response.status_code, 500);
+        assert_eq!(response.body, "Internal Server Error");
+        assert!(!response.is_success);
     }
 
     #[tokio::test]
@@ -435,13 +425,12 @@ mod tests {
         let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
 
         let result = client.deliver(request).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
 
-        if let Err(DeliveryError::RateLimited { retry_after_seconds }) = result {
-            assert_eq!(retry_after_seconds, 120);
-        } else {
-            panic!("Expected RateLimited error");
-        }
+        let response = result.unwrap();
+        assert_eq!(response.status_code, 429);
+        assert!(!response.is_success);
+        assert_eq!(response.headers.get("retry-after").unwrap(), "120");
     }
 
     #[tokio::test]
@@ -487,15 +476,15 @@ mod tests {
 
         // Test seconds format
         headers.insert("retry-after".to_string(), "120".to_string());
-        assert_eq!(extract_retry_after(&headers), 120);
+        assert_eq!(extract_retry_after_seconds(&headers), Some(120));
 
-        // Test default when missing
+        // Test None when missing
         headers.clear();
-        assert_eq!(extract_retry_after(&headers), 60);
+        assert_eq!(extract_retry_after_seconds(&headers), None);
 
         // Test invalid format falls back to default
         headers.insert("retry-after".to_string(), "invalid".to_string());
-        assert_eq!(extract_retry_after(&headers), 60);
+        assert_eq!(extract_retry_after_seconds(&headers), Some(60));
     }
 
     #[test]

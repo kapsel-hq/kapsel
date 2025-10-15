@@ -38,7 +38,7 @@ use uuid;
 
 use crate::{
     circuit::{CircuitBreakerManager, CircuitConfig},
-    client::{ClientConfig, DeliveryClient},
+    client::{extract_retry_after_seconds, ClientConfig, DeliveryClient},
     error::{DeliveryError, Result},
     retry::{RetryContext, RetryPolicy},
     worker_pool::WorkerPool,
@@ -410,7 +410,7 @@ impl DeliveryWorker {
 
         // 5. Record delivery attempt for audit trail
         self.record_delivery_attempt(
-            &event,
+            event,
             &endpoint_url,
             event.failure_count + 1,
             &delivery_result,
@@ -422,77 +422,141 @@ impl DeliveryWorker {
         // Important: We always update the database state, even on failure
         match delivery_result {
             Ok(response) => {
-                // Success - update circuit breaker and mark event delivered
-                self.circuit_manager.write().await.record_success(&endpoint_key).await;
-                self.mark_event_delivered(&event.id).await?;
+                if response.is_success {
+                    // Success - update circuit breaker and mark event delivered
+                    self.circuit_manager.write().await.record_success(&endpoint_key).await;
+                    self.mark_event_delivered(&event.id).await?;
 
-                info!(
-                    worker_id = self.id,
-                    event_id = %event.id,
-                    status_code = response.status_code,
-                    duration_ms = response.duration.as_millis(),
-                    "webhook delivered successfully"
-                );
+                    info!(
+                        worker_id = self.id,
+                        event_id = %event.id,
+                        status_code = response.status_code,
+                        duration_ms = response.duration.as_millis(),
+                        "webhook delivered successfully"
+                    );
+                } else {
+                    // HTTP request succeeded but response indicates failure
+                    // Create appropriate error based on status code
+                    let error = match response.status_code {
+                        400..=499 => crate::error::DeliveryError::client_error(
+                            response.status_code,
+                            response.body.clone(),
+                        ),
+                        _ => crate::error::DeliveryError::server_error(
+                            response.status_code,
+                            response.body.clone(),
+                        ),
+                    };
+
+                    self.handle_failed_delivery(
+                        &event.id,
+                        &endpoint_key,
+                        attempt_number,
+                        error,
+                        Some(&response.headers),
+                        event,
+                    )
+                    .await?;
+                }
             },
             Err(error) => {
                 // Failure - update circuit breaker and handle retry logic
-                self.circuit_manager.write().await.record_failure(&endpoint_key).await;
-
-                if error.is_retryable() {
-                    // Calculate retry timing using policy
-                    let retry_context = RetryContext::new(
-                        attempt_number,
-                        error.clone(),
-                        Utc::now(),
-                        self.config.default_retry_policy.clone(),
-                    );
-
-                    match retry_context.decide_retry() {
-                        crate::retry::RetryDecision::Retry { next_attempt_at } => {
-                            // Schedule retry
-                            self.schedule_retry(event, next_attempt_at).await?;
-
-                            warn!(
-                                worker_id = self.id,
-                                event_id = %event.id,
-                                attempt_number,
-                                next_retry_at = %next_attempt_at,
-                                error = %error,
-                                "delivery failed, retry scheduled"
-                            );
-                        },
-                        crate::retry::RetryDecision::GiveUp { reason } => {
-                            // Mark as permanently failed
-                            self.mark_event_failed(&event.id).await?;
-
-                            error!(
-                                worker_id = self.id,
-                                event_id = %event.id,
-                                attempt_number,
-                                reason = %reason,
-                                error = %error,
-                                "delivery permanently failed"
-                            );
-                        },
-                    }
-                } else {
-                    // Non-retryable error - mark as failed immediately
-                    self.mark_event_failed(&event.id).await?;
-
-                    error!(
-                        worker_id = self.id,
-                        event_id = %event.id,
-                        attempt_number,
-                        error = %error,
-                        "delivery failed with non-retryable error"
-                    );
-                }
+                self.handle_failed_delivery(
+                    &event.id,
+                    &endpoint_key,
+                    attempt_number,
+                    error,
+                    None,
+                    event,
+                )
+                .await?;
             },
         }
 
         // Always return Ok - the event has been processed successfully
         // even if the HTTP delivery failed. Database state has been updated
         // appropriately.
+        Ok(())
+    }
+
+    /// Handles failed delivery attempts with retry logic.
+    async fn handle_failed_delivery(
+        &self,
+        event_id: &EventId,
+        endpoint_key: &str,
+        attempt_number: u32,
+        error: crate::error::DeliveryError,
+        response_headers: Option<&std::collections::HashMap<String, String>>,
+        event: &WebhookEvent,
+    ) -> Result<()> {
+        // Record failure in circuit breaker
+        self.circuit_manager.write().await.record_failure(endpoint_key).await;
+
+        if error.is_retryable() {
+            // Calculate retry timing using policy
+            let retry_context = RetryContext::new(
+                attempt_number,
+                error.clone(),
+                Utc::now(),
+                self.config.default_retry_policy.clone(),
+            );
+
+            match retry_context.decide_retry() {
+                crate::retry::RetryDecision::Retry { mut next_attempt_at } => {
+                    // Check for Retry-After header to override calculated delay
+                    if let Some(headers) = response_headers {
+                        if let Some(retry_after_seconds) = extract_retry_after_seconds(headers) {
+                            let retry_after_duration = chrono::Duration::seconds(
+                                i64::try_from(retry_after_seconds).unwrap_or(i64::MAX),
+                            );
+                            let retry_after_time = Utc::now() + retry_after_duration;
+
+                            // Use the later of the two times to respect server's preference
+                            if retry_after_time > next_attempt_at {
+                                next_attempt_at = retry_after_time;
+                            }
+                        }
+                    }
+
+                    // Schedule retry
+                    self.schedule_retry(event, next_attempt_at).await?;
+
+                    warn!(
+                        worker_id = self.id,
+                        event_id = %event_id,
+                        attempt_number,
+                        next_retry_at = %next_attempt_at,
+                        error = %error,
+                        "delivery failed, retry scheduled"
+                    );
+                },
+                crate::retry::RetryDecision::GiveUp { reason } => {
+                    // Mark as permanently failed
+                    self.mark_event_failed(event_id).await?;
+
+                    error!(
+                        worker_id = self.id,
+                        event_id = %event_id,
+                        attempt_number,
+                        reason = %reason,
+                        error = %error,
+                        "delivery permanently failed"
+                    );
+                },
+            }
+        } else {
+            // Non-retryable error - mark as failed immediately
+            self.mark_event_failed(event_id).await?;
+
+            error!(
+                worker_id = self.id,
+                event_id = %event_id,
+                attempt_number,
+                error = %error,
+                "delivery failed with non-retryable error"
+            );
+        }
+
         Ok(())
     }
 
@@ -579,9 +643,9 @@ impl DeliveryWorker {
         result: &Result<crate::client::DeliveryResponse>,
         duration: std::time::Duration,
     ) {
-        let duration_ms = duration.as_millis() as i32;
+        let duration_ms = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
         let (response_status, response_body, error_message) = match result {
-            Ok(response) => (Some(response.status_code as i32), response.body.clone(), None),
+            Ok(response) => (Some(i32::from(response.status_code)), response.body.clone(), None),
             Err(e) => (None, String::new(), Some(e.to_string())),
         };
 
@@ -596,8 +660,8 @@ impl DeliveryWorker {
             )
             ",
         )
-        .bind(&event.id)
-        .bind(attempt_number as i32)
+        .bind(event.id)
+        .bind(i32::try_from(attempt_number).unwrap_or(i32::MAX))
         .bind(url)
         .bind(serde_json::json!({})) // Empty headers for now
         .bind(response_status)
@@ -605,7 +669,7 @@ impl DeliveryWorker {
         .bind(response_body)
         .bind(chrono::Utc::now())
         .bind(duration_ms)
-        .bind(self.categorize_error(result))
+        .bind(Self::categorize_error(result))
         .bind(error_message)
         .execute(&self.pool)
         .await
@@ -621,7 +685,7 @@ impl DeliveryWorker {
     }
 
     /// Categorizes delivery errors for audit trail.
-    fn categorize_error(&self, result: &Result<crate::client::DeliveryResponse>) -> Option<String> {
+    fn categorize_error(result: &Result<crate::client::DeliveryResponse>) -> Option<String> {
         match result {
             Ok(_) => None,
             Err(e) => {
