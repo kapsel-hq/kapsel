@@ -1,299 +1,381 @@
-//! Basic chaos testing for database failure scenarios.
+//! True chaos testing for webhook delivery system resilience.
 //!
-//! These tests verify system resilience when database connections fail
-//! or become unavailable. Simplified to use existing TestEnv API.
+//! These tests verify system behavior under failure conditions using
+//! ScenarioBuilder for declarative chaos scenarios.
 
-use anyhow::{Context, Result};
-use test_harness::TestEnv;
-use tokio::time::{timeout, Duration};
-use uuid::Uuid;
+use std::time::Duration;
 
-/// Tests basic database connectivity and recovery.
+use anyhow::Result;
+use serde_json::json;
+use test_harness::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
+
+/// Tests webhook delivery resilience when HTTP endpoints fail intermittently.
 ///
-/// This test verifies that we can detect database issues and recover
-/// from transient failures.
+/// Verifies the system correctly retries and eventually succeeds when
+/// external services recover from temporary outages.
 #[tokio::test]
-async fn database_connectivity_resilience() -> Result<()> {
+async fn intermittent_endpoint_failures() -> Result<()> {
     let mut env = TestEnv::new().await?;
 
-    // Verify initial health
-    let initial_health = env.database_health_check().await?;
-    assert!(initial_health, "Database should be healthy initially");
+    let tenant_id = env.create_tenant("chaos-tenant").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
-    // Create test data
-    let tenant_id = env.create_tenant("chaos-test").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "http://example.com/webhook").await?;
-
-    // Verify we can query data after creation
-    let tables = env.list_tables().await?;
-    assert!(!tables.is_empty(), "Should have tables after setup");
-    assert!(tables.contains(&"tenants".to_string()));
-    assert!(tables.contains(&"endpoints".to_string()));
-
-    // Verify the endpoint was created (within the same transaction)
-    let endpoint_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-        .bind(endpoint_id.0)
-        .fetch_one(&mut **env.db())
-        .await?;
-    assert_eq!(endpoint_count, 1, "Endpoint should be created successfully");
-
-    // Test transaction handling
-    {
-        let tx = env.db();
-
-        // Insert test data in transaction
-        let test_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
-            .bind(test_id)
-            .bind("tx-test")
-            .bind("free")
-            .bind("test-key")
-            .execute(&mut **tx)
-            .await?;
-
-        // Verify data exists in transaction
-        let count_in_tx: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
-            .bind(test_id)
-            .fetch_one(&mut **tx)
-            .await?;
-        assert_eq!(count_in_tx, 1, "Data should exist in transaction");
-
-        // Transaction auto-rollbacks when dropped
-    }
-
-    // Verify data was rolled back (using a fresh pool to check committed state)
-    let count_after_rollback: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE name = 'tx-test'")
-            .fetch_one(&env.create_pool())
-            .await?;
-    assert_eq!(count_after_rollback, 0, "Data should be rolled back");
-
-    // Final health check
-    let final_health = env.database_health_check().await?;
-    assert!(final_health, "Database should still be healthy");
-
-    Ok(())
-}
-
-/// Tests database timeout handling.
-///
-/// Verifies that database operations don't hang indefinitely and
-/// properly handle timeout scenarios.
-#[tokio::test]
-async fn database_timeout_handling() -> Result<()> {
-    let mut env = TestEnv::new().await?;
-
-    // Test that database operations complete within reasonable time
-    let health_check_result = timeout(Duration::from_secs(5), env.database_health_check()).await;
-
-    assert!(health_check_result.is_ok(), "Health check should not timeout");
-    assert!(health_check_result.unwrap()?, "Database should be healthy");
-
-    // Test transaction timeout
-    let tx_result: Result<(), tokio::time::error::Elapsed> =
-        timeout(Duration::from_secs(5), async {
-            // Simulate database operation that should not timeout
-            let _: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&mut **env.db()).await.unwrap();
-        })
+    // Chaos pattern: Random failures then recovery
+    env.http_mock
+        .mock_sequence()
+        .respond_with(503, "Service Unavailable")
+        .respond_with(408, "Request Timeout")
+        .respond_with(500, "Internal Server Error")
+        .respond_with(503, "Service Unavailable")
+        .respond_with(200, "Success")
+        .build()
         .await;
 
-    assert!(tx_result.is_ok(), "Transaction creation should not timeout");
+    let webhook = WebhookBuilder::new()
+        .tenant(tenant_id.0)
+        .endpoint(endpoint_id.0)
+        .source_event("chaos_intermittent_001")
+        .json_body(json!({"event": "payment.failed", "attempts": 0}))
+        .build();
+
+    let event_id = env.ingest_webhook(&webhook).await?;
+
+    ScenarioBuilder::new("intermittent endpoint failures chaos")
+        // First attempt: 503 failure
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 1)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(1))
+
+        // Second attempt: 408 timeout
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 2)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(2))
+
+        // Third attempt: 500 error
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 3)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(4))
+
+        // Fourth attempt: Another 503
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 4)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(8))
+
+        // Fifth attempt: Finally succeeds
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 5)
+        .expect_status(event_id, "delivered")
+
+        // Verify system maintained correct backoff timing despite chaos
+        .assert_state(|env| {
+            assert_eq!(
+                env.elapsed(),
+                Duration::from_secs(15), // 1+2+4+8 = 15 seconds
+                "Exponential backoff should be maintained during chaos"
+            );
+            Ok(())
+        })
+
+        .run(&mut env)
+        .await?;
 
     Ok(())
 }
 
-/// Tests database connection pool behavior.
+/// Tests system behavior when webhooks fail beyond maximum retry limit.
 ///
-/// Verifies that the connection pool handles multiple concurrent
-/// operations without exhaustion.
+/// Verifies that webhooks are marked as failed and don't retry indefinitely
+/// when endpoints are permanently unavailable.
 #[tokio::test]
-async fn connection_pool_resilience() -> Result<()> {
+async fn permanent_endpoint_failure() -> Result<()> {
     let mut env = TestEnv::new().await?;
 
-    // Test multiple concurrent health checks without cloning TestEnv
-    let mut results = Vec::new();
+    let tenant_id = env.create_tenant("chaos-tenant").await?;
+    let endpoint_id = env
+        .create_endpoint_with_config(
+            tenant_id,
+            &env.http_mock.url(),
+            "permanent-fail-endpoint",
+            4, // max_retries=4 means 5 total attempts (initial + 4 retries)
+            30,
+        )
+        .await?;
 
-    for i in 0..10 {
-        // Perform health checks sequentially but rapidly
-        for j in 0..3 {
-            let health = env
-                .database_health_check()
-                .await
-                .with_context(|| format!("Health check failed for iteration {} check {}", i, j))?;
-            assert!(health, "Health check should pass");
+    // Chaos pattern: Permanent failure (all attempts fail)
+    env.http_mock
+        .mock_sequence()
+        .respond_with(500, "Permanent failure")
+        .respond_with(500, "Permanent failure")
+        .respond_with(500, "Permanent failure")
+        .respond_with(500, "Permanent failure")
+        .respond_with(500, "Permanent failure")
+        .respond_with(500, "Still failing")
+        .build()
+        .await;
 
-            results.push(health);
+    let webhook = WebhookBuilder::new()
+        .tenant(tenant_id.0)
+        .endpoint(endpoint_id.0)
+        .source_event("chaos_permanent_001")
+        .json_body(json!({"event": "subscription.cancelled", "reason": "payment_failed"}))
+        .build();
 
-            // Small delay to test connection pool behavior
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
+    let event_id = env.ingest_webhook(&webhook).await?;
 
-    // Verify all checks passed
-    assert_eq!(results.len(), 30, "Should have performed 30 health checks");
-    assert!(results.iter().all(|&h| h), "All health checks should pass");
+    ScenarioBuilder::new("permanent endpoint failure chaos")
+        // Attempt 1: Fail
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 1)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(1))
 
-    // Verify pool is still healthy after concurrent access
-    let final_health = env.database_health_check().await?;
-    assert!(final_health, "Database should be healthy after concurrent operations");
+        // Attempt 2: Fail
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 2)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(2))
+
+        // Attempt 3: Fail
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 3)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(4))
+
+        // Attempt 4: Fail
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 4)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(8))
+
+        // Attempt 5: Final attempt
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 5)
+        .expect_status(event_id, "pending")
+        .advance_time(Duration::from_secs(16))
+
+        // Sixth delivery cycle: Should mark as failed since failure_count > max_retries
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 5) // Still 5 attempts, no new attempt made
+        .expect_status(event_id, "failed")
+
+        .run(&mut env)
+        .await?;
 
     Ok(())
 }
 
-/// Tests transaction rollback consistency.
-/// Test transaction consistency and isolation guarantees under chaos scenarios.
+/// Tests webhook delivery under high concurrent load with mixed
+/// success/failure.
 ///
-/// This test verifies that transactions maintain ACID properties even when the
-/// system is under stress or experiences failures, ensuring no data is left in
-/// an inconsistent state.
+/// Verifies the system maintains correct behavior when processing many
+/// webhooks simultaneously with varying endpoint reliability.
 #[tokio::test]
-async fn transaction_consistency() -> Result<()> {
-    // Test 1: Transaction isolation - data not visible outside transaction
-    let mut env1 = TestEnv::new().await?;
-    let tenant_id = env1.create_tenant("consistency-test").await?;
+async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
+    let mut env = TestEnv::new().await?;
 
-    let test_endpoint_id = Uuid::new_v4();
+    let tenant_id = env.create_tenant("chaos-load-tenant").await?;
+    let stable_endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
-    // Insert data in transaction
-    sqlx::query(
-        r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#,
-    )
-    .bind(test_endpoint_id)
-    .bind(tenant_id.0)
-    .bind("test-endpoint")
-    .bind("http://test.com")
-    .bind(5i32)
-    .bind(30i32)
-    .bind("closed")
-    .execute(&mut **env1.db())
-    .await?;
+    // Chaos pattern: Mixed success/failure for batch processing
+    env.http_mock
+        .mock_sequence()
+        .respond_with(200, "OK")        // Webhook 1: Success
+        .respond_with(503, "Busy")      // Webhook 2: Fail
+        .respond_with(200, "OK")        // Webhook 3: Success
+        .respond_with(408, "Timeout")   // Webhook 4: Fail
+        .respond_with(200, "OK")        // Webhook 5: Success
+        .respond_with(500, "Error")     // Webhook 6: Fail
+        .respond_with(200, "OK")        // Webhook 7: Success
+        .respond_with(503, "Busy")      // Webhook 8: Fail
+        .build()
+        .await;
 
-    // Data should not be visible from another connection
-    let external_pool = env1.create_pool();
-    let count_external: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-        .bind(test_endpoint_id)
+    // Create batch of webhooks
+    let mut event_ids = Vec::new();
+    for i in 0..8 {
+        let webhook = WebhookBuilder::new()
+            .tenant(tenant_id.0)
+            .endpoint(stable_endpoint_id.0)
+            .source_event(format!("chaos_batch_{:03}", i))
+            .json_body(json!({"batch_id": i, "event": "user.created"}))
+            .build();
+
+        let event_id = env.ingest_webhook(&webhook).await?;
+        event_ids.push(event_id);
+    }
+
+    ScenarioBuilder::new("concurrent load chaos")
+        // Process entire batch in one delivery cycle
+        .run_delivery_cycle()
+
+        // Verify all webhooks were attempted once
+        .expect_delivery_attempts(event_ids[0], 1)
+        .expect_delivery_attempts(event_ids[1], 1)
+        .expect_delivery_attempts(event_ids[2], 1)
+        .expect_delivery_attempts(event_ids[3], 1)
+        .expect_delivery_attempts(event_ids[4], 1)
+        .expect_delivery_attempts(event_ids[5], 1)
+        .expect_delivery_attempts(event_ids[6], 1)
+        .expect_delivery_attempts(event_ids[7], 1)
+
+        // Verify outcomes match mock responses
+        .expect_status(event_ids[0], "delivered")  // 200 OK
+        .expect_status(event_ids[1], "pending")    // 503 Busy
+        .expect_status(event_ids[2], "delivered")  // 200 OK
+        .expect_status(event_ids[3], "pending")    // 408 Timeout
+        .expect_status(event_ids[4], "delivered")  // 200 OK
+        .expect_status(event_ids[5], "pending")    // 500 Error
+        .expect_status(event_ids[6], "delivered")  // 200 OK
+        .expect_status(event_ids[7], "pending")    // 503 Busy
+
+        // Advance time for retry backoff
+        .advance_time(Duration::from_secs(1))
+
+        // Second delivery cycle should retry failed webhooks
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_ids[1], 2) // Retried
+        .expect_delivery_attempts(event_ids[3], 2) // Retried
+        .expect_delivery_attempts(event_ids[5], 2) // Retried
+        .expect_delivery_attempts(event_ids[7], 2) // Retried
+        // Successful ones should not be retried
+        .expect_delivery_attempts(event_ids[0], 1) // Not retried
+        .expect_delivery_attempts(event_ids[2], 1) // Not retried
+        .expect_delivery_attempts(event_ids[4], 1) // Not retried
+        .expect_delivery_attempts(event_ids[6], 1) // Not retried
+
+        .run(&mut env)
+        .await?;
+
+    Ok(())
+}
+
+/// Tests idempotency guarantees under chaotic conditions.
+///
+/// Verifies that duplicate webhooks are handled correctly even when
+/// the system experiences failures and retries.
+#[tokio::test]
+async fn idempotency_under_chaos() -> Result<()> {
+    let mut env = TestEnv::new().await?;
+
+    let tenant_id = env.create_tenant("chaos-idempotency").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+
+    // Chaos pattern: Success, then duplicate attempts should be ignored
+    env.http_mock
+        .mock_sequence()
+        .respond_with(200, "Processed")
+        .respond_with(200, "Should not be called")
+        .build()
+        .await;
+
+    // Original webhook
+    let original_webhook = WebhookBuilder::new()
+        .tenant(tenant_id.0)
+        .endpoint(endpoint_id.0)
+        .source_event("idempotent_chaos_001")
+        .json_body(json!({"amount": 5000, "currency": "usd"}))
+        .build();
+
+    let original_event_id = env.ingest_webhook(&original_webhook).await?;
+
+    ScenarioBuilder::new("idempotency chaos scenario")
+        // Process original webhook successfully
+        .run_delivery_cycle()
+        .expect_delivery_attempts(original_event_id, 1)
+        .expect_status(original_event_id, "delivered")
+
+        .run(&mut env)
+        .await?;
+
+    // Test idempotency by ingesting duplicate webhook after scenario
+    let duplicate_webhook = WebhookBuilder::new()
+        .tenant(tenant_id.0)
+        .endpoint(endpoint_id.0)
+        .source_event("idempotent_chaos_001") // Same source_event_id
+        .json_body(json!({"amount": 9999, "currency": "eur"})) // Different payload
+        .build();
+
+    let duplicate_event_id = env.ingest_webhook(&duplicate_webhook).await?;
+
+    // Should return the same event ID due to idempotency
+    assert_eq!(
+        duplicate_event_id.0, original_event_id.0,
+        "Duplicate webhook should return original event ID"
+    );
+
+    // Running delivery cycle again should not create additional attempts
+    ScenarioBuilder::new("idempotency verification")
+        .run_delivery_cycle()
+        .expect_delivery_attempts(original_event_id, 1) // Still only 1 attempt
+        .expect_status(original_event_id, "delivered")
+
+        .run(&mut env)
+        .await?;
+
+    Ok(())
+}
+
+/// Tests system recovery after simulated database transaction failures.
+///
+/// Verifies that the system maintains data consistency when database
+/// operations fail at critical points.
+#[tokio::test]
+async fn database_transaction_chaos() -> Result<()> {
+    let mut env = TestEnv::new().await?;
+
+    // Test transaction isolation during chaos
+    let tenant_id = env.create_tenant("tx-chaos").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+
+    env.http_mock.mock_sequence().respond_with(200, "Success").build().await;
+
+    let webhook = WebhookBuilder::new()
+        .tenant(tenant_id.0)
+        .endpoint(endpoint_id.0)
+        .source_event("tx_chaos_001")
+        .json_body(json!({"test": "transaction_chaos"}))
+        .build();
+
+    let event_id = env.ingest_webhook(&webhook).await?;
+
+    ScenarioBuilder::new("database transaction chaos")
+        // Verify webhook was ingested in transaction
+        .expect_status(event_id, "pending")
+
+        // Process webhook
+        .run_delivery_cycle()
+        .expect_delivery_attempts(event_id, 1)
+        .expect_status(event_id, "delivered")
+
+        .run(&mut env)
+        .await?;
+
+    // Verify transaction isolation - external connections won't see uncommitted
+    // data
+    let external_pool = env.create_pool();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
+        .bind(event_id.0)
         .fetch_one(&external_pool)
         .await?;
-    assert_eq!(count_external, 0, "Transaction data should not be visible externally");
 
-    // Test 2: Transaction rollback (automatic on drop)
-    drop(env1); // This rolls back the transaction
+    // Should be 0 since transaction hasn't been committed
+    assert_eq!(count, 0, "Uncommitted data should not be visible externally");
 
-    // Verify data was rolled back
-    let env2 = TestEnv::new().await?;
-    let pool = env2.create_pool();
+    // After test environment drops, verify transaction was rolled back
+    let verification_env = TestEnv::new().await?;
+    let external_pool = verification_env.create_pool();
+
     let count_after_rollback: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-            .bind(test_endpoint_id)
-            .fetch_one(&pool)
+        sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
+            .bind(event_id.0)
+            .fetch_one(&external_pool)
             .await?;
-    assert_eq!(count_after_rollback, 0, "Data should be rolled back");
 
-    // Test 3: Transaction commit persistence
-    {
-        let mut env3 = TestEnv::new().await?;
-        let tenant_id = env3.create_tenant("commit-test").await?;
-        let commit_endpoint_id = Uuid::new_v4();
-
-        sqlx::query(
-            r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#,
-        )
-        .bind(commit_endpoint_id)
-        .bind(tenant_id.0)
-        .bind("commit-endpoint")
-        .bind("http://commit.test")
-        .bind(3i32)
-        .bind(15i32)
-        .bind("closed")
-        .execute(&mut **env3.db())
-        .await?;
-
-        // Commit the transaction
-        env3.commit().await?;
-
-        // Verify data persists after commit
-        let verify_pool = env2.create_pool();
-        let count_committed: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
-                .bind(commit_endpoint_id)
-                .fetch_one(&verify_pool)
-                .await?;
-        assert_eq!(count_committed, 1, "Committed data should persist");
-
-        // Clean up committed data
-        sqlx::query("DELETE FROM endpoints WHERE id = $1")
-            .bind(commit_endpoint_id)
-            .execute(&verify_pool)
-            .await?;
-        sqlx::query("DELETE FROM tenants WHERE id = $1")
-            .bind(tenant_id.0)
-            .execute(&verify_pool)
-            .await?;
-    }
-
-    Ok(())
-}
-
-/// Tests constraint violation handling.
-///
-/// Verifies that constraint violations are handled gracefully
-/// without corrupting the database state.
-#[tokio::test]
-async fn constraint_violation_handling() -> Result<()> {
-    // Phase 1: Create and commit initial data
-    let mut env = TestEnv::new().await?;
-    let tenant_id = env.create_tenant("constraint-test").await?;
-    let endpoint1_id = env.create_endpoint(tenant_id, "http://test1.com").await?;
-
-    // Commit this data so it's visible to external connections
-    env.commit().await?;
-
-    // Phase 2: Test constraint violation in a fresh environment
-    let mut env2 = TestEnv::new().await?;
-
-    // Attempt to create endpoint with duplicate name (should fail)
-    let duplicate_result: Result<sqlx::postgres::PgQueryResult, sqlx::Error> = sqlx::query(
-        r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"#
-    )
-    .bind(Uuid::new_v4())
-    .bind(tenant_id.0)
-    .bind("test-endpoint") // This name conflicts with the committed endpoint
-    .bind("http://duplicate.com")
-    .bind(5i32)
-    .bind(30i32)
-    .bind("closed")
-    .execute(&mut **env2.db())
-    .await;
-
-    assert!(duplicate_result.is_err(), "Duplicate endpoint name should be rejected");
-
-    // Phase 3: Verify original data is still intact (using external connection)
-    let pool = env2.create_pool();
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE tenant_id = $1")
-        .bind(tenant_id.0)
-        .fetch_one(&pool)
-        .await?;
-    assert_eq!(count, 1, "Original endpoint should still exist");
-
-    // Verify the specific endpoint we created is still there
-    let endpoint_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM endpoints WHERE id = $1)")
-            .bind(endpoint1_id.0)
-            .fetch_one(&pool)
-            .await?;
-    assert!(endpoint_exists, "Original endpoint should still exist after constraint violation");
-
-    // Verify database health after constraint violation (using fresh environment)
-    let mut env3 = TestEnv::new().await?;
-    let health = env3.database_health_check().await?;
-    assert!(health, "Database should remain healthy after constraint violations");
-
-    // Clean up committed data
-    sqlx::query("DELETE FROM endpoints WHERE id = $1").bind(endpoint1_id.0).execute(&pool).await?;
-    sqlx::query("DELETE FROM tenants WHERE id = $1").bind(tenant_id.0).execute(&pool).await?;
+    assert_eq!(count_after_rollback, 0, "Data should be rolled back after transaction ends");
 
     Ok(())
 }

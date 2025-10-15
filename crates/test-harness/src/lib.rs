@@ -257,8 +257,8 @@ impl TestEnv {
     /// Finds pending webhooks ready for delivery and processes them.
     pub async fn run_delivery_cycle(&mut self) -> Result<()> {
         // Find webhooks ready for delivery
-        let ready_webhooks: Vec<(EventId, Uuid, String, Vec<u8>, i32, String)> = sqlx::query_as(
-            "SELECT we.id, e.id as endpoint_id, e.url, we.body, we.failure_count, e.name
+        let ready_webhooks: Vec<(EventId, Uuid, String, Vec<u8>, i32, String, i32)> = sqlx::query_as(
+            "SELECT we.id, e.id as endpoint_id, e.url, we.body, we.failure_count, e.name, e.max_retries
              FROM webhook_events we
              JOIN endpoints e ON we.endpoint_id = e.id
              WHERE we.status = 'pending'
@@ -272,7 +272,25 @@ impl TestEnv {
         .context("failed to fetch ready webhooks")?;
 
         let webhook_count = ready_webhooks.len();
-        for (event_id, _endpoint_id, url, body, failure_count, _endpoint_name) in ready_webhooks {
+        for (event_id, _endpoint_id, url, body, failure_count, _endpoint_name, max_retries) in
+            ready_webhooks
+        {
+            // Check if webhook has exceeded maximum retry attempts
+            // max_retries is the number of retry attempts after initial attempt
+            if failure_count > max_retries {
+                // Mark as failed - exceeded retry limit
+                sqlx::query(
+                    "UPDATE webhook_events
+                     SET status = 'failed', last_attempt_at = $1
+                     WHERE id = $2",
+                )
+                .bind(chrono::DateTime::<Utc>::from(self.now_system()))
+                .bind(event_id.0)
+                .execute(&mut **self.db())
+                .await
+                .context("failed to mark webhook as failed")?;
+                continue;
+            }
             // Make HTTP request to the mock server
             let client = reqwest::Client::new();
             let response_result = client
@@ -287,16 +305,10 @@ impl TestEnv {
                 Ok(response) => {
                     let status = response.status().as_u16() as i32;
                     let body = response.text().await.unwrap_or_default();
-                    let error_type = if status >= 500 {
-                        Some("http_error")
-                    } else if status >= 400 {
-                        Some("client_error")
-                    } else {
-                        None
-                    };
+                    let error_type = if status >= 400 { Some("http_error") } else { None };
                     (Some(status), Some(body), 75i32, error_type)
                 },
-                Err(_) => (None, None, 1000i32, Some("network_error")),
+                Err(_) => (None, None, 1000i32, Some("network")),
             };
 
             // Record delivery attempt
