@@ -14,33 +14,24 @@ use anyhow::{Context, Result};
 use sqlx::{PgPool, Postgres, Transaction};
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use tokio::{runtime::Builder, sync::OnceCell};
 use tracing::{debug, info};
 
 /// Shared PostgreSQL container and connection pool for the entire test process.
 ///
-/// This is initialized once per process and reused across all tests.
-/// Individual tests get transactions from this pool for isolation.
-struct SharedDatabase {
+/// This is shared across all tests using Arc/Weak references.
+/// When the last reference is dropped, the container is automatically cleaned
+/// up.
+pub struct SharedDatabase {
     /// Connection pool to the shared container
     pool: PgPool,
-    /// Container handle - keeps container alive until process exits
+    /// Container handle - keeps container alive until dropped
+    #[allow(dead_code)]
     container: ContainerAsync<PostgresImage>,
 }
 
-impl Drop for SharedDatabase {
-    fn drop(&mut self) {
-        info!("SharedDatabase dropping - stopping PostgreSQL container");
-        let runtime = Builder::new_current_thread().enable_io().build().unwrap();
-        runtime.block_on(async {
-            self.container.stop().await.expect("Failed to stop PostgreSQL container");
-        });
-        info!("PostgreSQL container stopped successfully");
-    }
-}
-
-/// Global shared database instance - initialized once per process.
-static SHARED_DB: OnceCell<Arc<SharedDatabase>> = OnceCell::const_new();
+/// Weak reference to shared database for cross-test sharing
+static SHARED_WEAK: std::sync::Mutex<std::sync::Weak<SharedDatabase>> =
+    std::sync::Mutex::new(std::sync::Weak::new());
 
 /// Test database handle providing transaction-based isolation.
 ///
@@ -48,14 +39,13 @@ static SHARED_DB: OnceCell<Arc<SharedDatabase>> = OnceCell::const_new();
 /// that automatically rolls back when dropped, ensuring perfect isolation
 /// between tests while maintaining high performance.
 pub struct TestDatabase {
-    /// The underlying connection pool (for components that need their own
-    /// connections)
-    pool: PgPool,
+    /// Reference to the shared database
+    shared_db: Arc<SharedDatabase>,
 }
 
 impl SharedDatabase {
     /// Initialize the shared PostgreSQL container and run migrations.
-    async fn initialize() -> Result<Self> {
+    async fn new() -> Result<Self> {
         info!("initializing shared PostgreSQL test container");
 
         // Start container with PostgreSQL 16 Alpine for smaller size
@@ -165,33 +155,38 @@ impl SharedDatabase {
         info!("database migrations completed");
         Ok(())
     }
-}
 
-/// Get or initialize the shared database pool.
-///
-/// This function ensures the shared PostgreSQL container is running
-/// and returns a pool connected to it. Called internally by TestDatabase.
-pub async fn get_shared_pool() -> Result<PgPool> {
-    let shared_db_arc = SHARED_DB
-        .get_or_init(|| async {
-            let shared =
-                SharedDatabase::initialize().await.expect("Failed to initialize shared database");
-            Arc::new(shared)
-        })
-        .await;
-
-    Ok(shared_db_arc.pool.clone())
+    /// Get the connection pool for this shared database.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
 }
 
 impl TestDatabase {
     /// Create a new test database handle.
     ///
-    /// This doesn't create a transaction yet - that happens when
-    /// TestEnv calls begin_transaction(). This design allows
-    /// flexibility in how tests manage their database state.
+    /// This manages sharing of the database container across tests in the same
+    /// process. Uses a weak reference to allow proper cleanup when all
+    /// tests finish.
     pub async fn new() -> Result<Self> {
-        let pool = get_shared_pool().await?;
-        Ok(Self { pool })
+        // Try to upgrade existing weak reference to shared database
+        {
+            let weak_guard = SHARED_WEAK.lock().unwrap();
+            if let Some(shared_db) = weak_guard.upgrade() {
+                return Ok(Self { shared_db });
+            }
+        }
+
+        // Create new shared database since none exists
+        let shared_db = Arc::new(SharedDatabase::new().await?);
+
+        // Store weak reference for future sharing
+        {
+            let mut weak_guard = SHARED_WEAK.lock().unwrap();
+            *weak_guard = Arc::downgrade(&shared_db);
+        }
+
+        Ok(Self { shared_db })
     }
 
     /// Begin a new transaction for test isolation.
@@ -200,10 +195,9 @@ impl TestDatabase {
     /// ensuring no test data persists between tests.
     pub async fn begin_transaction(&self) -> Result<Transaction<'static, Postgres>> {
         // SAFETY: We need a 'static transaction for ergonomics in TestEnv.
-        // This is safe because the underlying pool is 'static (from SHARED_DB).
-        // We transmute the lifetime to avoid complex lifetime annotations throughout
-        // the test harness.
-        let tx = self.pool.begin().await.context("failed to begin transaction")?;
+        // This is safe because the underlying pool is owned by SharedDatabase
+        // which lives for the entire process duration.
+        let tx = self.shared_db.pool.begin().await.context("failed to begin transaction")?;
 
         // Convert to 'static lifetime for easier use in TestEnv
         let tx = unsafe {
@@ -219,7 +213,7 @@ impl TestDatabase {
     /// (like delivery workers). Data inserted in test transactions
     /// won't be visible to these connections unless explicitly committed.
     pub fn pool(&self) -> PgPool {
-        self.pool.clone()
+        self.shared_db.pool.clone()
     }
 
     /// Create a new connection pool for components that need isolation.
@@ -227,13 +221,21 @@ impl TestDatabase {
     /// This returns a new pool connected to the same shared container,
     /// useful for testing components that manage their own connections.
     pub async fn create_isolated_pool(&self) -> Result<PgPool> {
-        get_shared_pool().await
+        Ok(self.shared_db.pool.clone())
     }
 
     /// Schema name for the test database (always 'public').
     pub fn schema_name(&self) -> &str {
         "public"
     }
+}
+
+/// Get a shared database instance for tests that need direct access.
+///
+/// This is used by TestEnv to hold the Arc directly.
+pub async fn get_shared_database() -> Result<Arc<SharedDatabase>> {
+    let db = TestDatabase::new().await?;
+    Ok(Arc::clone(&db.shared_db))
 }
 
 #[cfg(test)]
@@ -243,14 +245,16 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn shared_pool_is_reused_across_tests() {
-        let pool1 = get_shared_pool().await.unwrap();
-        let pool2 = get_shared_pool().await.unwrap();
+    async fn shared_database_is_reused_across_tests() {
+        let db1 = get_shared_database().await.unwrap();
+        let db2 = get_shared_database().await.unwrap();
 
-        // Both should be the same underlying pool
-        // We can't directly compare pools, but we can verify they work
-        let result1: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool1).await.unwrap();
-        let result2: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool2).await.unwrap();
+        // Both should be the same Arc instance
+        assert!(Arc::ptr_eq(&db1, &db2));
+
+        // Both should work
+        let result1: (i32,) = sqlx::query_as("SELECT 1").fetch_one(db1.pool()).await.unwrap();
+        let result2: (i32,) = sqlx::query_as("SELECT 1").fetch_one(db2.pool()).await.unwrap();
 
         assert_eq!(result1.0, 1);
         assert_eq!(result2.0, 1);
@@ -273,7 +277,7 @@ mod tests {
         .bind(tenant_id)
         .bind("isolated-tenant")
         .bind("enterprise")
-        .bind("test-key")
+        .bind(format!("isolation-test-key-{}", tenant_id))
         .execute(&mut *tx1)
         .await
         .unwrap();
@@ -304,7 +308,7 @@ mod tests {
             .bind(tenant_id)
             .bind("committed-tenant")
             .bind("enterprise")
-            .bind("test-key")
+            .bind(format!("commit-test-key-{}", tenant_id))
             .execute(&mut *tx)
             .await
             .unwrap();

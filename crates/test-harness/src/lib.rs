@@ -41,8 +41,8 @@ pub struct TestEnv {
     pub http_mock: http::MockServer,
     /// Deterministic clock for time-based testing
     pub clock: time::TestClock,
-    /// Database connection pool for components that need their own connections
-    pool: PgPool,
+    /// Shared database instance (Arc ensures proper cleanup)
+    shared_db: std::sync::Arc<database::SharedDatabase>,
 }
 
 impl TestEnv {
@@ -63,8 +63,8 @@ impl TestEnv {
             .try_init();
 
         // Create database and begin transaction
+        let shared_db = database::get_shared_database().await?;
         let db = TestDatabase::new().await?;
-        let pool = db.pool();
         let tx = db.begin_transaction().await?;
 
         // Create HTTP mock server
@@ -73,7 +73,7 @@ impl TestEnv {
         // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { tx: Some(tx), http_mock, clock, pool })
+        Ok(Self { tx: Some(tx), http_mock, clock, shared_db })
     }
 
     /// Get a mutable reference to the database executor.
@@ -93,7 +93,7 @@ impl TestEnv {
     /// won't see uncommitted data from the test transaction unless you
     /// explicitly commit it first.
     pub fn create_pool(&self) -> PgPool {
-        self.pool.clone()
+        self.shared_db.pool().clone()
     }
 
     /// Commit the test transaction to make data visible to other connections.
