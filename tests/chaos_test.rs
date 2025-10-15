@@ -48,13 +48,13 @@ async fn database_connectivity_resilience() -> Result<()> {
             .bind("tx-test")
             .bind("free")
             .bind("test-key")
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await?;
 
         // Verify data exists in transaction
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
             .bind(test_id)
-            .fetch_one(&mut **tx)
+            .fetch_one(&mut *tx)
             .await?;
         assert_eq!(count, 1, "Data should exist in transaction");
 
@@ -161,7 +161,7 @@ async fn transaction_consistency() -> Result<()> {
         .bind("http://test.com")
         .bind(5i32)
         .bind(30i32)
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await?;
 
         tx.commit().await?;
@@ -190,7 +190,7 @@ async fn transaction_consistency() -> Result<()> {
         .bind("http://rollback.com")
         .bind(5i32)
         .bind(30i32)
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await?;
 
         // Explicitly rollback
@@ -226,7 +226,7 @@ async fn constraint_violation_handling() -> Result<()> {
 
     // Attempt to create endpoint with duplicate name (should fail)
     let mut tx = env.transaction().await?;
-    let duplicate_result = sqlx::query(
+    let duplicate_result: Result<sqlx::postgres::PgQueryResult, sqlx::Error> = sqlx::query(
         r#"INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds)
            VALUES ($1, $2, $3, $4, $5, $6)"#
     )
@@ -236,7 +236,7 @@ async fn constraint_violation_handling() -> Result<()> {
     .bind("http://duplicate.com")
     .bind(5i32)
     .bind(30i32)
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await;
 
     assert!(duplicate_result.is_err(), "Duplicate endpoint name should be rejected");

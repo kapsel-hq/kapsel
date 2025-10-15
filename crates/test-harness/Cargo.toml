@@ -43,3 +43,7 @@ http = "1.0"
 
 # Error handling
 anyhow = { workspace = true }
+
+[package.metadata.cargo-machete]
+# This is actually used, probably a bug in machete
+ignored = ["insta"]

@@ -334,7 +334,7 @@ pub struct WebhookEvent {
 
     /// Raw webhook payload.
     ///
-    /// Stored as Vec<u8> for database compatibility, converted to Bytes for
+    /// Stored as `Vec<u8>` for database compatibility, converted to Bytes for
     /// zero-copy operations.
     pub body: Vec<u8>,
 

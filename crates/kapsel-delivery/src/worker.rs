@@ -886,11 +886,13 @@ mod tests {
             .await;
 
         // Set event to delivering status (simulates normal claim process)
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
         sqlx::query("UPDATE webhook_events SET status = 'delivering' WHERE id = $1")
             .bind(event_id)
-            .execute(&env.db.pool())
+            .execute(&mut *tx)
             .await
             .expect("failed to set event to delivering status");
+        tx.commit().await.expect("failed to commit transaction");
 
         // Get event and attempt delivery
         let event = event_by_id(&env, &event_id).await;
@@ -1022,13 +1024,15 @@ mod tests {
         let endpoint_id = uuid::Uuid::new_v4();
         let event_id = uuid::Uuid::new_v4();
 
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
+
         // Insert tenant
         let tenant_name = format!("test-tenant-{}", tenant_id.simple());
         sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
             .bind(tenant_id)
             .bind(tenant_name)
             .bind("free")
-            .execute(&env.db.pool())
+            .execute(&mut *tx)
             .await
             .expect("failed to insert test tenant");
 
@@ -1044,7 +1048,7 @@ mod tests {
         .bind("secret123")
         .bind(5)
         .bind("closed")
-        .execute(&env.db.pool())
+        .execute(&mut *tx)
         .await
         .expect("failed to insert test endpoint");
 
@@ -1071,9 +1075,11 @@ mod tests {
         .bind("application/json")
         .bind(now)
         .bind(12)
-        .execute(&env.db.pool())
+        .execute(&mut *tx)
         .await
         .expect("failed to insert test webhook event");
+
+        tx.commit().await.expect("failed to commit transaction");
 
         (tenant_id, endpoint_id, event_id)
     }
@@ -1086,9 +1092,12 @@ mod tests {
         env: &TestEnv,
         config: DeliveryConfig,
     ) -> DeliveryWorker {
+        let schema_aware_pool =
+            env.db.create_schema_aware_pool().await.expect("failed to create schema-aware pool");
+
         DeliveryWorker {
             id: 0,
-            pool: env.db.pool(),
+            pool: schema_aware_pool,
             config,
             client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
             circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
@@ -1100,6 +1109,7 @@ mod tests {
     }
 
     async fn event_by_id(env: &TestEnv, event_id: &uuid::Uuid) -> WebhookEvent {
+        let mut tx = env.transaction().await.expect("failed to begin transaction");
         let row = sqlx::query(
             r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
@@ -1110,7 +1120,7 @@ mod tests {
             ",
         )
         .bind(event_id)
-        .fetch_one(&env.db.pool())
+        .fetch_one(&mut *tx)
         .await
         .expect("failed to fetch event");
 

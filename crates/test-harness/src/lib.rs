@@ -13,7 +13,7 @@ pub mod time;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use database::{TestDatabase, TestTransaction};
+use database::TestDatabase;
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 use kapsel_core::models::{EndpointId, TenantId};
 pub use time::Clock;
@@ -61,8 +61,8 @@ impl TestEnv {
     }
 
     /// Creates a test transaction that auto-rollbacks.
-    pub async fn transaction(&self) -> Result<TestTransaction> {
-        self.db.begin_test_transaction().await
+    pub async fn transaction(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        self.db.begin_transaction().await
     }
 
     /// Attaches a running Axum server to this test environment.
@@ -78,6 +78,7 @@ impl TestEnv {
     }
 
     /// Executes a health check query against PostgreSQL.
+    /// Check if database connection is healthy.
     pub async fn database_health_check(&self) -> Result<bool> {
         let result = sqlx::query("SELECT 1 as health").fetch_one(&self.db.pool()).await;
         Ok(result.is_ok())
@@ -166,12 +167,6 @@ impl TestEnv {
         .context("Failed to create test endpoint")?;
 
         Ok(EndpointId(endpoint_id))
-    }
-
-    /// Explicitly closes database connections to prevent connection pool
-    /// exhaustion.
-    pub async fn cleanup(&self) {
-        self.db.pool().close().await;
     }
 }
 
