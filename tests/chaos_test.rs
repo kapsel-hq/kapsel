@@ -23,13 +23,20 @@ async fn database_connectivity_resilience() -> Result<()> {
 
     // Create test data
     let tenant_id = env.create_tenant("chaos-test").await?;
-    let _endpoint_id = env.create_endpoint(tenant_id, "http://example.com/webhook").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, "http://example.com/webhook").await?;
 
     // Verify we can query data after creation
     let tables = env.list_tables().await?;
     assert!(!tables.is_empty(), "Should have tables after setup");
     assert!(tables.contains(&"tenants".to_string()));
     assert!(tables.contains(&"endpoints".to_string()));
+
+    // Verify the endpoint was created
+    let endpoint_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
+        .bind(endpoint_id.0)
+        .fetch_one(&env.db.pool())
+        .await?;
+    assert_eq!(endpoint_count, 1, "Endpoint should be created successfully");
 
     // Test transaction handling
     {
@@ -216,7 +223,7 @@ async fn constraint_violation_handling() -> Result<()> {
     let tenant_id = env.create_tenant("constraint-test").await?;
 
     // Create first endpoint with unique name
-    let _endpoint1_id = env.create_endpoint(tenant_id, "http://test1.com").await?;
+    let endpoint1_id = env.create_endpoint(tenant_id, "http://test1.com").await?;
 
     // Attempt to create endpoint with duplicate name (should fail)
     let mut tx = env.transaction().await?;
@@ -235,12 +242,20 @@ async fn constraint_violation_handling() -> Result<()> {
 
     assert!(duplicate_result.is_err(), "Duplicate endpoint name should be rejected");
 
-    // Verify original data is still intact
+    // Verify original data is still intact and specifically our endpoint
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE tenant_id = $1")
         .bind(tenant_id.0)
         .fetch_one(&env.db.pool())
         .await?;
     assert_eq!(count, 1, "Original endpoint should still exist");
+
+    // Verify the specific endpoint we created is still there
+    let endpoint_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM endpoints WHERE id = $1)")
+            .bind(endpoint1_id.0)
+            .fetch_one(&env.db.pool())
+            .await?;
+    assert!(endpoint_exists, "Original endpoint should still exist after constraint violation");
 
     // Verify database health after constraint violation
     let health = env.database_health_check().await?;
