@@ -1,0 +1,30 @@
+---
+source: tests/webhook_ingestion_test.rs
+expression: "serde_json::to_string_pretty(&persisted_event).unwrap()"
+---
+{
+  "body": "\\x7b226f726465725f6964223a226f72645f313233222c22737461747573223a22636f6d706c65746564227d",
+  "content_type": "application/json",
+  "delivered_at": null,
+  "endpoint_id": "87654321-4321-8765-cba9-876543210987",
+  "failed_at": null,
+  "failure_count": 0,
+  "headers": {
+    "accept": "*/*",
+    "content-length": "43",
+    "content-type": "application/json",
+    "host": "127.0.0.1:8080"
+  },
+  "id": "11111111-2222-3333-4444-555555555555",
+  "idempotency_strategy": "header",
+  "last_attempt_at": null,
+  "next_retry_at": null,
+  "payload_size": 43,
+  "received_at": "2025-01-15T12:00:00+00:00",
+  "signature_error": null,
+  "signature_valid": true,
+  "source_event_id": "",
+  "status": "received",
+  "tenant_id": "12345678-1234-5678-9abc-123456789abc",
+  "tigerbeetle_id": null
+}
