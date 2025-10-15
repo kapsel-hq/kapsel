@@ -8,14 +8,13 @@
 //! This design gives us perfect isolation with minimal overhead - no schema
 //! juggling, no manual cleanup, just fast and reliable tests.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use sqlx::{PgPool, Postgres, Transaction};
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use tokio::sync::Mutex;
+use tokio::{runtime::Builder, sync::OnceCell};
 use tracing::{debug, info};
 
 /// Shared PostgreSQL container and connection pool for the entire test process.
@@ -26,11 +25,22 @@ struct SharedDatabase {
     /// Connection pool to the shared container
     pool: PgPool,
     /// Container handle - keeps container alive until process exits
-    _container: ContainerAsync<PostgresImage>,
+    container: ContainerAsync<PostgresImage>,
+}
+
+impl Drop for SharedDatabase {
+    fn drop(&mut self) {
+        info!("SharedDatabase dropping - stopping PostgreSQL container");
+        let runtime = Builder::new_current_thread().enable_io().build().unwrap();
+        runtime.block_on(async {
+            self.container.stop().await.expect("Failed to stop PostgreSQL container");
+        });
+        info!("PostgreSQL container stopped successfully");
+    }
 }
 
 /// Global shared database instance - initialized once per process.
-static SHARED_DB: Lazy<Mutex<Option<SharedDatabase>>> = Lazy::new(|| Mutex::new(None));
+static SHARED_DB: OnceCell<Arc<SharedDatabase>> = OnceCell::const_new();
 
 /// Test database handle providing transaction-based isolation.
 ///
@@ -73,7 +83,7 @@ impl SharedDatabase {
 
         info!("shared PostgreSQL container ready");
 
-        Ok(Self { pool, _container: container })
+        Ok(Self { pool, container })
     }
 
     /// Create a properly configured connection pool for tests.
@@ -162,14 +172,15 @@ impl SharedDatabase {
 /// This function ensures the shared PostgreSQL container is running
 /// and returns a pool connected to it. Called internally by TestDatabase.
 pub async fn get_shared_pool() -> Result<PgPool> {
-    let mut guard = SHARED_DB.lock().await;
+    let shared_db_arc = SHARED_DB
+        .get_or_init(|| async {
+            let shared =
+                SharedDatabase::initialize().await.expect("Failed to initialize shared database");
+            Arc::new(shared)
+        })
+        .await;
 
-    if guard.is_none() {
-        let shared = SharedDatabase::initialize().await?;
-        *guard = Some(shared);
-    }
-
-    Ok(guard.as_ref().expect("shared database should be initialized").pool.clone())
+    Ok(shared_db_arc.pool.clone())
 }
 
 impl TestDatabase {
