@@ -44,7 +44,7 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::handlers;
+use crate::{handlers, middleware::auth::auth_middleware};
 
 /// Creates the Axum router with all routes and middleware.
 ///
@@ -76,6 +76,10 @@ pub fn create_router(db: PgPool) -> Router {
         // .route("/endpoints/{id}", get(handlers::get_endpoint))
         // .route("/events/{id}", get(handlers::get_event_status))
         // .route("/events/{id}/attempts", get(handlers::list_delivery_attempts))
+        .layer(middleware::from_fn_with_state(
+            db.clone(),
+            auth_middleware
+        ))
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(inject_request_id))

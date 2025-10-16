@@ -43,6 +43,10 @@ anyhow = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+sha256 = "1.5"
+
+[dev-dependencies]
+test-harness = { path = "../test-harness" }
 
 [lints]
 workspace = true
