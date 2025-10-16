@@ -6,6 +6,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result};
+use kapsel_delivery::worker::DeliveryConfig;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
 
@@ -33,6 +34,18 @@ async fn main() -> Result<()> {
     run_migrations(&db_pool).await?;
     info!("Database migrations completed");
 
+    // Start delivery engine
+    let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
+        db_pool.clone(),
+        config.delivery_config.clone()
+    )?;
+
+    delivery_engine.start().await.context("Failed to start delivery engine")?;
+    info!(
+        worker_count = config.delivery_config.worker_count,
+        "Delivery engine started"
+    );
+
     // Start HTTP server
     let server_handle = tokio::spawn({
         let db_pool = db_pool.clone();
@@ -49,6 +62,10 @@ async fn main() -> Result<()> {
     // Wait for shutdown signal
     shutdown_signal().await;
     info!("Shutdown signal received, starting graceful shutdown");
+
+    // Shutdown delivery engine first
+    info!("Shutting down delivery engine");
+    delivery_engine.shutdown().await.context("Delivery engine shutdown failed")?;
 
     // Give in-flight requests time to complete
     tokio::select! {
@@ -170,6 +187,8 @@ struct Config {
     database_max_connections: u32,
     /// Server bind address
     server_addr: SocketAddr,
+    /// Delivery engine configuration
+    delivery_config: DeliveryConfig,
 }
 
 impl Config {
@@ -188,7 +207,18 @@ impl Config {
             .parse()
             .context("Invalid SERVER_ADDR format")?;
 
-        Ok(Self { database_url, database_max_connections, server_addr })
+        // Load delivery configuration from environment
+        let worker_count = std::env::var("DELIVERY_WORKER_COUNT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4);
+
+        let delivery_config = DeliveryConfig {
+            worker_count,
+            ..Default::default()
+        };
+
+        Ok(Self { database_url, database_max_connections, server_addr, delivery_config })
     }
 
     /// Returns database URL with password masked for logging.
