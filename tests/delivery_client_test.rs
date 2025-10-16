@@ -12,8 +12,8 @@ use kapsel_delivery::{
     client::{ClientConfig, DeliveryClient, DeliveryRequest},
     DeliveryError,
 };
+use kapsel_testing::{http::MockResponse, TestEnv};
 use serde_json::json;
-use test_harness::{http::MockResponse, TestEnv};
 use tokio::time::timeout;
 use uuid::Uuid;
 

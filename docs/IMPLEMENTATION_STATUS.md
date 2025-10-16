@@ -42,7 +42,7 @@ The durability guarantee: no webhook is ever lost once accepted.
 
 Reliability proven through comprehensive testing methodology.
 
-- **Test Harness** (`test-harness`)
+- **Test Harness** (`kapsel-testing`)
   - Isolated Docker PostgreSQL containers ensuring test independence
   - HTTP mock servers simulating real webhook destinations
   - Deterministic time control for testing retry timing precision

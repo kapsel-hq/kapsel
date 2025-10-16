@@ -711,8 +711,8 @@ mod tests {
     use std::collections::HashMap;
 
     use kapsel_core::models::{EventStatus, TenantId};
+    use kapsel_testing::TestEnv;
     use sqlx::Row;
-    use test_harness::TestEnv;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;

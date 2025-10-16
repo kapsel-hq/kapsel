@@ -13,8 +13,9 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Development
+CLAUDE.md
 .env
-.CLAUDE
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

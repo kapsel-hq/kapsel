@@ -14,14 +14,14 @@ use kapsel_delivery::{
     error::DeliveryError,
     retry::{BackoffStrategy, RetryContext, RetryPolicy},
 };
-use proptest::{prelude::*, test_runner::TestRunner};
-use serde_json::json;
-use test_harness::{
+use kapsel_testing::{
     fixtures::WebhookBuilder,
     invariants::{strategies, CircuitState, EventStatus, WebhookEvent},
     time::backoff::deterministic_webhook_backoff,
     ScenarioBuilder, TestEnv,
 };
+use proptest::{prelude::*, test_runner::TestRunner};
+use serde_json::json;
 use uuid::Uuid;
 
 /// Creates property test configuration based on environment.

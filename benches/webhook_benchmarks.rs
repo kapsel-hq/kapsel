@@ -12,8 +12,8 @@ use std::{
 };
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use kapsel_testing::TestEnv;
 use serde_json::json;
-use test_harness::TestEnv;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 

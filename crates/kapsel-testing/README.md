@@ -11,7 +11,7 @@ The test suite IS the system specification. Every test represents an invariant t
 ### Deterministic Time Control
 
 ```rust
-use test_harness::{TestEnv, Clock};
+use kapsel_testing::{TestEnv, Clock};
 use std::time::Duration;
 
 #[tokio::test]
@@ -29,7 +29,7 @@ async fn test_with_time_control() {
 ### Mock HTTP Server
 
 ```rust
-use test_harness::http::{MockServer, MockEndpoint};
+use kapsel_testing::http::{MockServer, MockEndpoint};
 
 #[tokio::test]
 async fn test_webhook_delivery() {
@@ -49,7 +49,7 @@ async fn test_webhook_delivery() {
 ### Test Fixtures
 
 ```rust
-use test_harness::fixtures::{WebhookBuilder, scenarios};
+use kapsel_testing::fixtures::{WebhookBuilder, scenarios};
 
 // Build custom webhook
 let webhook = WebhookBuilder::with_defaults()
@@ -65,7 +65,7 @@ let (original, duplicate) = scenarios::duplicate_webhook();
 ### Invariant Testing
 
 ```rust
-use test_harness::{invariant_assertions, Invariants};
+use kapsel_testing::{invariant_assertions, Invariants};
 
 // Verify at-least-once delivery
 invariant_assertions::assert_all_terminal(&events)?;
@@ -81,7 +81,7 @@ invariant_assertions::assert_retry_bounded(&event, max_retries)?;
 
 ```rust
 use proptest::prelude::*;
-use test_harness::invariants::strategies;
+use kapsel_testing::invariants::strategies;
 
 proptest! {
     #[test]
@@ -98,7 +98,7 @@ proptest! {
 ### Scenario Testing
 
 ```rust
-use test_harness::ScenarioBuilder;
+use kapsel_testing::ScenarioBuilder;
 
 #[tokio::test]
 async fn exponential_backoff_scenario() {
@@ -189,7 +189,7 @@ async fn test_with_database() {
 Run benchmarks with:
 
 ```bash
-cargo bench --package test-harness
+cargo bench --package kapsel_testing
 ```
 
 Key metrics tracked:

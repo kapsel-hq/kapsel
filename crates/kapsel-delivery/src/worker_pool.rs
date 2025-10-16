@@ -231,7 +231,7 @@ use crate::worker::DeliveryWorker;
 mod tests {
     use std::time::Duration;
 
-    use test_harness::TestEnv;
+    use kapsel_testing::TestEnv;
 
     use super::*;
     use crate::{

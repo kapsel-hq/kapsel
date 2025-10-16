@@ -40,9 +40,9 @@ async fn merkle_tables_exist_after_migration() {
 
 ### Task 1.2: Update Test Harness Schema
 
-**Commit**: `fix(test-harness): add attestation tables to test schema`
+**Commit**: `fix(testing): add attestation tables to test schema`
 
-Update `crates/test-harness/src/database.rs` to include new tables. Must match migration exactly to prevent schema drift.
+Update `crates/kapsel-testing/src/database.rs` to include new tables. Must match migration exactly to prevent schema drift.
 
 **Validation**: Run existing test suite - all 135+ tests must pass.
 

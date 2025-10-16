@@ -46,7 +46,7 @@ hex = { workspace = true }
 sha256 = "1.5"
 
 [dev-dependencies]
-test-harness = { path = "../test-harness" }
+kapsel-testing = { path = "../kapsel-testing" }
 
 [lints]
 workspace = true

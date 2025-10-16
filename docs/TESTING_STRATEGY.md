@@ -122,7 +122,7 @@ proptest! {
 
 **Purpose:** Verify component boundaries and database interactions.
 
-**Tools:** `test-harness` with real PostgreSQL, transaction isolation.
+**Tools:** `kapsel-testing` with real PostgreSQL, transaction isolation.
 
 **Location:** `tests/` directory for cross-crate tests.
 

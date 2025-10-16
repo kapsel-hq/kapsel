@@ -28,7 +28,7 @@ kapsel-core = { path = "../kapsel-core" }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
-test-harness = { path = "../test-harness" }
+kapsel-testing = { path = "../kapsel-testing" }
 wiremock = { workspace = true }
 proptest = { workspace = true }
 

@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
-use test_harness::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 
 /// Tests webhook delivery resilience when HTTP endpoints fail intermittently.
 ///

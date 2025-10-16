@@ -474,7 +474,7 @@ Follow dependency inversion principle:
 ├─────────────────┤
 │ Domain          │ (kapsel-core)
 ├─────────────────┤
-│ Infrastructure  │ (test-harness)
+│ Infrastructure  │ (kapsel-testing)
 └─────────────────┘
 ```
 

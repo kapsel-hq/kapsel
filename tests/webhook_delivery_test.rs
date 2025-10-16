@@ -1,6 +1,6 @@
-use http::StatusCode;
 use bytes::Bytes;
-use test_harness::{TestEnv, http::MockResponse};
+use http::StatusCode;
+use kapsel_testing::{http::MockResponse, TestEnv};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn delivery_engine_processes_pending_events() {
         "INSERT INTO webhook_events
          (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status,
           headers, body, content_type, payload_size, failure_count, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())"
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())",
     )
     .bind(event_id)
     .bind(tenant_id)
@@ -70,10 +70,8 @@ async fn delivery_engine_processes_pending_events() {
 
     // Start delivery engine
     let config = kapsel_delivery::worker::DeliveryConfig::default();
-    let mut engine = kapsel_delivery::worker::DeliveryEngine::new(
-        env.create_pool(),
-        config
-    ).unwrap();
+    let mut engine =
+        kapsel_delivery::worker::DeliveryEngine::new(env.create_pool(), config).unwrap();
 
     engine.start().await.unwrap();
 

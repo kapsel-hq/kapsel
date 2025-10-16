@@ -3,7 +3,7 @@
 //! Verifies that the test infrastructure and basic server functionality work
 //! correctly.
 
-use test_harness::{fixtures::WebhookBuilder, Clock, TestEnv};
+use kapsel_testing::{fixtures::WebhookBuilder, Clock, TestEnv};
 
 #[tokio::test]
 async fn test_environment_initializes() {
@@ -58,7 +58,7 @@ async fn http_mock_server_responds() {
 
     // Act - configure mock endpoint
     env.http_mock
-        .mock_endpoint(test_harness::http::MockEndpoint::success("/health").with_body("OK"))
+        .mock_endpoint(kapsel_testing::http::MockEndpoint::success("/health").with_body("OK"))
         .await;
 
     // Make request to mock (in real test, this would be done by the webhook
@@ -132,7 +132,7 @@ async fn database_transaction_rollback_works() {
 async fn scenario_builder_executes_steps() {
     use std::time::Duration;
 
-    use test_harness::ScenarioBuilder;
+    use kapsel_testing::ScenarioBuilder;
 
     // Arrange
     let mut env = TestEnv::new().await.expect("Failed to create test environment");

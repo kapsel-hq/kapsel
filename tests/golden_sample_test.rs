@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
-use test_harness::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 
 /// The golden path: webhook delivery with exponential backoff.
 ///
@@ -93,7 +93,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
 /// Verifies idempotency using ScenarioBuilder.
 async fn verify_idempotency_scenario(
     env: &mut TestEnv,
-    original: test_harness::fixtures::TestWebhook,
+    original: kapsel_testing::fixtures::TestWebhook,
     original_id: kapsel_core::models::EventId,
 ) -> Result<()> {
     // Create duplicate with same idempotency key but different payload

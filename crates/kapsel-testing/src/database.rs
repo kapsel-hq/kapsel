@@ -140,7 +140,7 @@ impl SharedDatabase {
 
     /// Run database migrations to create schema.
     async fn run_migrations(pool: &PgPool) -> Result<()> {
-        // Navigate from test-harness crate to workspace root
+        // Navigate from kapsel-testing crate to workspace root
         let workspace_root =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         let migrations_path = workspace_root.join("migrations");

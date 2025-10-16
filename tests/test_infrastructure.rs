@@ -1,16 +1,13 @@
 //! Integration test for test infrastructure without Docker dependencies.
-//!
-//! This test validates that our TDD infrastructure is working correctly
-//! and demonstrates the RED-GREEN-REFACTOR workflow for Claude development.
 
 use std::time::Duration;
 
-use serde_json::json;
-use test_harness::{
+use kapsel_testing::{
     fixtures::{scenarios, EndpointBuilder, WebhookBuilder},
     http::{MockEndpoint, ScenarioBuilder as HttpScenarioBuilder},
     time::{backoff, Clock, TestClock},
 };
+use serde_json::json;
 
 #[tokio::test]
 async fn test_infrastructure_components_work() {
@@ -24,7 +21,7 @@ async fn test_infrastructure_components_work() {
     assert_eq!(elapsed, Duration::from_secs(30));
 
     // Test HTTP mocking (no database needed)
-    let mock_server = test_harness::http::MockServer::start().await;
+    let mock_server = kapsel_testing::http::MockServer::start().await;
     assert!(!mock_server.url().is_empty());
 
     // Configure mock endpoint
@@ -110,7 +107,7 @@ async fn scenario_builders_work() {
 #[tokio::test]
 async fn http_scenario_builder_chains_responses() {
     // Arrange
-    let mock = test_harness::http::MockServer::start().await;
+    let mock = kapsel_testing::http::MockServer::start().await;
 
     // Act - Build complex failure/recovery scenario
     HttpScenarioBuilder::new(mock)
@@ -186,7 +183,7 @@ fn test_clock_deterministic_behavior() {
 async fn retry_logic_exponential_backoff_timing() {
     // Arrange
     let clock = TestClock::new();
-    let mock = test_harness::http::MockServer::start().await;
+    let mock = kapsel_testing::http::MockServer::start().await;
 
     // Configure endpoint to fail then succeed
     mock.mock_endpoint(MockEndpoint::failure("/webhook", http::StatusCode::SERVICE_UNAVAILABLE))
@@ -225,7 +222,7 @@ async fn complete_webhook_reliability_workflow() {
 
     // Arrange - Set up test environment
     let clock = TestClock::new();
-    let mock_destination = test_harness::http::MockServer::start().await;
+    let mock_destination = kapsel_testing::http::MockServer::start().await;
 
     // Configure destination to initially fail, then succeed
     mock_destination

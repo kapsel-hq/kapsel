@@ -12,7 +12,7 @@ use kapsel_delivery::{
     worker::{DeliveryConfig, EngineStats},
     worker_pool::WorkerPool,
 };
-use test_harness::TestEnv;
+use kapsel_testing::TestEnv;
 use tokio::{sync::RwLock, time::timeout};
 use tokio_util::sync::CancellationToken;
 
