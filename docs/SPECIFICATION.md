@@ -74,6 +74,26 @@ This document defines the functional and non-functional requirements for Kapsel'
   - Half-open after 30 seconds
   - Close after 3 consecutive successes in half-open state
 
+#### FR-7: Cryptographic Attestation
+
+- **FR-7.1**: Merkle tree-based attestation for all delivery attempts:
+  - Every delivery attempt becomes a Merkle tree leaf
+  - Leaf contains: delivery_attempt_id, endpoint_url, payload_hash, timestamp, status
+  - SHA-256 hashing with 0x00 prefix (RFC 6962 compliance)
+- **FR-7.2**: Periodic tree commitment:
+  - Batch events every 10 seconds or 100 events (configurable)
+  - Compute new Merkle root using rs-merkle
+  - Sign root with Ed25519 private key
+  - Store Signed Tree Head (STH) in PostgreSQL
+- **FR-7.3**: Proof generation:
+  - Inclusion proof for any delivery attempt
+  - Consistency proof between two STHs
+  - Downloadable proof package for client verification
+- **FR-7.4**: Signature management:
+  - Ed25519 key generation and secure storage
+  - Public key availability for verification
+  - Key rotation support (yearly recommended)
+
 ## Non-Functional Requirements
 
 ### Performance
@@ -83,7 +103,9 @@ This document defines the functional and non-functional requirements for Kapsel'
 - **NFR-1.1**: Ingestion latency p99 < 50ms (includes database write)
 - **NFR-1.2**: First delivery attempt p50 < 100ms
 - **NFR-1.3**: Database query p99 < 5ms
-- **NFR-1.4**: TigerBeetle commit p99 < 1ms
+- **NFR-1.4**: Attestation batch commit p99 < 100ms
+- **NFR-1.5**: Proof generation p99 < 50ms
+- **NFR-1.6**: STH signing p99 < 10ms
 
 #### NFR-2: Throughput
 
@@ -109,7 +131,9 @@ This document defines the functional and non-functional requirements for Kapsel'
 
 - **NFR-5.1**: Multi-zone replication for PostgreSQL
 - **NFR-5.2**: Point-in-time recovery to any second in last 7 days
-- **NFR-5.3**: Immutable audit log in TigerBeetle
+- **NFR-5.3**: Immutable Merkle tree audit log
+- **NFR-5.4**: Cryptographic proof of append-only property
+- **NFR-5.5**: 7-year retention for attestation records
 
 ### Security
 
@@ -133,7 +157,7 @@ This document defines the functional and non-functional requirements for Kapsel'
 - Web framework: Axum 0.7+
 - Async runtime: Tokio 1.35+
 - Database: PostgreSQL 14+ with pgcrypto extension
-- Audit log: TigerBeetle 0.15+
+- Cryptography: Ed25519-dalek 2.1+, rs-merkle 1.5+
 - Serialization: serde with zero-copy where possible
 
 ### TC-2: Deployment
@@ -174,6 +198,13 @@ This document defines the functional and non-functional requirements for Kapsel'
 - **Security**: Signing secrets, signature validation headers
 - **Tenant Settings**: Rate limits, retention policies, feature flags
 
+### Attestation Storage
+
+- **Merkle Leaves**: Append-only log of all delivery attempts
+- **Signed Tree Heads**: Periodic commitments with Ed25519 signatures
+- **Proof Cache**: Pre-computed inclusion proofs for common queries
+- **Attestation Keys**: Ed25519 public/private key pairs for signing
+
 ## Interface Requirements
 
 ### Webhook Ingestion API
@@ -209,6 +240,44 @@ This document defines the functional and non-functional requirements for Kapsel'
 - `X-Kapsel-Timestamp`: Original ingestion time
 
 **Behavior**: Follow HTTP semantics for success/failure determination
+
+### Attestation API
+
+#### GET /attestation/sth
+
+Get latest Signed Tree Head.
+
+Response:
+
+```json
+{
+  "tree_size": 12345,
+  "root_hash": "abc123...", // hex
+  "timestamp": 1234567890,
+  "signature": "def456...", // hex
+  "public_key": "789abc..." // hex
+}
+```
+
+#### GET /attestation/proof/{leaf_hash}
+
+Get inclusion proof for delivery attempt.
+
+Response:
+
+```json
+{
+  "leaf_hash": "abc123...",
+  "leaf_index": 5678,
+  "tree_size": 12345,
+  "proof_hashes": ["hash1", "hash2"],
+  "root_hash": "root123..."
+}
+```
+
+#### GET /attestation/download-proof/{delivery_attempt_id}
+
+Download complete proof package for client verification.
 }
 
 ````
@@ -291,8 +360,9 @@ Response:
 ### Unit Test Coverage
 
 - Minimum 80% line coverage
-- 100% coverage for critical paths (retry logic, idempotency)
+- 100% coverage for critical paths (retry logic, idempotency, attestation)
 - All error conditions tested
+- Cryptographic operations fully tested
 
 ### Integration Tests
 
@@ -300,6 +370,8 @@ Response:
 - Network failure simulation
 - Concurrent request handling
 - Circuit breaker state transitions
+- Merkle tree construction and verification
+- Ed25519 signature generation and validation
 
 ### Chaos Tests
 
@@ -324,9 +396,10 @@ Response:
 
 ### Audit Trail
 
-- Immutable event log for 7 years
-- Cryptographic proof of receipt
-- Chain of custody documentation
+- Immutable Merkle tree log for 7 years
+- Cryptographic proof of receipt via Ed25519 signatures
+- Chain of custody documentation with verifiable proofs
+- Client-side verification tools for independent validation
 
 ### Security Standards
 

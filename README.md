@@ -1,74 +1,56 @@
-# Kapsel
+<p align="center">
+  <img width="60%" src="docs/images/logo.png" alt="LOGO Screenshot">
+</p>
 
-The building blocks for unbreakable webhook integrations.
 
-Kapsel guarantees at-least-once delivery:
+<p align="center">
+  <b><a href="docs/OVERVIEW.md">System Overview</a></b>
+  &nbsp;|&nbsp;
+  <b><a href="docs/ATTESTATION.md">Attestation</a></b>
+  &nbsp;|&nbsp;
+  <b><a href="docs/TESTING_STRATEGY.md">Testing Strategy</a></b>
+  &nbsp;|&nbsp
+  <b><a href="docs/STYLE.md">Style Guide</a></b>
+</p>
 
-- **Zero Loss**: PostgreSQL persistence before acknowledgment
-- **Smart Retries**: Exponential backoff with circuit breakers
-- **Complete Audit**: Cryptographic proof of delivery attempts
-- **High Performance**: 10K+ webhooks/sec with sub-50ms latency
+> [!WARNING]
+> Kapsel is in alpha phase.
+>
+> The API is unstable, features are incomplete, and breaking changes should be expected.
 
-## Quick Start
+## The Hook
 
-```bash
-# Prerequisites: Rust 1.75+, PostgreSQL 14+
-git clone <repository>
-cd kapsel
-cargo build --release
+Kapsel is a webhook reliability service for building guaranteed at-least-once delivery systems.
 
-# Setup database
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/kapsel"
-createdb kapsel
-
-# Run server
-cargo run
-```
-
-## Usage
-
-```bash
-# Ingest webhook
-curl -X POST http://localhost:8080/ingest/endpoint-123 \
-  -H "Content-Type: application/json" \
-  -H "X-Idempotency-Key: unique-event-id" \
-  -d '{"event": "payment.completed", "data": {...}}'
-
-# Response
-{"event_id": "evt_1234567890abcdef", "status": "received"}
-```
-
-## Implementation Status
-
-- DONE: **Webhook Ingestion**: Production ready with idempotency
-- ONGOING **Delivery Engine**: HTTP client and retry logic (2 weeks)
-- PLANNED **Audit Trails**: TigerBeetle integration planned
-- PLANNED **Management API**: Endpoint configuration and monitoring
+- **Zero Loss** - Every webhook persisted before acknowledgment
+- **Exactly Once Processing** - Database-enforced idempotency
+- **At-Least Once Delivery** - Exponential backoff with circuit breakers
+- **Cryptographic Proof** - Merkle tree attestation with Ed25519 signatures
 
 ## Development
-
 ```bash
-# Run tests
-cargo test
+git clone https://github.com/kapsel-hq/kapsel
+cd kapsel
 
-# With coverage
-cargo test --all-features
+# Development
+cargo make build
+cargo make tdd
 
-# Format and lint
-cargo fmt && cargo clippy -- -D warnings
+# Testing
+cargo make test
 
-# Development server
-cargo run
+# Run all checks
+cargo make check
+
+# Database
+cargo make db-setup
+cargo make db-reset
 ```
 
-## Documentation
-
-- [Architecture Overview](docs/OVERVIEW.md) - System design and data flow
-- [Implementation Status](docs/IMPLEMENTATION_STATUS.md) - Current capabilities
-- [Technical Specification](docs/SPECIFICATION.md) - Detailed requirements
-- [Development Guide](docs/TESTING_STRATEGY.md) - Testing and TDD approach
-- [Style Guide](docs/STYLE.md) - Code conventions
+Read `Makefile.toml` for all avaliable `cargo-make` tasks.
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0.
+
+See [`docs/`](docs/) for detailed design, development guide, and testing philosophy.

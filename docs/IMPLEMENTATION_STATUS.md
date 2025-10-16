@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-Kapsel is building the definitive webhook reliability service. The foundation for guaranteed at-least-once delivery is complete with webhook ingestion, persistence, and comprehensive test infrastructure. The delivery engine structure exists but requires HTTP client and retry logic implementation to fulfill our reliability promise.
+Kapsel is building the definitive webhook reliability service with cryptographically verifiable delivery. The foundation for guaranteed at-least-once delivery is complete with webhook ingestion, persistence, and comprehensive test infrastructure. We are now implementing Merkle tree-based attestation to provide immutable proof of delivery attempts for compliance and dispute resolution.
 
-This document provides complete transparency on current capabilities and the clear path to production-ready webhook reliability guarantees.
+This document provides complete transparency on current capabilities and the clear path to production-ready webhook reliability with cryptographic attestation.
 
 ## COMPLETE - Production Ready Components
 
@@ -59,7 +59,39 @@ Complete visibility into webhook processing for operational reliability.
   - Configurable log levels for production monitoring
   - Sensitive data exclusion maintaining security compliance
 
-## IN PROGRESS - Core Delivery Implementation
+## IN PROGRESS - Delivery Engine & Merkle Attestation
+
+### Merkle Tree Attestation (`kapsel-attestation`)
+
+Cryptographically verifiable proof of webhook delivery for compliance and disputes.
+
+**Architecture Defined:**
+
+- Merkle tree-based append-only log using rs-merkle
+- Ed25519 signature scheme for non-repudiation
+- Periodic batch commitment (every 10s or 100 events)
+- Client-side verification library and CLI tool
+
+**Implementation Plan (Week 1-2):**
+
+- Database schema for merkle_leaves and signed_tree_heads
+- MerkleService for tree management and batch processing
+- SigningService with Ed25519 key management
+- Integration with delivery pipeline for event capture
+
+**Proof Generation (Week 3):**
+
+- Inclusion proof API for specific delivery attempts
+- Consistency proofs between tree heads
+- Downloadable proof packages with verification instructions
+- Proof caching for performance optimization
+
+**Client Verification (Week 4):**
+
+- Standalone verification library
+- CLI tool for proof validation
+- Documentation and compliance guides
+- Public key distribution mechanism
 
 ### Delivery Engine (`kapsel-delivery`)
 
@@ -111,14 +143,6 @@ Preventing cascade failures through intelligent failure isolation.
 
 ## PLANNED FEATURES - Expanding Reliability Guarantees
 
-### TigerBeetle Integration
-
-Cryptographically verifiable audit trails for financial-grade webhook delivery.
-
-- **Purpose**: Immutable proof of webhook delivery attempts and outcomes
-- **Value**: Regulatory compliance and dispute resolution
-- **Timeline**: Post-MVP, does not block core reliability features
-
 ### Management API
 
 Operational control over webhook delivery configuration and monitoring.
@@ -165,37 +189,37 @@ All identified technical debt has been eliminated in the recent refactoring pass
 
 The codebase now maintains zero technical debt with comprehensive standards documented in STYLE.md.
 
-## CRITICAL PATH TO WEBHOOK RELIABILITY MVP
+## CRITICAL PATH TO WEBHOOK RELIABILITY WITH ATTESTATION MVP
 
-Achieving guaranteed at-least-once webhook delivery:
+Achieving guaranteed at-least-once webhook delivery with cryptographic proof:
 
-### Phase 1: Complete Core Reliability (1 week)
+### Week 1: Foundation & Core Delivery
 
-1. HTTP client implementation with timeout handling
-2. Exponential backoff retry logic with configurable jitter
-3. Delivery attempt persistence for audit trails
-4. End-to-end reliability testing with real destinations
+1. **Database Migration**: Create merkle attestation tables
+2. **HTTP Delivery**: Implement delivery client with retry logic
+3. **Event Capture**: Intercept delivery attempts for attestation
+4. **Crypto Services**: Ed25519 signing and Merkle tree management
 
-### Phase 2: Failure Isolation (3 days)
+### Week 2: Integration & Batch Processing
 
-1. Circuit breaker integration with delivery decisions
-2. Per-endpoint state persistence and recovery
-3. Automatic failure threshold monitoring
-4. HalfOpen state testing and recovery logic
+1. **Merkle Service**: Batch event processing and tree construction
+2. **Signing Service**: STH generation with Ed25519 signatures
+3. **Background Worker**: Periodic commitment (10s or 100 events)
+4. **Circuit Breaker**: Integration with delivery decisions
 
-### Phase 3: Production Operations (1 week)
+### Week 3: Proof Generation & API
 
-1. Prometheus metrics for reliability monitoring
-2. Rate limiting preventing system overload
-3. Comprehensive health checks for deployment
-4. Basic management API for webhook configuration
+1. **Inclusion Proofs**: Generate proofs for specific deliveries
+2. **Attestation API**: `/attestation/sth` and `/attestation/proof` endpoints
+3. **Proof Download**: Complete verification packages
+4. **Performance**: Proof caching and optimization
 
-### Phase 4: Capacity Validation (3 days)
+### Week 4: Production Readiness
 
-1. Load testing infrastructure and benchmarks
-2. Throughput measurement under realistic conditions
-3. Performance optimization based on bottleneck analysis
-4. Documentation of proven reliability guarantees
+1. **Client Verification**: Standalone library and CLI tool
+2. **Monitoring**: Prometheus metrics for attestation pipeline
+3. **Documentation**: Compliance guides and verification instructions
+4. **Load Testing**: Validate 10K webhooks/sec with attestation
 
 ## TESTING COVERAGE
 
@@ -211,13 +235,17 @@ The foundation of webhook reliability has comprehensive test coverage:
 
 ### Reliability Testing Required
 
-Critical webhook delivery scenarios requiring test coverage:
+Critical webhook delivery and attestation scenarios requiring test coverage:
 
 - End-to-end webhook delivery with real HTTP destinations
 - Retry timing precision and exponential backoff behavior
 - Circuit breaker state transitions under various failure modes
-- System behavior under sustained high load
+- Merkle tree construction and proof generation correctness
+- Ed25519 signature generation and verification
+- Client-side proof validation with various tree sizes
+- System behavior under sustained high load with attestation
 - Recovery correctness after infrastructure failures
+- Batch processing under concurrent delivery loads
 
 ## Database Schema Status
 
@@ -227,6 +255,13 @@ Critical webhook delivery scenarios requiring test coverage:
 - `endpoints` - Destination configuration
 - `webhook_events` - Event storage with status tracking
 - `delivery_attempts` - Attempt history (schema only)
+
+### Attestation Tables (To Be Implemented):
+
+- `merkle_leaves` - Append-only log of delivery attempts
+- `signed_tree_heads` - Periodic Merkle root commitments
+- `proof_cache` - Pre-computed inclusion proofs
+- `attestation_keys` - Ed25519 key management
 
 ### Schema Readiness:
 
@@ -239,8 +274,9 @@ Critical webhook delivery scenarios requiring test coverage:
 ### High Priority Risks:
 
 1. **No actual delivery** - Core feature incomplete
-2. **No performance data** - Can't validate claims
-3. **No production monitoring** - Blind in production
+2. **No cryptographic attestation** - Missing key differentiator
+3. **No performance data** - Can't validate claims with attestation overhead
+4. **No production monitoring** - Blind in production
 
 ### Medium Priority Risks:
 
@@ -250,15 +286,16 @@ Critical webhook delivery scenarios requiring test coverage:
 
 ### Low Priority Risks:
 
-1. **No TigerBeetle** - PostgreSQL sufficient for now
-2. **No management UI** - Can use SQL directly
-3. **No horizontal scaling** - Single instance okay for MVP
+1. **No management UI** - Can use SQL directly
+2. **No horizontal scaling** - Single instance okay for MVP
+3. **No key rotation** - Manual rotation acceptable initially
 
 ## Honest Assessment for Investors
 
 ### Foundation Strengths:
 
 - **Reliability-first architecture** - Every design decision prioritizes webhook delivery guarantees
+- **Cryptographic attestation** - Merkle tree-based proof differentiates from competitors
 - **Comprehensive testing** - 135+ tests including property-based testing for edge cases
 - **Production-ready infrastructure** - PostgreSQL persistence, connection pooling, graceful shutdown
 - **Type-safe implementation** - Compile-time prevention of common webhook processing errors
@@ -267,14 +304,15 @@ Critical webhook delivery scenarios requiring test coverage:
 ### Implementation Gap:
 
 - **Delivery engine incomplete** - HTTP client and retry logic required to fulfill reliability promise
+- **Attestation not implemented** - Merkle tree and Ed25519 signing needed for proof of delivery
 - **Operational readiness** - Monitoring and management features needed for production deployment
 
 ### Development Timeline:
 
-- **MVP delivery capability**: 2 weeks focused development completing HTTP client and retry logic
-- **Production deployment**: 4-6 weeks including operational features and load testing
-- **Full feature set**: 8-10 weeks with audit trails and advanced management capabilities
+- **MVP with attestation**: 4 weeks implementing delivery engine and Merkle tree attestation
+- **Production deployment**: 6 weeks including operational features and load testing
+- **Full feature set**: 8-10 weeks with advanced management capabilities and compliance certification
 
 ### Strategic Position:
 
-Kapsel has the strongest foundation in the webhook reliability space. The architecture, testing methodology, and code quality demonstrate serious engineering commitment to solving webhook delivery problems. The clear 2-week path to MVP delivery capability positions us well for rapid market entry.
+Kapsel has the strongest foundation in the webhook reliability space with a unique differentiator: cryptographically verifiable delivery receipts. No competitor offers Merkle tree-based attestation with Ed25519 signatures. The architecture, testing methodology, and code quality demonstrate serious engineering commitment to solving webhook delivery problems with compliance-grade proof. The 4-week path to MVP with attestation positions us as the only solution for regulated industries requiring proof of delivery.
