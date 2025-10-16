@@ -1586,6 +1586,7 @@ dependencies = [
  "cargo-husky",
  "chrono",
  "criterion",
+ "futures",
  "hex",
  "hmac",
  "http",
@@ -1594,6 +1595,7 @@ dependencies = [
  "kapsel-core",
  "kapsel-delivery",
  "proptest",
+ "proptest_async",
  "rand 0.9.2",
  "reqwest",
  "serde_json",
@@ -2140,6 +2142,16 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "proptest_async"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94fbddd46d5ac1ec9a2c00b036b1f52656cd2b47c98b3fd8e584e6b4eae2d6cd"
+dependencies = [
+ "proptest",
+ "tokio",
 ]
 
 [[package]]

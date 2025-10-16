@@ -50,6 +50,7 @@ impl SharedDatabase {
 
         // Start container with PostgreSQL 16 Alpine for smaller size
         let postgres_image = PostgresImage::default().with_tag("16-alpine");
+
         let container = AsyncRunner::start(postgres_image)
             .await
             .context("failed to start PostgreSQL container")?;
@@ -85,10 +86,10 @@ impl SharedDatabase {
 
         loop {
             match sqlx::postgres::PgPoolOptions::new()
-                // Higher connection limits to prevent exhaustion in parallel tests
-                .max_connections(50)
-                .min_connections(10)
-                // Reasonable timeouts for test environment
+                // Workspace-wide parallel test connection pool settings
+                .max_connections(100)
+                .min_connections(20)
+                // Extended timeouts for complex worker tests
                 .acquire_timeout(Duration::from_secs(30))
                 .idle_timeout(Duration::from_secs(60))
                 .max_lifetime(Duration::from_secs(300))
@@ -120,7 +121,7 @@ impl SharedDatabase {
         }
     }
 
-    /// Setup required PostgreSQL extensions.
+    /// Enable required PostgreSQL extensions.
     async fn setup_extensions(pool: &PgPool) -> Result<()> {
         // UUID generation support
         sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
@@ -187,6 +188,22 @@ impl TestDatabase {
         }
 
         Ok(Self { shared_db })
+    }
+
+    /// Create a completely isolated test database handle.
+    ///
+    /// This bypasses the shared database mechanism and creates a fresh
+    /// database container. Used by property tests that run in custom
+    /// runtimes to avoid runtime conflicts.
+    pub async fn new_isolated() -> Result<Self> {
+        // Always create new database, never share
+        let shared_db = Arc::new(SharedDatabase::new().await?);
+        Ok(Self { shared_db })
+    }
+
+    /// Get a reference to the shared database.
+    pub fn shared_database(&self) -> &Arc<SharedDatabase> {
+        &self.shared_db
     }
 
     /// Begin a new transaction for test isolation.

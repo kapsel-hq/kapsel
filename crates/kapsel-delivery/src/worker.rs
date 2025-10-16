@@ -747,7 +747,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_delivery_updates_database_correctly() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -759,25 +759,20 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // Insert test tenant and endpoint
-        let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&mut env, &webhook_url).await;
-
-        // Get pool before committing and create worker
-        let pool = env.create_pool();
-
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
+        // Insert test tenant and endpoint using isolated database
+        let (_tenant_id, _endpoint_id, event_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
         // Create worker with the pool
-        let worker = create_test_worker_with_pool(&pool).await;
+        let worker = create_test_worker_with_pool(env.pool()).await;
 
         // Get the event and attempt delivery
-        let event = event_by_id(&pool, &event_id).await;
+        let event = event_by_id(env.pool(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(result.is_ok(), "delivery should succeed: {:?}", result.err());
 
         // Verify event is marked as delivered
-        let updated_event = event_by_id(&pool, &event_id).await;
+        let updated_event = event_by_id(env.pool(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivered);
         assert!(updated_event.delivered_at.is_some());
 
@@ -789,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_delivery_schedules_retry() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -801,20 +796,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // Insert test data
-        let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&mut env, &webhook_url).await;
+        // Insert test tenant and endpoint using isolated database
+        let (_tenant_id, _endpoint_id, event_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
-        // Get pool before committing
-        let pool = env.create_pool();
-
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
-
-        // Create worker with the pool
-        let worker = create_test_worker_with_pool(&pool).await;
+        let worker = create_test_worker_with_pool(env.pool()).await;
 
         // Get event and attempt delivery
-        let event = event_by_id(&pool, &event_id).await;
+        let event = event_by_id(env.pool(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -823,7 +812,7 @@ mod tests {
         );
 
         // Verify event is marked for retry
-        let updated_event = event_by_id(&pool, &event_id).await;
+        let updated_event = event_by_id(env.pool(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Pending);
         assert_eq!(updated_event.failure_count, 1);
         assert!(updated_event.next_retry_at.is_some());
@@ -833,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn exhausted_retries_mark_event_failed() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -846,39 +835,35 @@ mod tests {
             .await;
 
         // Insert test data with event at max retry limit
-        let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&mut env, &webhook_url).await;
+        let (_tenant_id, _endpoint_id, event_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
         // Update event to be at max retry limit (assuming default max_attempts = 10)
-        sqlx::query("UPDATE webhook_events SET failure_count = 9 WHERE id = $1")
+        sqlx::query("UPDATE webhook_events SET failure_count = $1 WHERE id = $2")
+            .bind(9)
             .bind(event_id)
-            .execute(&mut **env.db())
+            .execute(env.pool())
             .await
-            .expect("failed to update failure count");
+            .expect("failed to update event failure count");
 
-        // Get pool before committing
-        let pool = env.create_pool();
-
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
-
-        // Create worker with low retry policy for testing
+        // Create worker with reduced retry policy to trigger failure
         let config = DeliveryConfig {
             default_retry_policy: RetryPolicy { max_attempts: 10, ..Default::default() },
             ..Default::default()
         };
-        let worker = create_test_worker_with_config_and_pool(&pool, config).await;
+        let worker = create_test_worker_with_config_and_pool(env.pool(), config).await;
 
         // Get event and attempt delivery (this will be attempt #10)
-        let event = event_by_id(&pool, &event_id).await;
+        let event = event_by_id(env.pool(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
-            "worker should handle exhausted retries gracefully: {:?}",
+            "delivery attempt should succeed even when max retries reached: {:?}",
             result.err()
         );
 
-        // Verify event is marked as permanently failed
-        let updated_event = event_by_id(&pool, &event_id).await;
+        // Verify event is marked as failed (no more retries)
+        let updated_event = event_by_id(env.pool(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
 
@@ -887,28 +872,25 @@ mod tests {
 
     #[tokio::test]
     async fn circuit_breaker_blocks_delivery_when_open() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
         // Insert test data
-        let (_tenant_id, endpoint_id, event_id) = setup_test_data(&mut env, &webhook_url).await;
+        let (_tenant_id, endpoint_id, event_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
         // Set event to delivering status (simulates normal claim process)
         sqlx::query("UPDATE webhook_events SET status = 'delivering' WHERE id = $1")
             .bind(event_id)
-            .execute(&mut **env.db())
+            .execute(env.pool())
             .await
-            .expect("failed to set event to delivering status");
+            .expect("failed to update event status");
 
-        // Get pool before committing
-        let pool = env.create_pool();
+        // Create worker
+        let worker = create_test_worker_with_pool(env.pool()).await;
 
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
-
-        // Create worker with the pool and force circuit breaker open
-        let worker = create_test_worker_with_pool(&pool).await;
+        // Force circuit breaker open for this endpoint
         worker
             .circuit_manager
             .write()
@@ -917,7 +899,7 @@ mod tests {
             .await;
 
         // Get event and attempt delivery
-        let event = event_by_id(&pool, &event_id).await;
+        let event = event_by_id(env.pool(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
 
         // Should fail with circuit open error
@@ -929,18 +911,19 @@ mod tests {
         }
 
         // Event should remain in delivering status (unchanged)
-        let updated_event = event_by_id(&pool, &event_id).await;
+        let updated_event = event_by_id(env.pool(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivering);
     }
 
     #[tokio::test]
     async fn worker_claims_pending_events_from_database() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
         // Insert test tenant, endpoint, and first event
-        let (tenant_id, endpoint_id, event1_id) = setup_test_data(&mut env, &webhook_url).await;
+        let (tenant_id, endpoint_id, event1_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
         // Insert second event under same tenant/endpoint
         let event2_id = uuid::Uuid::new_v4();
@@ -957,41 +940,36 @@ mod tests {
         .bind(event2_id)
         .bind(tenant_id)
         .bind(endpoint_id)
-        .bind("test-event-2")
+        .bind(format!("source-{}", event2_id))
         .bind("header")
         .bind("pending")
         .bind(0)
-        .bind(serde_json::json!({"content-type": "application/json"}))
-        .bind(b"{\"test\": \"data2\"}")
+        .bind(serde_json::json!({"x-test-2": "value"}))
+        .bind(b"test payload 2".as_slice())
         .bind("application/json")
         .bind(now)
-        .bind(17) // payload_size for "{\"test\": \"data2\"}"
-        .execute(&mut **env.db())
+        .bind(14i32) // payload_size for "test payload 2"
+        .execute(env.pool())
         .await
         .expect("failed to insert second webhook event");
 
-        // Get pool before committing
-        let pool = env.create_pool();
-
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
-
         // Create worker with the pool
-        let worker = create_test_worker_with_pool(&pool).await;
+        let worker = create_test_worker_with_pool(env.pool()).await;
 
         // Claim events
         let claimed_events = worker.claim_pending_events().await.expect("failed to claim events");
 
-        // Should claim both events
+        // Should have claimed both events
         assert_eq!(claimed_events.len(), 2);
 
         // Events should be marked as delivering in database
+
         let delivering_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM webhook_events WHERE status = 'delivering' AND id IN ($1, $2)",
+            "SELECT COUNT(*) FROM webhook_events WHERE status = 'delivering' AND (id = $1 OR id = $2)",
         )
         .bind(event1_id)
         .bind(event2_id)
-        .fetch_one(&pool)
+        .fetch_one(env.pool())
         .await
         .expect("failed to count delivering events");
 
@@ -1000,7 +978,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_retryable_errors_mark_event_failed_immediately() {
-        let mut env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -1012,20 +990,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // Insert test data
-        let (_tenant_id, _endpoint_id, event_id) = setup_test_data(&mut env, &webhook_url).await;
+        // Insert test tenant and endpoint using isolated database
+        let (_tenant_id, _endpoint_id, event_id) =
+            setup_test_data_isolated(&env, &webhook_url).await;
 
-        // Get pool before committing
-        let pool = env.create_pool();
-
-        // Commit transaction to make data visible to workers
-        env.commit().await.expect("failed to commit test transaction");
-
-        // Create worker with the pool
-        let worker = create_test_worker_with_pool(&pool).await;
+        let worker = create_test_worker_with_pool(env.pool()).await;
 
         // Get event and attempt delivery
-        let event = event_by_id(&pool, &event_id).await;
+        let event = event_by_id(env.pool(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -1033,8 +1005,8 @@ mod tests {
             result.err()
         );
 
-        // Verify event is marked as failed immediately (no retry)
-        let updated_event = event_by_id(&pool, &event_id).await;
+        // Verify event is marked as failed immediately (no retry for 4xx)
+        let updated_event = event_by_id(env.pool(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
         assert!(updated_event.next_retry_at.is_none());
@@ -1043,8 +1015,9 @@ mod tests {
     }
 
     // Helper functions for test setup
-    async fn setup_test_data(
-        env: &mut TestEnv,
+
+    async fn setup_test_data_isolated(
+        env: &TestEnv,
         webhook_url: &str,
     ) -> (uuid::Uuid, uuid::Uuid, uuid::Uuid) {
         let tenant_id = uuid::Uuid::new_v4();
@@ -1058,7 +1031,7 @@ mod tests {
             .bind(tenant_name)
             .bind("free")
             .bind("test-api-key")
-            .execute(&mut **env.db())
+            .execute(env.pool())
             .await
             .expect("failed to insert test tenant");
 
@@ -1075,7 +1048,7 @@ mod tests {
         .bind(5)
         .bind(30)
         .bind("closed")
-        .execute(&mut **env.db())
+        .execute(env.pool())
         .await
         .expect("failed to insert test endpoint");
 
@@ -1102,12 +1075,9 @@ mod tests {
         .bind("application/json")
         .bind(now)
         .bind(12i32) // payload_size for "test payload"
-        .execute(&mut **env.db())
+        .execute(env.pool())
         .await
         .expect("failed to insert webhook event");
-
-        // Note: Tests that need data visible to workers should call env.commit()
-        // separately
 
         (tenant_id, endpoint_id, event_id)
     }

@@ -13,7 +13,7 @@ use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use database::TestDatabase;
+use database::{SharedDatabase, TestDatabase};
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 use kapsel_core::models::{EndpointId, EventId, TenantId};
 use sqlx::{PgPool, Postgres, Row};
@@ -41,8 +41,10 @@ pub struct TestEnv {
     pub http_mock: http::MockServer,
     /// Deterministic clock for time-based testing
     pub clock: time::TestClock,
+    /// Database handle for this test environment
+    _database: TestDatabase,
     /// Shared database instance (Arc ensures proper cleanup)
-    shared_db: std::sync::Arc<database::SharedDatabase>,
+    shared_db: std::sync::Arc<SharedDatabase>,
 }
 
 impl TestEnv {
@@ -62,10 +64,21 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
-        // Create database and begin transaction
-        let shared_db = database::get_shared_database().await?;
-        let db = TestDatabase::new().await?;
-        let tx = db.begin_transaction().await?;
+        // Detect if we're in a custom runtime (property tests with Runtime::new())
+        // If so, create isolated database to avoid runtime conflicts
+        let (shared_db, db, tx) = if Self::is_custom_runtime() {
+            // Create completely isolated database for this runtime
+            let db = TestDatabase::new_isolated().await?;
+            let shared_db = std::sync::Arc::clone(db.shared_database());
+            let tx = db.begin_transaction().await?;
+            (shared_db, db, tx)
+        } else {
+            // Use shared database for standard test runtime
+            let shared_db = database::get_shared_database().await?;
+            let db = TestDatabase::new().await?;
+            let tx = db.begin_transaction().await?;
+            (shared_db, db, tx)
+        };
 
         // Create HTTP mock server
         let http_mock = http::MockServer::start().await;
@@ -73,7 +86,26 @@ impl TestEnv {
         // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { tx: Some(tx), http_mock, clock, shared_db })
+        Ok(Self { tx: Some(tx), http_mock, clock, _database: db, shared_db })
+    }
+
+    /// Detect if we're running in a test that needs isolated database
+    /// connections.
+    ///
+    /// Property tests create their own Runtime::new() and call block_on(),
+    /// while worker tests use env.commit() which breaks transaction isolation.
+    /// Both require isolated database connections to avoid conflicts.
+    fn is_custom_runtime() -> bool {
+        // Check if current thread name indicates need for isolation
+        std::thread::current()
+            .name()
+            .map(|name| {
+                name.contains("tokio-runtime-worker")
+                    || name.starts_with("property_")
+                    || name.contains("worker::tests::")
+                    || name.contains("worker_")
+            })
+            .unwrap_or(false)
     }
 
     /// Get a mutable reference to the database executor.
@@ -94,6 +126,16 @@ impl TestEnv {
     /// explicitly commit it first.
     pub fn create_pool(&self) -> PgPool {
         self.shared_db.pool().clone()
+    }
+
+    /// Get direct access to the connection pool for isolated databases.
+    ///
+    /// This is only available when using isolated database mode (detected
+    /// automatically for property tests and worker tests). In isolated mode,
+    /// there's no transaction isolation, so this pool can be used directly
+    /// for both setup and testing.
+    pub fn pool(&self) -> &PgPool {
+        self.shared_db.pool()
     }
 
     /// Commit the test transaction to make data visible to other connections.

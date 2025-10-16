@@ -4,10 +4,10 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-authors = ["Sweaty Developers"]
 edition = "2021"
+authors = ["Kapsel Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/kapsel/kapsel"
+repository = "https://github.com/kapsel-hq/kapsel"
 rust-version = "1.75"
 
 [workspace.lints.rust]
@@ -147,13 +147,8 @@ tracing-subscriber = { workspace = true }
 kapsel-api = { path = "crates/kapsel-api" }
 
 [dev-dependencies]
-# Git hooks for pre-commit checks
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
-
-# Test infrastructure for integration tests
 test-harness = { path = "crates/test-harness" }
-
-# Dependencies needed by workspace tests
 kapsel-api = { path = "crates/kapsel-api" }
 kapsel-core = { path = "crates/kapsel-core" }
 kapsel-delivery = { path = "crates/kapsel-delivery" }
@@ -174,6 +169,8 @@ hex = { workspace = true }
 insta = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
+futures = "0.3.31"
+proptest_async = { version = "0.2.1", default-features = false, features = ["tokio"] }
 
 # Benchmarking for workspace-level benchmarks
 criterion = { workspace = true }
