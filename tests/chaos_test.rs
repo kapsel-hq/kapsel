@@ -319,15 +319,15 @@ async fn idempotency_under_chaos() -> Result<()> {
     Ok(())
 }
 
-/// Tests system recovery after simulated database transaction failures.
+/// Tests data visibility after delivery cycle commits.
 ///
-/// Verifies that the system maintains data consistency when database
-/// operations fail at critical points.
+/// Verifies that run_delivery_cycle() commits data to the database,
+/// making it visible to external connections (required for attestation).
 #[tokio::test]
 async fn database_transaction_chaos() -> Result<()> {
     let mut env = TestEnv::new().await?;
 
-    // Test transaction isolation during chaos
+    // Test that delivery cycle commits data
     let tenant_id = env.create_tenant("tx-chaos").await?;
     let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -346,7 +346,7 @@ async fn database_transaction_chaos() -> Result<()> {
         // Verify webhook was ingested in transaction
         .expect_status(event_id, "pending")
 
-        // Process webhook
+        // Process webhook - this commits the transaction
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 1)
         .expect_status(event_id, "delivered")
@@ -354,28 +354,25 @@ async fn database_transaction_chaos() -> Result<()> {
         .run(&mut env)
         .await?;
 
-    // Verify transaction isolation - external connections won't see uncommitted
-    // data
+    // Verify data IS visible after run_delivery_cycle() commits
+    // (required for attestation service to read delivery attempts)
     let external_pool = env.create_pool();
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
         .bind(event_id.0)
         .fetch_one(&external_pool)
         .await?;
 
-    // Should be 0 since transaction hasn't been committed
-    assert_eq!(count, 0, "Uncommitted data should not be visible externally");
+    // Should be 1 since run_delivery_cycle() commits the transaction
+    assert_eq!(count, 1, "Committed data should be visible to external connections");
 
-    // After test environment drops, verify transaction was rolled back
-    let verification_env = TestEnv::new().await?;
-    let external_pool = verification_env.create_pool();
-
-    let count_after_rollback: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
+    // Verify delivery attempt is also visible
+    let attempt_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
             .bind(event_id.0)
             .fetch_one(&external_pool)
             .await?;
 
-    assert_eq!(count_after_rollback, 0, "Data should be rolled back after transaction ends");
+    assert_eq!(attempt_count, 1, "Delivery attempt should be visible after commit");
 
     Ok(())
 }

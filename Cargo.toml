@@ -110,7 +110,8 @@ hmac = "0.12"
 hex = "0.4"
 rand = "0.9"
 tempfile = "3.9"
-
+async-trait = "0.1"
+futures = "0.3"
 # HTTP client
 http = "1.0"
 reqwest = { version = "0.12", features = ["json"] }
@@ -171,6 +172,7 @@ hex = { workspace = true }
 insta = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
+wiremock = { workspace = true }
 futures = "0.3.31"
 proptest_async = { version = "0.2.1", default-features = false, features = ["tokio"] }
 

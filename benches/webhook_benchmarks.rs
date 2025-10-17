@@ -333,8 +333,6 @@ fn bench_e2e_latency(c: &mut Criterion) {
     group.finish();
 }
 
-// Helper functions
-
 fn generate_payload(size: usize) -> Vec<u8> {
     (0..size).map(|i| (i % 256) as u8).collect()
 }
