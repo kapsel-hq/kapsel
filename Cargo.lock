@@ -1612,6 +1612,7 @@ dependencies = [
  "kapsel-core",
  "kapsel-delivery",
  "kapsel-testing",
+ "proptest",
  "rand 0.8.5",
  "rs_merkle",
  "serde",
