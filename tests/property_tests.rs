@@ -14,8 +14,10 @@ use kapsel_testing::{
     time::backoff::deterministic_webhook_backoff,
     ScenarioBuilder, TestEnv,
 };
-use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, TestRunner};
+use proptest::{
+    prelude::*,
+    test_runner::{Config as ProptestConfig, TestRunner},
+};
 use serde_json::json;
 use uuid::Uuid;
 

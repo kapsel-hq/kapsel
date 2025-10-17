@@ -4,8 +4,7 @@
 //! invariants always hold, regardless of input data.
 
 use kapsel_attestation::{LeafData, SigningService};
-use proptest::prelude::*;
-use proptest::test_runner::Config as ProptestConfig;
+use proptest::{prelude::*, test_runner::Config as ProptestConfig};
 
 /// Creates property test configuration based on environment.
 ///

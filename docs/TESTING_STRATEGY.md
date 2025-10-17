@@ -40,7 +40,7 @@ This inverted pyramid reflects webhook reliability priorities: complex interacti
 
 **Tools:** Standard `#[test]`, no external crates needed.
 
-**Location:** Inline with implementation in `crates/*/src/`.
+**Location:** Inline with implementation in `crates/*/src/` using `#[cfg(test)] mod tests`.
 
 **Examples:**
 
@@ -78,7 +78,7 @@ fn extracts_stripe_event_id() {
 
 **Tools:** `proptest` with custom strategies for domain types.
 
-**Location:** Separate module in `crates/*/src/` files.
+**Location:** Crate-level `crates/*/tests/property_test.rs` files for domain-specific invariants, workspace-level `tests/property_tests.rs` for cross-system invariants.
 
 **Examples:**
 
@@ -530,7 +530,39 @@ async fn sustained_10k_webhooks_per_second() {
 - **Memory per 1K webhooks**: < 200MB
 - **CPU per 1K webhooks/sec**: < 1 core
 
+## Test Organization
+
+The test suite is now organized using a structured pyramid approach:
+
+```
+tests/                              # Workspace E2E Tests
+├── property_tests.rs              # Cross-system invariants
+├── chaos_test.rs                  # System resilience
+├── golden_sample_test.rs          # End-to-end scenarios
+└── health_check_test.rs           # Service health
+
+crates/*/tests/                     # Crate-Level Tests
+├── property_test.rs               # Domain invariants
+├── integration_test.rs            # Component integration
+├── scenarios.rs                   # Multi-step workflows
+└── *_test.rs                      # Specific test suites
+
+crates/*/src/                       # Unit Tests
+└── lib.rs (with #[cfg(test)])     # Inline with implementation
+```
+
+This organization provides:
+
+- **Fast feedback**: Run crate-specific tests during development
+- **Clear ownership**: Each crate owns its test scenarios
+- **Parallel execution**: Test crates independently
+- **Proper isolation**: E2E tests verify cross-system behavior
+
 ## Developer Workflow
+
+</thinking>
+
+Regarding the clippy warnings and formatting issues, let me fix those first:
 
 ### TDD Cycle
 
