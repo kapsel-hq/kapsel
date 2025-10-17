@@ -1,3 +1,18 @@
+//! Axum middleware for API key authentication.
+//!
+//! This module provides the primary authentication mechanism for the Kapsel
+//! API. It validates API keys provided in the `Authorization: Bearer` header
+//! and injects the corresponding `tenant_id` into the request for downstream
+//! use.
+//!
+//! # Authentication Flow
+//!
+//! 1. Extract API key from `Authorization` header.
+//! 2. Compute SHA256 hash of the key.
+//! 3. Query database for a matching, non-revoked, non-expired key.
+//! 4. On success, inject `tenant_id` into request extensions.
+//! 5. On failure, return 401 Unauthorized or 500 Internal Server Error.
+
 use axum::{
     body::Body,
     extract::State,
@@ -53,19 +68,23 @@ async fn validate_api_key(db: &PgPool, api_key: &str) -> Result<Uuid, AuthError>
     }
 }
 
+/// Errors that can occur during API key authentication.
 #[derive(Debug)]
 pub enum AuthError {
+    /// The provided API key is invalid, expired, or revoked.
     InvalidApiKey,
+    /// A database error occurred while validating the API key.
     Database(String),
+    /// The Authorization header is missing from the request.
     MissingHeader,
 }
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            AuthError::InvalidApiKey => (StatusCode::UNAUTHORIZED, "Invalid API key"),
-            AuthError::MissingHeader => (StatusCode::UNAUTHORIZED, "Missing Authorization header"),
-            AuthError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
+            Self::InvalidApiKey => (StatusCode::UNAUTHORIZED, "Invalid API key"),
+            Self::MissingHeader => (StatusCode::UNAUTHORIZED, "Missing Authorization header"),
+            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
         };
 
         (status, message).into_response()

@@ -29,9 +29,12 @@ pub struct SharedDatabase {
     container: ContainerAsync<PostgresImage>,
 }
 
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
+
 /// Weak reference to shared database for cross-test sharing
-static SHARED_WEAK: std::sync::Mutex<std::sync::Weak<SharedDatabase>> =
-    std::sync::Mutex::new(std::sync::Weak::new());
+static SHARED_WEAK: Lazy<Mutex<std::sync::Weak<SharedDatabase>>> =
+    Lazy::new(|| Mutex::new(std::sync::Weak::new()));
 
 /// Test database handle providing transaction-based isolation.
 ///
@@ -172,7 +175,7 @@ impl TestDatabase {
     pub async fn new() -> Result<Self> {
         // Try to upgrade existing weak reference to shared database
         {
-            let weak_guard = SHARED_WEAK.lock().unwrap();
+            let weak_guard = SHARED_WEAK.lock().await;
             if let Some(shared_db) = weak_guard.upgrade() {
                 return Ok(Self { shared_db });
             }
@@ -183,7 +186,7 @@ impl TestDatabase {
 
         // Store weak reference for future sharing
         {
-            let mut weak_guard = SHARED_WEAK.lock().unwrap();
+            let mut weak_guard = SHARED_WEAK.lock().await;
             *weak_guard = Arc::downgrade(&shared_db);
         }
 

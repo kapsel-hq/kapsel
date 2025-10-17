@@ -29,6 +29,9 @@ type InvariantCheckFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 /// Type alias for assertion functions to reduce complexity
 type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 
+/// Type alias for a webhook ready for delivery to reduce complexity
+type ReadyWebhook = (EventId, Uuid, String, Vec<u8>, i32, String, i32);
+
 /// Test environment with transaction-based database isolation.
 ///
 /// Each test gets its own TestEnv with an isolated database transaction
@@ -299,7 +302,7 @@ impl TestEnv {
     /// Finds pending webhooks ready for delivery and processes them.
     pub async fn run_delivery_cycle(&mut self) -> Result<()> {
         // Find webhooks ready for delivery
-        let ready_webhooks: Vec<(EventId, Uuid, String, Vec<u8>, i32, String, i32)> = sqlx::query_as(
+        let ready_webhooks: Vec<ReadyWebhook> = sqlx::query_as(
             "SELECT we.id, e.id as endpoint_id, e.url, we.body, we.failure_count, e.name, e.max_retries
              FROM webhook_events we
              JOIN endpoints e ON we.endpoint_id = e.id
