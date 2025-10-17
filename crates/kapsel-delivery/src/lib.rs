@@ -49,6 +49,10 @@ pub mod worker_pool;
 // Re-export main public API
 pub use client::{ClientConfig, DeliveryClient, DeliveryRequest, DeliveryResponse};
 pub use error::{DeliveryError, Result};
+pub use kapsel_core::{
+    DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
+    MulticastEventHandler, NoOpEventHandler,
+};
 pub use worker::{DeliveryConfig, DeliveryEngine};
 pub use worker_pool::WorkerPool;
 

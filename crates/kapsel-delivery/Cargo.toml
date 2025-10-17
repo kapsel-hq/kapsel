@@ -20,9 +20,13 @@ bytes = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
 
 # Internal dependencies
 kapsel-core = { path = "../kapsel-core" }
+kapsel-attestation = { path = "../kapsel-attestation" }
 
 # Additional dependencies for delivery engine
 tokio-util = { workspace = true }

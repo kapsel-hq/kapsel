@@ -29,12 +29,15 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
-use kapsel_core::models::{EndpointId, EventId, WebhookEvent};
+use kapsel_core::{
+    models::{EndpointId, EventId, WebhookEvent},
+    DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler, NoOpEventHandler,
+};
 use sqlx::PgPool;
 use tokio::{sync::RwLock, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use uuid;
+use uuid::Uuid;
 
 use crate::{
     circuit::{CircuitBreakerManager, CircuitConfig},
@@ -203,6 +206,7 @@ pub struct DeliveryWorker {
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
     stats: Arc<RwLock<EngineStats>>,
     cancellation_token: CancellationToken,
+    event_handler: Arc<dyn EventHandler>,
 }
 
 impl DeliveryWorker {
@@ -216,7 +220,31 @@ impl DeliveryWorker {
         stats: Arc<RwLock<EngineStats>>,
         cancellation_token: CancellationToken,
     ) -> Self {
-        Self { id, pool, config, client, circuit_manager, stats, cancellation_token }
+        Self {
+            id,
+            pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            event_handler: Arc::new(NoOpEventHandler),
+        }
+    }
+
+    /// Creates a new delivery worker with event handler.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_event_handler(
+        id: usize,
+        pool: PgPool,
+        config: DeliveryConfig,
+        client: Arc<DeliveryClient>,
+        circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
+        stats: Arc<RwLock<EngineStats>>,
+        cancellation_token: CancellationToken,
+        event_handler: Arc<dyn EventHandler>,
+    ) -> Self {
+        Self { id, pool, config, client, circuit_manager, stats, cancellation_token, event_handler }
     }
 
     /// Main worker loop - claims and processes events until cancelled.
@@ -290,6 +318,12 @@ impl DeliveryWorker {
     pub async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
         let now = Utc::now();
 
+        // Use transaction to ensure atomicity of claim operation
+        let mut tx =
+            self.pool.begin().await.map_err(|e| {
+                DeliveryError::database(format!("failed to begin transaction: {e}"))
+            })?;
+
         // First, select events to claim using FOR UPDATE SKIP LOCKED
         let event_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
             r"
@@ -303,7 +337,7 @@ impl DeliveryWorker {
         )
         .bind(now)
         .bind(i32::try_from(self.config.batch_size).unwrap_or(100))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| {
             DeliveryError::database(format!("failed to select events for claiming: {e}"))
@@ -311,6 +345,9 @@ impl DeliveryWorker {
 
         // If no events to process, return empty vec
         if event_ids.is_empty() {
+            tx.rollback().await.map_err(|e| {
+                DeliveryError::database(format!("failed to rollback transaction: {e}"))
+            })?;
             return Ok(Vec::new());
         }
 
@@ -327,9 +364,14 @@ impl DeliveryWorker {
             ",
         )
         .bind(&event_ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| DeliveryError::database(format!("failed to claim events: {e}")))?;
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| DeliveryError::database(format!("failed to commit transaction: {e}")))?;
 
         debug!(worker_id = self.id, claimed_events = events.len(), "claimed events from database");
 
@@ -365,6 +407,7 @@ impl DeliveryWorker {
     }
 
     /// Attempts delivery of a webhook event.
+    #[allow(clippy::too_many_lines)]
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
         let start_time = std::time::Instant::now();
         let endpoint_key = event.endpoint_id.to_string();
@@ -392,8 +435,9 @@ impl DeliveryWorker {
         );
 
         // 3. Build delivery request
+        let delivery_attempt_id = Uuid::new_v4();
         let delivery_request = crate::client::DeliveryRequest {
-            delivery_id: uuid::Uuid::new_v4(),
+            delivery_id: delivery_attempt_id,
             event_id: event.id.0,
             url: endpoint_url
                 .parse()
@@ -427,6 +471,20 @@ impl DeliveryWorker {
                     self.circuit_manager.write().await.record_success(&endpoint_key).await;
                     self.mark_event_delivered(&event.id).await?;
 
+                    // Publish delivery success event
+                    let success_event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
+                        delivery_attempt_id,
+                        event_id: event.id,
+                        tenant_id: event.tenant_id,
+                        endpoint_url: endpoint_url.clone(),
+                        response_status: response.status_code,
+                        attempt_number,
+                        delivered_at: Utc::now(),
+                        payload_hash: Self::compute_payload_hash(&event.body),
+                        payload_size: event.payload_size,
+                    });
+                    self.event_handler.handle_event(success_event).await;
+
                     info!(
                         worker_id = self.id,
                         event_id = %event.id,
@@ -452,11 +510,25 @@ impl DeliveryWorker {
                         &event.id,
                         &endpoint_key,
                         attempt_number,
-                        error,
+                        error.clone(),
                         Some(&response.headers),
                         event,
                     )
                     .await?;
+
+                    // Publish delivery failure event
+                    let failure_event = DeliveryEvent::Failed(DeliveryFailedEvent {
+                        delivery_attempt_id,
+                        event_id: event.id,
+                        tenant_id: event.tenant_id,
+                        endpoint_url: endpoint_url.clone(),
+                        response_status: Some(response.status_code),
+                        attempt_number,
+                        failed_at: Utc::now(),
+                        error_message: error.to_string(),
+                        is_retryable: error.is_retryable(),
+                    });
+                    self.event_handler.handle_event(failure_event).await;
                 }
             },
             Err(error) => {
@@ -465,11 +537,25 @@ impl DeliveryWorker {
                     &event.id,
                     &endpoint_key,
                     attempt_number,
-                    error,
+                    error.clone(),
                     None,
                     event,
                 )
                 .await?;
+
+                // Publish delivery failure event
+                let failure_event = DeliveryEvent::Failed(DeliveryFailedEvent {
+                    delivery_attempt_id,
+                    event_id: event.id,
+                    tenant_id: event.tenant_id,
+                    endpoint_url: endpoint_url.clone(),
+                    response_status: None,
+                    attempt_number,
+                    failed_at: Utc::now(),
+                    error_message: error.to_string(),
+                    is_retryable: error.is_retryable(),
+                });
+                self.event_handler.handle_event(failure_event).await;
             },
         }
 
@@ -703,6 +789,14 @@ impl DeliveryWorker {
                 }
             },
         }
+    }
+
+    /// Computes SHA-256 hash of the payload.
+    fn compute_payload_hash(payload: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        hasher.finalize().into()
     }
 }
 
@@ -1014,8 +1108,6 @@ mod tests {
         mock_server.verify().await;
     }
 
-    // Helper functions for test setup
-
     async fn setup_test_data_isolated(
         env: &TestEnv,
         webhook_url: &str,
@@ -1093,6 +1185,7 @@ mod tests {
             ))),
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
+            event_handler: Arc::new(NoOpEventHandler),
         }
     }
 
@@ -1110,6 +1203,7 @@ mod tests {
             ))),
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
+            event_handler: Arc::new(NoOpEventHandler),
         }
     }
 
