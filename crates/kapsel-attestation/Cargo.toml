@@ -45,3 +45,5 @@ tracing = { workspace = true }
 # Testing
 [dev-dependencies]
 kapsel-testing = { path = "../kapsel-testing" }
+kapsel-delivery = { path = "../kapsel-delivery" }
+wiremock = { workspace = true }

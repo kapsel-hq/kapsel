@@ -35,6 +35,8 @@ tokio-util = { workspace = true }
 kapsel-testing = { path = "../kapsel-testing" }
 wiremock = { workspace = true }
 proptest = { workspace = true }
+http = { workspace = true }
+anyhow = { workspace = true }
 
 [lints]
 workspace = true
