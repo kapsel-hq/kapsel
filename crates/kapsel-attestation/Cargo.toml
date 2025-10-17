@@ -35,6 +35,13 @@ uuid = { workspace = true }
 hex = "0.4"
 rand = "0.8"  # Must match ed25519-dalek's rand_core 0.6 dependency
 
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
 # Testing
 [dev-dependencies]
-tokio = { workspace = true }
+kapsel-testing = { path = "../kapsel-testing" }

@@ -14,6 +14,7 @@ use crate::error::AttestationError;
 /// Provides deterministic signing of Merkle tree heads and leaf data with
 /// cryptographic verification capabilities. Uses Ed25519 for fast signature
 /// generation and verification.
+#[derive(Debug)]
 pub struct SigningService {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,

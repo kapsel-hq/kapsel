@@ -6,11 +6,13 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod event_subscriber;
 pub mod leaf;
 pub mod merkle;
 pub mod signing;
 
 pub use error::{AttestationError, Result};
+pub use event_subscriber::AttestationEventSubscriber;
 pub use leaf::LeafData;
 pub use merkle::{MerkleService, SignedTreeHead};
 pub use signing::SigningService;

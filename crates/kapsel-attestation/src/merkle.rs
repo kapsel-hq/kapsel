@@ -46,6 +46,17 @@ pub struct MerkleService {
     pending: VecDeque<LeafData>,
 }
 
+impl std::fmt::Debug for MerkleService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MerkleService")
+            .field("db", &"PgPool")
+            .field("signing", &self.signing)
+            .field("tree", &"MerkleTree<Sha256>")
+            .field("pending_count", &self.pending.len())
+            .finish()
+    }
+}
+
 impl MerkleService {
     /// Create a new Merkle service instance.
     ///
