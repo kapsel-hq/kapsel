@@ -1,0 +1,40 @@
+[package]
+name = "kapsel-attestation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Merkle tree attestation and cryptographic signing for Kapsel"
+repository.workspace = true
+keywords = ["attestation", "merkle-tree", "cryptography", "ed25519", "rfc6962"]
+categories = ["cryptography", "web-programming"]
+
+[dependencies]
+# Cryptography
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rs_merkle = "1.4"
+sha2 = { workspace = true }
+
+# Core
+kapsel-core = { path = "../kapsel-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+hex = "0.4"
+rand = "0.8"  # Must match ed25519-dalek's rand_core 0.6 dependency
+
+# Testing
+[dev-dependencies]
+tokio = { workspace = true }

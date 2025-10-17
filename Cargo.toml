@@ -148,6 +148,7 @@ kapsel-api = { path = "crates/kapsel-api" }
 kapsel-delivery = { path = "crates/kapsel-delivery" }
 
 [dev-dependencies]
+kapsel-attestation = { path = "crates/kapsel-attestation" }
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
 kapsel-testing = { path = "crates/kapsel-testing" }
 kapsel-api = { path = "crates/kapsel-api" }

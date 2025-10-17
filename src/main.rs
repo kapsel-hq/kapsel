@@ -37,14 +37,11 @@ async fn main() -> Result<()> {
     // Start delivery engine
     let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
         db_pool.clone(),
-        config.delivery_config.clone()
+        config.delivery_config.clone(),
     )?;
 
     delivery_engine.start().await.context("Failed to start delivery engine")?;
-    info!(
-        worker_count = config.delivery_config.worker_count,
-        "Delivery engine started"
-    );
+    info!(worker_count = config.delivery_config.worker_count, "Delivery engine started");
 
     // Start HTTP server
     let server_handle = tokio::spawn({
@@ -208,15 +205,10 @@ impl Config {
             .context("Invalid SERVER_ADDR format")?;
 
         // Load delivery configuration from environment
-        let worker_count = std::env::var("DELIVERY_WORKER_COUNT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4);
+        let worker_count =
+            std::env::var("DELIVERY_WORKER_COUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
 
-        let delivery_config = DeliveryConfig {
-            worker_count,
-            ..Default::default()
-        };
+        let delivery_config = DeliveryConfig { worker_count, ..Default::default() };
 
         Ok(Self { database_url, database_max_connections, server_addr, delivery_config })
     }
