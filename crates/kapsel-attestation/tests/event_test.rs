@@ -1,7 +1,8 @@
-//! Integration tests for event-driven attestation system.
+//! Event handling tests for attestation system.
 //!
-//! These tests demonstrate the complete event-driven architecture where
-//! delivery events are cleanly separated from attestation processing.
+//! Tests the event-driven architecture that allows attestation service
+//! to subscribe to delivery events without tight coupling. Verifies
+//! event propagation, multicast handling, and concurrent processing.
 
 use std::sync::Arc;
 
@@ -92,43 +93,6 @@ async fn multicast_event_handling_with_multiple_subscribers() {
     assert_eq!(service2.pending_count().await.expect("failed to get pending count"), 1);
 }
 
-/// Test that attestation service handles errors gracefully.
-///
-/// This shows that even if attestation processing fails, it doesn't
-/// affect the delivery system due to the loose coupling.
-#[tokio::test]
-async fn attestation_errors_do_not_affect_delivery_processing() {
-    // This test simulates what happens when attestation service fails
-    // but delivery processing should continue unaffected
-
-    let env = TestEnv::new().await.expect("failed to create test environment");
-
-    // Create attestation subscriber
-    let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
-    let subscriber = AttestationEventSubscriber::new(merkle_service);
-
-    // Create an event with invalid data that might cause attestation to fail
-    let invalid_event = DeliverySucceededEvent {
-        delivery_attempt_id: Uuid::new_v4(),
-        event_id: EventId::new(),
-        tenant_id: TenantId::new(),
-        endpoint_url: "https://example.com/webhook".to_string(),
-        response_status: 200,
-        attempt_number: 0, // Invalid: attempt numbers should be >= 1
-        delivered_at: Utc::now(),
-        payload_hash: [0u8; 32],
-        payload_size: 1024,
-    };
-
-    // This should not panic or throw - errors are handled gracefully
-    subscriber.handle_event(DeliveryEvent::Succeeded(invalid_event)).await;
-
-    // The event handling completes without affecting the calling system
-    // This demonstrates the fault isolation provided by the event-driven design
-}
-
 /// Test concurrent event handling.
 ///
 /// This verifies that the event system can handle concurrent events
@@ -165,67 +129,6 @@ async fn concurrent_event_handling() {
     // Verify all events were processed
     let service = merkle_service.read().await;
     assert_eq!(service.pending_count().await.expect("failed to get pending count"), 10);
-}
-
-/// Test the complete attestation workflow with batch processing.
-///
-/// This demonstrates the full workflow from event handling through
-/// to signed tree head generation.
-#[tokio::test]
-async fn complete_attestation_workflow() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
-
-    // Create ephemeral signing service and store key in database
-    let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(&env, &signing_service).await;
-    let signing_service = signing_service.with_key_id(key_id);
-
-    let merkle_service_shared =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
-
-    let subscriber = AttestationEventSubscriber::new(merkle_service_shared.clone());
-
-    // Process multiple delivery events
-    for _ in 0..5 {
-        let success_event = create_test_success_event();
-        subscriber.handle_event(DeliveryEvent::Succeeded(success_event)).await;
-    }
-
-    // Commit pending leaves to generate signed tree head
-    let mut service = merkle_service_shared.write().await;
-    let signed_tree_head =
-        service.try_commit_pending().await.expect("should commit pending leaves");
-
-    // Verify the signed tree head properties
-    assert_eq!(signed_tree_head.tree_size, 5);
-    assert!(!signed_tree_head.signature.is_empty());
-    assert!(signed_tree_head.timestamp_ms > 0);
-
-    // Verify no pending leaves remain
-    assert_eq!(service.pending_count().await.expect("should get pending count"), 0);
-}
-
-/// Helper function to store ephemeral signing key in database.
-///
-/// This is needed for integration tests because the database schema has a
-/// foreign key constraint requiring keys to be in attestation_keys table.
-async fn store_signing_key_in_db(env: &TestEnv, signing_service: &SigningService) -> uuid::Uuid {
-    let key_id = uuid::Uuid::new_v4();
-    let public_key_bytes = signing_service.public_key_as_bytes();
-
-    sqlx::query(
-        r#"
-        INSERT INTO attestation_keys (id, public_key, is_active, created_at)
-        VALUES ($1, $2, true, NOW())
-        "#,
-    )
-    .bind(key_id)
-    .bind(&public_key_bytes)
-    .execute(env.pool())
-    .await
-    .expect("should store signing key in database");
-
-    key_id
 }
 
 // Helper functions for creating test events

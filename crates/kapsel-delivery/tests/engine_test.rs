@@ -1,3 +1,16 @@
+//! Delivery engine tests.
+//!
+//! Tests the webhook delivery engine component that processes pending
+//! events from the database and coordinates their delivery. Verifies
+//! engine behavior, event processing, and database integration.
+//!
+//! ## Test Coverage
+//! - Pending event processing from database
+//! - Engine startup and shutdown behavior
+//! - Event claiming and processing workflows
+//! - Error handling during event processing
+//! - Integration with HTTP client and database
+
 use bytes::Bytes;
 use http::StatusCode;
 use kapsel_testing::{http::MockResponse, TestEnv};

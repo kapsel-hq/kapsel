@@ -1,5 +1,17 @@
-//! Golden sample test demonstrating webhook delivery with deterministic retry
-//! behavior.
+//! End-to-end tests verifying complete webhook delivery workflows.
+//!
+//! These tests exercise the full system from HTTP ingestion through database
+//! persistence, retry logic, circuit breakers, and final delivery. They serve
+//! as golden samples demonstrating expected system behavior under various
+//! conditions including failures and recovery scenarios.
+//!
+//! ## Test Coverage
+//! - Complete webhook ingestion and delivery pipeline
+//! - Deterministic retry behavior with exponential backoff
+//! - Circuit breaker integration and recovery
+//! - Tenant isolation at the system level
+//! - Graceful handling of endpoint failures
+//! - Idempotency guarantees across system restarts
 
 use std::time::Duration;
 
