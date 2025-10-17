@@ -11,9 +11,9 @@
 //!
 //! Handlers are grouped by functionality:
 //! - `ingest` - Webhook ingestion endpoints
+//! - `health` - Health check and readiness probes
 //! - Future: `delivery` - Delivery status and retry management
 //! - Future: `endpoints` - Endpoint CRUD operations
-//! - Future: `health` - Health check and readiness probes
 //!
 //! # Error Handling
 //!
@@ -31,7 +31,9 @@
 //! - Rate limiting per tenant
 //! - Payload size limits (10MB max)
 
+pub mod health;
 pub mod ingest;
 
 // Re-export handlers for convenient access
+pub use health::{health_check, liveness_check, readiness_check};
 pub use ingest::ingest_webhook;
