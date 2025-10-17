@@ -48,6 +48,8 @@ pub struct TestEnv {
     _database: TestDatabase,
     /// Shared database instance (Arc ensures proper cleanup)
     shared_db: std::sync::Arc<SharedDatabase>,
+    /// Optional attestation service for testing delivery capture
+    attestation_service: Option<kapsel_attestation::MerkleService>,
 }
 
 impl TestEnv {
@@ -89,7 +91,14 @@ impl TestEnv {
         // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { tx: Some(tx), http_mock, clock, _database: db, shared_db })
+        Ok(Self {
+            tx: Some(tx),
+            http_mock,
+            clock,
+            _database: db,
+            shared_db,
+            attestation_service: None,
+        })
     }
 
     /// Detect if we're running in a test that needs isolated database
@@ -146,9 +155,13 @@ impl TestEnv {
     /// This consumes the TestEnv since the transaction can't be used after
     /// commit. Useful for tests that need to verify behavior with multiple
     /// database connections.
-    pub async fn commit(mut self) -> Result<()> {
+    pub async fn commit(&mut self) -> Result<()> {
         if let Some(tx) = self.tx.take() {
             tx.commit().await.context("failed to commit transaction")?;
+            // Start a new transaction to continue the test
+            self.tx = Some(
+                self.shared_db.pool().begin().await.context("failed to begin new transaction")?,
+            );
         }
         Ok(())
     }
@@ -381,6 +394,9 @@ impl TestEnv {
             .await
             .context("failed to record delivery attempt")?;
 
+            // Commit transaction to make delivery attempt visible to attestation service
+            self.commit().await?;
+
             // Update webhook status based on response
             let (new_status, next_retry_at) = match status_code {
                 Some(200..=299) => ("delivered".to_string(), None),
@@ -407,6 +423,104 @@ impl TestEnv {
                 .bind(event_id.0)
                 .execute(&mut **self.db())
                 .await?;
+
+                // Emit attestation event if attestation is enabled
+                if self.attestation_service.is_some() {
+                    // Get tenant_id from webhook_events table
+                    let (tenant_id, payload_size): (uuid::Uuid, i32) = sqlx::query_as(
+                        "SELECT tenant_id, payload_size FROM webhook_events WHERE id = $1",
+                    )
+                    .bind(event_id.0)
+                    .fetch_one(&mut **self.db())
+                    .await
+                    .context("failed to fetch webhook event for attestation")?;
+
+                    // Compute payload hash
+                    let payload_hash = {
+                        use sha2::{Digest, Sha256};
+                        let mut hasher = Sha256::new();
+                        hasher.update(&body);
+                        hasher.finalize().into()
+                    };
+
+                    // Create and emit delivery success event
+                    let success_event = kapsel_core::DeliverySucceededEvent {
+                        delivery_attempt_id: attempt_id,
+                        event_id: kapsel_core::models::EventId(event_id.0),
+                        tenant_id: kapsel_core::models::TenantId(tenant_id),
+                        endpoint_url: url.clone(),
+                        response_status: status_code.unwrap_or(200) as u16,
+                        attempt_number: attempt_number as u32,
+                        delivered_at: attempted_at,
+                        payload_hash,
+                        payload_size,
+                    };
+
+                    tracing::debug!(
+                        event_id = %event_id.0,
+                        delivery_attempt_id = %attempt_id,
+                        tenant_id = %tenant_id,
+                        attempt_number = attempt_number,
+                        "created attestation success event for delivery"
+                    );
+
+                    // Take the service temporarily
+                    let service = self.attestation_service.take().unwrap();
+
+                    // Use the AttestationEventSubscriber pattern in a scope to ensure cleanup
+                    {
+                        use std::sync::Arc;
+
+                        use kapsel_attestation::AttestationEventSubscriber;
+                        use kapsel_core::EventHandler;
+                        use tokio::sync::RwLock;
+
+                        let merkle_service_wrapped = Arc::new(RwLock::new(service));
+
+                        // Check pending count before processing
+                        let pending_before = {
+                            let service_read = merkle_service_wrapped.read().await;
+                            service_read.pending_count().await.unwrap_or(0)
+                        };
+
+                        let event_id = success_event.event_id;
+
+                        tracing::debug!(
+                            event_id = %event_id,
+                            pending_before = pending_before,
+                            "processing attestation event for successful delivery"
+                        );
+
+                        let attestation_subscriber =
+                            AttestationEventSubscriber::new(merkle_service_wrapped.clone());
+
+                        attestation_subscriber
+                            .handle_event(kapsel_core::DeliveryEvent::Succeeded(success_event))
+                            .await;
+
+                        // Check pending count after processing
+                        let pending_after = {
+                            let service_read = merkle_service_wrapped.read().await;
+                            service_read.pending_count().await.unwrap_or(0)
+                        };
+
+                        tracing::debug!(
+                            event_id = %event_id,
+                            pending_before = pending_before,
+                            pending_after = pending_after,
+                            "attestation event processing completed"
+                        );
+
+                        // Drop attestation_subscriber to release Arc reference
+                        drop(attestation_subscriber);
+
+                        // Put the service back
+                        let service_back = Arc::try_unwrap(merkle_service_wrapped)
+                            .expect("Failed to unwrap Arc - multiple references still exist")
+                            .into_inner();
+                        self.attestation_service = Some(service_back);
+                    }
+                }
             } else {
                 sqlx::query(
                     "UPDATE webhook_events
@@ -462,6 +576,156 @@ impl TestEnv {
 
         Ok(tables)
     }
+
+    /// Enable attestation service for testing.
+    pub fn enable_attestation(&mut self, service: kapsel_attestation::MerkleService) {
+        self.attestation_service = Some(service);
+    }
+
+    /// Count attestation leaves for a specific event.
+    pub async fn count_attestation_leaves_for_event(&mut self, event_id: EventId) -> Result<i64> {
+        tracing::debug!(
+            event_id = %event_id.0,
+            "querying attestation leaf count for event"
+        );
+
+        // Debug: Check all leaves in the table
+        let all_leaves: Vec<(uuid::Uuid, String)> =
+            sqlx::query_as("SELECT event_id, endpoint_url FROM merkle_leaves")
+                .fetch_all(self.pool())
+                .await
+                .unwrap_or_default();
+
+        tracing::debug!(
+            total_leaves = all_leaves.len(),
+            leaves = ?all_leaves,
+            "all attestation leaves in database"
+        );
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves WHERE event_id = $1")
+                .bind(event_id.0)
+                .fetch_one(self.pool())
+                .await?;
+
+        tracing::debug!(
+            event_id = %event_id.0,
+            count = count,
+            "attestation leaf count query result"
+        );
+
+        Ok(count)
+    }
+
+    /// Fetch attestation leaf for a specific event.
+    pub async fn fetch_attestation_leaf_for_event(
+        &mut self,
+        event_id: EventId,
+    ) -> Result<Option<AttestationLeafInfo>> {
+        let result = sqlx::query(
+            "SELECT ml.delivery_attempt_id, ml.endpoint_url, ml.attempt_number, da.response_status, ml.leaf_hash
+             FROM merkle_leaves ml
+             JOIN delivery_attempts da ON ml.delivery_attempt_id = da.id
+             WHERE ml.event_id = $1",
+        )
+        .bind(event_id.0)
+        .fetch_optional(self.pool())
+        .await?;
+
+        Ok(result.map(|row| AttestationLeafInfo {
+            delivery_attempt_id: row.get("delivery_attempt_id"),
+            endpoint_url: row.get("endpoint_url"),
+            attempt_number: row.get("attempt_number"),
+            response_status: row.get("response_status"),
+            leaf_hash: row.get("leaf_hash"),
+        }))
+    }
+
+    /// Count total attestation leaves across all events.
+    pub async fn count_total_attestation_leaves(&mut self) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves").fetch_one(self.pool()).await?;
+
+        Ok(count)
+    }
+
+    /// Count total signed tree heads.
+    pub async fn count_signed_tree_heads(&mut self) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_tree_heads")
+            .fetch_one(self.pool())
+            .await?;
+
+        Ok(count)
+    }
+
+    /// Fetch the latest signed tree head.
+    pub async fn fetch_latest_signed_tree_head(&mut self) -> Result<Option<SignedTreeHeadInfo>> {
+        let result = sqlx::query(
+            "SELECT tree_size, root_hash, timestamp_ms, signature, batch_size
+             FROM signed_tree_heads
+             ORDER BY timestamp_ms DESC
+             LIMIT 1",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+
+        Ok(result.map(|row| SignedTreeHeadInfo {
+            tree_size: row.get("tree_size"),
+            root_hash: row.get("root_hash"),
+            timestamp_ms: row.get("timestamp_ms"),
+            signature: row.get("signature"),
+            batch_size: row.get("batch_size"),
+        }))
+    }
+
+    /// Trigger attestation batch commitment (simulates background worker).
+    pub async fn run_attestation_commitment(&mut self) -> Result<()> {
+        if let Some(ref mut service) = self.attestation_service {
+            // Check pending count before attempting commit
+            let pending_count = service.pending_count().await.unwrap_or(0);
+            tracing::debug!(
+                pending_count = pending_count,
+                "attempting attestation batch commitment"
+            );
+
+            match service.try_commit_pending().await {
+                Ok(_sth) => {
+                    tracing::debug!("Attestation batch committed successfully");
+                    Ok(())
+                },
+                Err(kapsel_attestation::error::AttestationError::BatchCommitFailed { reason })
+                    if reason.contains("no pending leaves") =>
+                {
+                    // No pending leaves to commit - this is fine
+                    Ok(())
+                },
+                Err(e) => Err(anyhow::anyhow!("Attestation commitment failed: {}", e)),
+            }
+        } else {
+            // No attestation service configured - skip
+            Ok(())
+        }
+    }
+}
+
+/// Attestation leaf information for testing.
+#[derive(Debug, Clone)]
+pub struct AttestationLeafInfo {
+    pub delivery_attempt_id: uuid::Uuid,
+    pub endpoint_url: String,
+    pub attempt_number: i32,
+    pub response_status: Option<i32>,
+    pub leaf_hash: Vec<u8>,
+}
+
+/// Signed tree head information for testing.
+#[derive(Debug, Clone)]
+pub struct SignedTreeHeadInfo {
+    pub tree_size: i64,
+    pub root_hash: Vec<u8>,
+    pub timestamp_ms: i64,
+    pub signature: Vec<u8>,
+    pub batch_size: i32,
 }
 
 /// Test scenario builder for complex multi-step tests.
@@ -478,9 +742,18 @@ enum Step {
     RunDeliveryCycle,
     AdvanceTime(Duration),
     InjectHttpFailure(http::MockResponse),
+    InjectHttpSuccess,
     AssertState(AssertionFn),
     ExpectStatus(EventId, String),
     ExpectDeliveryAttempts(EventId, i64),
+    RunAttestationCommitment,
+    ExpectAttestationLeafCount(EventId, i64),
+    ExpectAttestationLeafExists(EventId),
+    ExpectAttestationLeafAttemptNumber(EventId, i32),
+    ExpectIdempotentEventIds(EventId, EventId),
+    ExpectConcurrentAttestationIntegrity(Vec<EventId>),
+    ExpectAllEventsDelivered(Vec<EventId>),
+    ExpectSignedTreeHeadWithSize(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -516,8 +789,24 @@ impl ScenarioBuilder {
     }
 
     /// Inject an HTTP failure response.
-    pub fn inject_http_failure(mut self, response: http::MockResponse) -> Self {
+    pub fn inject_http_failure(mut self, status: u16) -> Self {
+        let response = http::MockResponse::ServerError {
+            status,
+            body: format!("HTTP {} Error", status).into_bytes(),
+        };
         self.steps.push(Step::InjectHttpFailure(response));
+        self
+    }
+
+    /// Inject an HTTP success response.
+    pub fn inject_http_success(mut self) -> Self {
+        self.steps.push(Step::InjectHttpSuccess);
+        self
+    }
+
+    /// Run attestation commitment step.
+    pub fn run_attestation_commitment(mut self) -> Self {
+        self.steps.push(Step::RunAttestationCommitment);
         self
     }
 
@@ -551,6 +840,52 @@ impl ScenarioBuilder {
         self
     }
 
+    /// Expect a specific number of attestation leaves for an event.
+    pub fn expect_attestation_leaf_count(mut self, event_id: EventId, expected_count: i64) -> Self {
+        self.steps.push(Step::ExpectAttestationLeafCount(event_id, expected_count));
+        self
+    }
+
+    /// Expect an attestation leaf to exist for an event.
+    pub fn expect_attestation_leaf_exists(mut self, event_id: EventId) -> Self {
+        self.steps.push(Step::ExpectAttestationLeafExists(event_id));
+        self
+    }
+
+    /// Expect attestation leaf to have specific attempt number.
+    pub fn expect_attestation_leaf_attempt_number(
+        mut self,
+        event_id: EventId,
+        attempt_number: i32,
+    ) -> Self {
+        self.steps.push(Step::ExpectAttestationLeafAttemptNumber(event_id, attempt_number));
+        self
+    }
+
+    /// Expect two event IDs to be identical (idempotency check).
+    pub fn expect_idempotent_event_ids(mut self, event_id1: EventId, event_id2: EventId) -> Self {
+        self.steps.push(Step::ExpectIdempotentEventIds(event_id1, event_id2));
+        self
+    }
+
+    /// Expect concurrent attestation integrity for multiple events.
+    pub fn expect_concurrent_attestation_integrity(mut self, event_ids: Vec<EventId>) -> Self {
+        self.steps.push(Step::ExpectConcurrentAttestationIntegrity(event_ids));
+        self
+    }
+
+    /// Expect all events in the list to be delivered.
+    pub fn expect_all_events_delivered(mut self, event_ids: Vec<EventId>) -> Self {
+        self.steps.push(Step::ExpectAllEventsDelivered(event_ids));
+        self
+    }
+
+    /// Expect signed tree head to exist with specific size.
+    pub fn expect_signed_tree_head_with_size(mut self, expected_size: usize) -> Self {
+        self.steps.push(Step::ExpectSignedTreeHeadWithSize(expected_size));
+        self
+    }
+
     /// Execute the scenario.
     pub async fn run(self, env: &mut TestEnv) -> Result<()> {
         tracing::info!("running scenario: {}", self.name);
@@ -576,11 +911,21 @@ impl ScenarioBuilder {
                     env.advance_time(duration);
                     tracing::debug!("advanced time by {:?}", duration);
                 },
-                Step::InjectHttpFailure(_response) => {
+                Step::InjectHttpFailure(response) => {
                     tracing::debug!("injecting HTTP failure response");
-                    // This would configure the mock server with the failure
-                    // response For now, this is a
-                    // placeholder
+                    env.http_mock.mock_simple("/", response).await;
+                },
+                Step::InjectHttpSuccess => {
+                    tracing::debug!("injecting HTTP success response");
+                    let response = http::MockResponse::Success {
+                        status: reqwest::StatusCode::OK,
+                        body: bytes::Bytes::new(),
+                    };
+                    env.http_mock.mock_simple("/", response).await;
+                },
+                Step::RunAttestationCommitment => {
+                    tracing::debug!("running attestation commitment");
+                    env.run_attestation_commitment().await?;
                 },
                 Step::AssertState(assertion) => {
                     assertion(env).context("state assertion failed")?;
@@ -600,6 +945,76 @@ impl ScenarioBuilder {
                         "Delivery attempt count mismatch for event {}: expected {}, got {}",
                         event_id.0, expected, actual
                     );
+                },
+                Step::ExpectAttestationLeafCount(event_id, expected) => {
+                    let actual = env.count_attestation_leaves_for_event(event_id).await?;
+                    assert_eq!(
+                        actual, expected,
+                        "Attestation leaf count mismatch for event {}: expected {}, got {}",
+                        event_id.0, expected, actual
+                    );
+                },
+                Step::ExpectAttestationLeafExists(event_id) => {
+                    let leaf = env.fetch_attestation_leaf_for_event(event_id).await?;
+                    assert!(leaf.is_some(), "Attestation leaf must exist for event {}", event_id.0);
+                },
+                Step::ExpectAttestationLeafAttemptNumber(event_id, expected_attempt) => {
+                    let leaf =
+                        env.fetch_attestation_leaf_for_event(event_id).await?.unwrap_or_else(
+                            || panic!("Attestation leaf must exist for event {}", event_id.0),
+                        );
+                    assert_eq!(
+                        leaf.attempt_number, expected_attempt,
+                        "Attestation leaf attempt number mismatch for event {}: expected {}, got {}",
+                        event_id.0, expected_attempt, leaf.attempt_number
+                    );
+                },
+                Step::ExpectIdempotentEventIds(event_id1, event_id2) => {
+                    assert_eq!(
+                        event_id1, event_id2,
+                        "Event IDs must be identical for idempotency: {} != {}",
+                        event_id1.0, event_id2.0
+                    );
+                },
+                Step::ExpectConcurrentAttestationIntegrity(event_ids) => {
+                    for &event_id in &event_ids {
+                        let status = env.get_webhook_status(event_id).await?;
+                        assert_eq!(status, "delivered", "All concurrent deliveries must succeed");
+
+                        let leaf_count = env.count_attestation_leaves_for_event(event_id).await?;
+                        assert_eq!(
+                            leaf_count, 1,
+                            "Each concurrent delivery must create exactly one leaf"
+                        );
+                    }
+
+                    let total_leaves = env.count_total_attestation_leaves().await?;
+                    assert_eq!(
+                        total_leaves,
+                        event_ids.len() as i64,
+                        "Total attestation leaves must match delivered events"
+                    );
+                },
+                Step::ExpectAllEventsDelivered(event_ids) => {
+                    for &event_id in &event_ids {
+                        let status = env.get_webhook_status(event_id).await?;
+                        assert_eq!(status, "delivered", "Event {} must be delivered", event_id.0);
+                    }
+                },
+                Step::ExpectSignedTreeHeadWithSize(expected_size) => {
+                    let sth_count = env.count_signed_tree_heads().await?;
+                    assert!(sth_count > 0, "Batch commitment must create signed tree head");
+
+                    let latest_sth = env.fetch_latest_signed_tree_head().await?;
+                    assert!(latest_sth.is_some(), "Latest STH must exist after commitment");
+
+                    let sth = latest_sth.unwrap();
+                    assert_eq!(
+                        sth.tree_size as usize, expected_size,
+                        "Tree size must match expected: expected {}, got {}",
+                        expected_size, sth.tree_size
+                    );
+                    assert!(!sth.signature.is_empty(), "STH must be cryptographically signed");
                 },
             }
 

@@ -16,6 +16,7 @@ default = []
 [dependencies]
 # Core testing infrastructure
 kapsel-core = { path = "../kapsel-core" }
+kapsel-attestation = { path = "../kapsel-attestation" }
 tokio = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "migrate"] }
 
@@ -26,6 +27,7 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 insta = { workspace = true }
+sha2 = { workspace = true }
 
 # Tracing for tests
 tracing = { workspace = true }
