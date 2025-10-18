@@ -36,7 +36,7 @@ use axum::{
     extract::Request,
     middleware::{self, Next},
     response::Response,
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use sqlx::PgPool;
@@ -66,12 +66,16 @@ use crate::{handlers, middleware::auth::auth_middleware};
 /// }
 /// ```
 pub fn create_router(db: PgPool) -> Router {
-    Router::new()
-        // Webhook ingestion endpoint
+    // Health check routes (no authentication required)
+    let health_routes = Router::new()
+        .route("/health", get(handlers::health_check))
+        .route("/ready", get(handlers::readiness_check))
+        .route("/live", get(handlers::liveness_check));
+
+    // Authenticated API routes
+    let api_routes = Router::new()
         .route("/ingest/{endpoint_id}", post(handlers::ingest_webhook))
         // Future endpoints
-        // .route("/health", get(handlers::health_check))
-        // .route("/ready", get(handlers::readiness_check))
         // .route("/endpoints", post(handlers::create_endpoint))
         // .route("/endpoints/{id}", get(handlers::get_endpoint))
         // .route("/events/{id}", get(handlers::get_event_status))
@@ -79,7 +83,12 @@ pub fn create_router(db: PgPool) -> Router {
         .layer(middleware::from_fn_with_state(
             db.clone(),
             auth_middleware
-        ))
+        ));
+
+    // Combine routes with global middleware
+    Router::new()
+        .merge(health_routes)
+        .merge(api_routes)
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(inject_request_id))

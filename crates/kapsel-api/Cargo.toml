@@ -47,6 +47,11 @@ sha256 = "1.5"
 
 [dev-dependencies]
 kapsel-testing = { path = "../kapsel-testing" }
+tower = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

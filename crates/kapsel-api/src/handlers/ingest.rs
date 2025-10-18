@@ -299,7 +299,7 @@ async fn persist_event(
     .bind(event_id.0)
     .bind(tenant_id.0)
     .bind(endpoint_id.0)
-    .bind(idempotency_key)
+    .bind(if idempotency_key.is_empty() { event_id.0.to_string() } else { idempotency_key })
     .bind("header") // Using header-based idempotency for now
     .bind(EventStatus::Received.to_string())
     .bind(headers)
