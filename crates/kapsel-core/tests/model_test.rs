@@ -24,7 +24,6 @@ fn webhook_event_model_creation_and_access() {
     let tenant_id = TenantId::new();
     let endpoint_id = EndpointId::new();
     let now = Utc::now();
-    let tigerbeetle_id = Uuid::new_v4();
 
     let mut headers = HashMap::new();
     headers.insert("content-type".to_string(), "application/json".to_string());
@@ -51,7 +50,6 @@ fn webhook_event_model_creation_and_access() {
         payload_size: body_content.len() as i32,
         signature_valid: Some(true),
         signature_error: None,
-        tigerbeetle_id: Some(tigerbeetle_id),
     };
 
     // Verify field access
@@ -73,7 +71,6 @@ fn webhook_event_model_creation_and_access() {
     assert_eq!(webhook_event.payload_size, body_content.len() as i32);
     assert_eq!(webhook_event.signature_valid, Some(true));
     assert_eq!(webhook_event.signature_error, None);
-    assert_eq!(webhook_event.tigerbeetle_id, Some(tigerbeetle_id));
 }
 
 /// Test WebhookEvent serialization and deserialization.
@@ -107,7 +104,6 @@ fn webhook_event_serialization_roundtrip() {
         payload_size: body_content.len() as i32,
         signature_valid: Some(false),
         signature_error: Some("Invalid signature".to_string()),
-        tigerbeetle_id: None,
     };
 
     let serialized = serde_json::to_string(&original).expect("serialization should succeed");
@@ -490,7 +486,6 @@ fn webhook_event_handles_complex_payload() {
         payload_size: json_bytes.len() as i32,
         signature_valid: None,
         signature_error: None,
-        tigerbeetle_id: None,
     };
 
     assert_eq!(webhook_event.body, json_bytes);
@@ -519,7 +514,6 @@ fn webhook_event_handles_complex_payload() {
         payload_size: binary_data.len() as i32,
         signature_valid: Some(true),
         signature_error: None,
-        tigerbeetle_id: None,
     };
 
     assert_eq!(binary_event.body, binary_data);
@@ -555,7 +549,6 @@ fn model_field_constraints_and_validation() {
         payload_size: small_payload.len() as i32,
         signature_valid: None,
         signature_error: None,
-        tigerbeetle_id: None,
     };
 
     // Payload size should be positive

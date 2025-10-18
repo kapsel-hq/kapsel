@@ -40,17 +40,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # TigerBeetle - Immutable audit log (uncomment when ready)
-  # tigerbeetle:
-  #   image: ghcr.io/tigerbeetle/tigerbeetle:latest
-  #   container_name: kapsel-tigerbeetle
-  #   ports:
-  #     - "3000:3000"
-  #   volumes:
-  #     - tigerbeetle_data:/data
-  #   command: ["start", "--addresses=0.0.0.0:3000", "/data/cluster"]
-  #   restart: unless-stopped
-
   # Redis - For rate limiting and caching
   redis:
     image: redis:7-alpine
@@ -161,7 +150,6 @@ services:
 
 volumes:
   postgres_data:
-  tigerbeetle_data:
   redis_data:
   prometheus_data:
   grafana_data:

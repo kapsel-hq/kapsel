@@ -275,9 +275,8 @@ Response:
 | Code  | Name                    | Description                  | Retry |
 | ----- | ----------------------- | ---------------------------- | ----- |
 | E3001 | DATABASE_UNAVAILABLE    | PostgreSQL connection failed | Yes   |
-| E3002 | TIGERBEETLE_UNAVAILABLE | Audit log unreachable        | Yes   |
-| E3003 | QUEUE_FULL              | Channel at capacity          | Yes   |
-| E3004 | WORKER_POOL_EXHAUSTED   | No available workers         | Yes   |
+| E3002 | QUEUE_FULL              | Channel at capacity          | Yes   |
+| E3003 | WORKER_POOL_EXHAUSTED   | No available workers         | Yes   |
 
 ## Testing Requirements
 
@@ -359,7 +358,6 @@ Response:
 All configuration via environment variables:
 
 - DATABASE_URL: PostgreSQL connection string
-- TIGERBEETLE_ADDRESSES: Cluster addresses
 - WORKER_POOL_SIZE: Number of delivery workers
 - CHANNEL_CAPACITY: Bounded channel size
 - LOG_LEVEL: trace|debug|info|warn|error

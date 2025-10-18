@@ -352,11 +352,6 @@ pub struct WebhookEvent {
     ///
     /// Only populated when signature_valid is Some(false).
     pub signature_error: Option<String>,
-
-    /// Reference to immutable audit log entry in TigerBeetle.
-    ///
-    /// Populated after event is written to audit log for compliance.
-    pub tigerbeetle_id: Option<Uuid>,
 }
 
 impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
@@ -387,7 +382,6 @@ impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
             payload_size: row.try_get("payload_size")?,
             signature_valid: row.try_get("signature_valid")?,
             signature_error: row.try_get("signature_error")?,
-            tigerbeetle_id: row.try_get("tigerbeetle_id")?,
         })
     }
 }
@@ -441,7 +435,6 @@ impl WebhookEvent {
             payload_size,
             signature_valid: None,
             signature_error: None,
-            tigerbeetle_id: None,
         }
     }
 }

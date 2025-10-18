@@ -82,10 +82,6 @@ pub enum KapselError {
     #[error("[E3001] Database unavailable: PostgreSQL connection failed")]
     DatabaseUnavailable,
 
-    /// TigerBeetle audit log unreachable (E3002).
-    #[error("[E3002] TigerBeetle unavailable: audit log unreachable")]
-    TigerBeetleUnavailable,
-
     /// Bounded channel at capacity (E3003).
     #[error("[E3003] Queue full: channel at capacity")]
     QueueFull,
@@ -122,7 +118,7 @@ impl KapselError {
             Self::HttpServerError { .. } => "E2004",
             Self::CircuitOpen { .. } => "E2005",
             Self::DatabaseUnavailable => "E3001",
-            Self::TigerBeetleUnavailable => "E3002",
+
             Self::QueueFull => "E3003",
             Self::WorkerPoolExhausted => "E3004",
             Self::Database(_) | Self::Http(_) | Self::Other(_) => "E9999",
@@ -139,7 +135,6 @@ impl KapselError {
                 | Self::HttpServerError { .. }
                 | Self::CircuitOpen { .. }
                 | Self::DatabaseUnavailable
-                | Self::TigerBeetleUnavailable
                 | Self::QueueFull
                 | Self::WorkerPoolExhausted
         )

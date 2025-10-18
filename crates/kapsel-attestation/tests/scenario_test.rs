@@ -339,7 +339,7 @@ async fn find_event_by_id(env: &TestEnv, event_id: &EventId) -> kapsel_core::Web
         SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                status, failure_count, last_attempt_at, next_retry_at,
                headers, body, content_type, received_at, delivered_at, failed_at,
-               payload_size, signature_valid, signature_error, tigerbeetle_id
+               payload_size, signature_valid, signature_error
         FROM webhook_events
         WHERE id = $1
         "#,

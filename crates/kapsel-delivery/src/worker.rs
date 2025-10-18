@@ -333,7 +333,7 @@ impl DeliveryWorker {
             RETURNING id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                 status, failure_count, last_attempt_at, next_retry_at,
                 headers, body, content_type, received_at, delivered_at, failed_at,
-                payload_size, signature_valid, signature_error, tigerbeetle_id
+                payload_size, signature_valid, signature_error
             ",
         )
         .bind(&event_ids)
@@ -1187,7 +1187,7 @@ mod tests {
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
-                   payload_size, signature_valid, signature_error, tigerbeetle_id
+                   payload_size, signature_valid, signature_error
             FROM webhook_events WHERE id = $1
             ",
         )
@@ -1237,7 +1237,6 @@ mod tests {
             payload_size: row.try_get("payload_size").expect("failed to get payload_size"),
             signature_valid: row.try_get("signature_valid").expect("failed to get signature_valid"),
             signature_error: row.try_get("signature_error").expect("failed to get signature_error"),
-            tigerbeetle_id: row.try_get("tigerbeetle_id").expect("failed to get tigerbeetle_id"),
         }
     }
 }

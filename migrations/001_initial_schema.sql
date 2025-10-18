@@ -101,9 +101,6 @@ CREATE TABLE webhook_events (
     delivered_at TIMESTAMPTZ,
     failed_at TIMESTAMPTZ,
 
-    -- Audit trail reference
-    tigerbeetle_id UUID,  -- Reference to immutable log entry
-
     -- Prevent duplicate events
     UNIQUE(tenant_id, endpoint_id, source_event_id),
 
@@ -325,10 +322,6 @@ CREATE INDEX idx_webhook_events_tenant
 CREATE INDEX idx_webhook_events_endpoint
     ON webhook_events(endpoint_id, received_at DESC);
 
-CREATE INDEX idx_webhook_events_tigerbeetle
-    ON webhook_events(tigerbeetle_id)
-    WHERE tigerbeetle_id IS NULL;
-
 -- Delivery attempts indexes
 CREATE INDEX idx_delivery_attempts_event
     ON delivery_attempts(event_id, attempt_number DESC);
@@ -492,7 +485,6 @@ VALUES (
 COMMENT ON TABLE webhook_events IS 'Core table storing all received webhook events and their delivery status';
 COMMENT ON COLUMN webhook_events.status IS 'Event lifecycle: received -> pending -> delivering -> delivered/failed';
 COMMENT ON COLUMN webhook_events.source_event_id IS 'Unique identifier from source system for idempotency';
-COMMENT ON COLUMN webhook_events.tigerbeetle_id IS 'Reference to immutable audit log entry in TigerBeetle';
 
 COMMENT ON TABLE endpoints IS 'Webhook destination configuration with circuit breaker state';
 COMMENT ON COLUMN endpoints.circuit_state IS 'Circuit breaker pattern: closed (normal), open (failing), half_open (testing recovery)';
