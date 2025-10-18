@@ -16,14 +16,11 @@ use uuid::Uuid;
 /// Extracts API key from Authorization header.
 /// Supports Bearer token format: "Bearer <api-key>"
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    fn fun_name(s: &str) -> String {
-        s.to_string()
-    }
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
-        .map(fun_name)
+        .map(String::from)
 }
 
 /// Validates API key and returns tenant ID.
