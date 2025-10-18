@@ -21,7 +21,7 @@ pub struct SharedDatabase {
     pool: PgPool,
     /// Container handle - keeps container alive until dropped
     #[allow(dead_code)]
-    container: ContainerAsync<PostgresImage>,
+    _container: ContainerAsync<PostgresImage>,
 }
 
 use once_cell::sync::Lazy;
@@ -46,14 +46,12 @@ impl SharedDatabase {
     async fn new() -> Result<Self> {
         info!("initializing shared PostgreSQL test container");
 
-        // Start container with PostgreSQL 16 Alpine for smaller size
         let postgres_image = PostgresImage::default().with_tag("16-alpine");
 
         let container = AsyncRunner::start(postgres_image)
             .await
             .context("failed to start PostgreSQL container")?;
 
-        // Extract the mapped port for connections
         let port =
             container.get_host_port_ipv4(5432).await.context("failed to get container port")?;
 
@@ -61,18 +59,15 @@ impl SharedDatabase {
 
         debug!(port, "connecting to PostgreSQL container");
 
-        // Create connection pool with proper configuration for tests
         let pool = Self::create_connection_pool(&connection_string).await?;
 
-        // Enable required extensions
         Self::setup_extensions(&pool).await?;
 
-        // Run migrations to create schema
         Self::run_migrations(&pool).await?;
 
         info!("shared PostgreSQL container ready");
 
-        Ok(Self { pool, container })
+        Ok(Self { pool, _container: container })
     }
 
     /// Create a properly configured connection pool for tests.
@@ -84,10 +79,8 @@ impl SharedDatabase {
 
         loop {
             match sqlx::postgres::PgPoolOptions::new()
-                // Workspace-wide parallel test connection pool settings
                 .max_connections(100)
                 .min_connections(20)
-                // Extended timeouts for complex worker tests
                 .acquire_timeout(Duration::from_secs(30))
                 .idle_timeout(Duration::from_secs(60))
                 .max_lifetime(Duration::from_secs(300))
@@ -95,12 +88,10 @@ impl SharedDatabase {
                 .await
             {
                 Ok(pool) => {
-                    // Verify connection actually works
                     if sqlx::query("SELECT 1").execute(&pool).await.is_ok() {
                         debug!("PostgreSQL connection established");
                         return Ok(pool);
                     }
-                    // Connection created but not working, retry
                     pool.close().await;
                 },
                 Err(e) => {
@@ -121,13 +112,13 @@ impl SharedDatabase {
 
     /// Enable required PostgreSQL extensions.
     async fn setup_extensions(pool: &PgPool) -> Result<()> {
-        // UUID generation support
+        // We need UUID generation support
         sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
             .execute(pool)
             .await
             .context("failed to create uuid-ossp extension")?;
 
-        // Cryptographic functions for HMAC
+        // We need cryptographic functions for HMAC
         sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
             .execute(pool)
             .await
@@ -138,7 +129,6 @@ impl SharedDatabase {
 
     /// Run database migrations to create schema.
     async fn run_migrations(pool: &PgPool) -> Result<()> {
-        // Navigate from kapsel-testing crate to workspace root
         let workspace_root =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         let migrations_path = workspace_root.join("migrations");
@@ -194,7 +184,6 @@ impl TestDatabase {
     /// database container. Used by property tests that run in custom
     /// runtimes to avoid runtime conflicts.
     pub async fn new_isolated() -> Result<Self> {
-        // Always create new database, never share
         let shared_db = Arc::new(SharedDatabase::new().await?);
         Ok(Self { shared_db })
     }
@@ -208,14 +197,21 @@ impl TestDatabase {
     ///
     /// The transaction will automatically rollback when dropped,
     /// ensuring no test data persists between tests.
+    ///
+    /// # Safety
+    ///
+    /// This uses unsafe code to transmute lifetimes. This is currently
+    /// necessary for ergonomics in TestEnv, but should be eliminated in the
+    /// future.
+    #[allow(unsafe_code)]
     pub async fn begin_transaction(&self) -> Result<Transaction<'static, Postgres>> {
+        let tx = self.shared_db.pool.begin().await.context("failed to begin transaction")?;
+
         // SAFETY: We need a 'static transaction for ergonomics in TestEnv.
         // This is safe because the underlying pool is owned by SharedDatabase
         // which lives for the entire process duration.
-        let tx = self.shared_db.pool.begin().await.context("failed to begin transaction")?;
-
-        // Convert to 'static lifetime for easier use in TestEnv
         let tx = unsafe {
+            // TODO: Eliminate this by redesigning the API.
             std::mem::transmute::<Transaction<'_, Postgres>, Transaction<'static, Postgres>>(tx)
         };
 

@@ -215,7 +215,7 @@ impl Invariants {
 
     /// Audit completeness: Every state transition is recorded.
     pub fn audit_trail_complete(event: &WebhookEvent, audit_entries: &[AuditEntry]) -> Result<()> {
-        // Should have entry for each state transition
+        // We should have entry for each state transition
         let expected_entries = match event.status {
             EventStatus::Received => 1,
             EventStatus::Pending => 2,
@@ -267,6 +267,301 @@ impl Invariants {
         }
 
         Ok(())
+    }
+}
+
+/// Test data structures for invariant testing.
+#[derive(Debug, Clone)]
+pub struct WebhookEvent {
+    /// Unique identifier for this webhook event
+    pub id: Uuid,
+    /// Tenant that owns this webhook event
+    pub tenant_id: Uuid,
+    /// Target endpoint for webhook delivery
+    pub endpoint_id: Uuid,
+    /// External source identifier for idempotency tracking
+    pub source_event_id: String,
+    /// Strategy used for duplicate detection and deduplication
+    pub idempotency_strategy: String,
+    /// Current processing status of this webhook event
+    pub status: EventStatus,
+    /// Number of delivery attempts made so far
+    pub attempt_count: u32,
+    /// Timestamp for next retry attempt (if scheduled for retry)
+    pub next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// HTTP headers to include in webhook request
+    pub headers: HashMap<String, String>,
+    /// Webhook payload body as raw bytes
+    pub body: bytes::Bytes,
+    /// MIME type of the payload body
+    pub content_type: String,
+    /// Timestamp when this event was first received
+    pub received_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp when event was successfully delivered (if completed)
+    pub delivered_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl WebhookEvent {
+    /// Returns true if this event is in a terminal state (delivered or failed).
+    pub fn is_terminal_state(&self) -> bool {
+        matches!(self.status, EventStatus::Delivered | EventStatus::Failed)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Processing status of a webhook event in the delivery pipeline.
+///
+/// Events transition through these states as they are processed, with
+/// terminal states indicating completion (success or failure).
+pub enum EventStatus {
+    /// Event has been received and validated but not yet queued
+    Received,
+    /// Event is queued and waiting for delivery attempt
+    Pending,
+    /// Event is currently being delivered to the target endpoint
+    Delivering,
+    /// Event was successfully delivered (terminal state)
+    Delivered,
+    /// Event failed delivery after all retry attempts (terminal state)
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+/// Response information from a webhook delivery attempt.
+///
+/// Captures the essential information about how the target endpoint
+/// responded to a webhook delivery request.
+pub struct WebhookResponse {
+    /// ID of the webhook event that was delivered
+    pub event_id: Uuid,
+    /// HTTP status code returned by the target endpoint
+    pub status_code: u16,
+}
+
+#[derive(Debug, Clone)]
+/// Information about a single webhook delivery attempt.
+///
+/// Records the details of each attempt to deliver a webhook to a target
+/// endpoint, including timing and response information.
+pub struct DeliveryAttempt {
+    /// Sequential attempt number (1-based) for this delivery
+    pub attempt_number: u32,
+    /// Timestamp when this delivery attempt was made
+    pub attempted_at: chrono::DateTime<chrono::Utc>,
+    /// HTTP status code from endpoint response (None if request failed)
+    pub response_status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// State of a circuit breaker protecting an endpoint.
+///
+/// Circuit breakers prevent cascading failures by temporarily stopping
+/// requests to endpoints that are experiencing issues.
+pub enum CircuitState {
+    /// Circuit is closed - requests are allowed through normally
+    Closed,
+    /// Circuit is open - requests are rejected to protect the endpoint
+    Open,
+    /// Circuit is half-open - limited requests allowed to test recovery
+    HalfOpen,
+}
+
+#[derive(Debug)]
+/// History of circuit breaker events for testing and validation.
+///
+/// Tracks the sequence of circuit breaker state changes and outcomes
+/// to verify proper circuit breaker behavior during testing.
+pub struct CircuitBreakerHistory {
+    /// Sequence of circuit events and their success/failure outcomes
+    pub events: Vec<(CircuitEvent, bool)>,
+    /// Number of failures required to trip the circuit breaker open
+    pub open_threshold: usize,
+}
+
+#[derive(Debug)]
+/// A single event in the circuit breaker's operational history.
+///
+/// Records state transitions and outcomes for circuit breaker testing
+/// and invariant validation.
+pub struct CircuitEvent {
+    /// State of the circuit breaker when this event occurred
+    pub circuit_state: CircuitState,
+    /// Whether a request was actually made during this circuit event
+    pub made_request: bool,
+}
+
+/// Record of a single audit trail entry for a webhook event.
+///
+/// Audit entries track state transitions and actions taken on webhook
+/// events to ensure complete traceability and compliance verification.
+#[derive(Debug)]
+pub struct AuditEntry {
+    /// ID of the webhook event this audit entry is for
+    pub event_id: Uuid,
+    /// Timestamp when this audit action occurred
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Description of the action that was performed
+    pub action: String,
+}
+
+/// Record of a single HTTP request made to an endpoint.
+///
+/// Used for testing rate limiting, timing analysis, and request
+/// tracking across the webhook delivery system.
+#[derive(Debug)]
+pub struct RequestRecord {
+    /// Timestamp when this request was made
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// ID of the endpoint that received this request
+    pub endpoint_id: Uuid,
+}
+
+/// Test scenario for verifying retry behavior and backoff strategies.
+///
+/// Encapsulates the parameters and expected outcomes for testing
+/// retry logic, exponential backoff, and failure handling.
+#[derive(Debug)]
+pub struct RetryScenario {
+    /// Maximum number of retry attempts allowed in this scenario
+    pub max_attempts: u32,
+    /// Sequence of success/failure outcomes for each attempt
+    pub outcomes: Vec<bool>,
+    /// Total elapsed time for the complete retry sequence
+    pub total_duration: Duration,
+}
+
+/// Test scenario for verifying circuit breaker behavior.
+///
+/// Defines parameters and request outcomes for testing circuit breaker
+/// state transitions, threshold detection, and failure protection.
+#[derive(Debug)]
+pub struct CircuitBreakerScenario {
+    /// Number of consecutive failures required to open the circuit
+    pub open_threshold: usize,
+    /// Failure rate (0.0-1.0) threshold for opening circuit
+    pub failure_rate_threshold: f32,
+    /// Sequence of request success/failure outcomes for testing
+    pub request_outcomes: Vec<bool>,
+}
+
+/// Assertion helpers for common invariant checks.
+pub mod assertions {
+    use super::*;
+
+    /// Asserts that all events reach a terminal state.
+    pub fn assert_all_terminal(events: &[WebhookEvent]) -> Result<()> {
+        Invariants::at_least_once_delivery(events)
+            .context("At-least-once delivery invariant violated")
+    }
+
+    /// Asserts idempotency for duplicate requests.
+    pub fn assert_idempotent(
+        original: &WebhookResponse,
+        duplicate: &WebhookResponse,
+    ) -> Result<()> {
+        Invariants::idempotency_guarantee(original, duplicate)
+            .context("Idempotency invariant violated")
+    }
+
+    /// Asserts retry bounds are respected.
+    pub fn assert_retry_bounded(event: &WebhookEvent, max: u32) -> Result<()> {
+        Invariants::retry_count_bounded(event, max).context("Retry bound invariant violated")
+    }
+
+    /// Asserts proper exponential backoff timing.
+    pub fn assert_exponential_backoff(attempts: &[DeliveryAttempt]) -> Result<()> {
+        Invariants::exponential_backoff_timing(attempts)
+            .context("Exponential backoff invariant violated")
+    }
+
+    /// Asserts tenant isolation.
+    pub fn assert_tenant_isolated(
+        tenant_a: &[WebhookEvent],
+        tenant_b: &[WebhookEvent],
+        id_a: Uuid,
+        id_b: Uuid,
+    ) -> Result<()> {
+        Invariants::tenant_isolation(tenant_a, tenant_b, id_a, id_b)
+            .context("Tenant isolation invariant violated")
+    }
+
+    /// Asserts FIFO ordering per endpoint.
+    pub fn assert_fifo_ordering(events: &[WebhookEvent]) -> Result<()> {
+        Invariants::fifo_ordering_per_endpoint(events).context("FIFO ordering invariant violated")
+    }
+
+    /// Asserts no events are lost.
+    pub fn assert_no_lost_events(
+        ingested: &HashSet<Uuid>,
+        current: &HashMap<Uuid, WebhookEvent>,
+    ) -> Result<()> {
+        Invariants::no_lost_events(ingested, current).context("No lost events invariant violated")
+    }
+
+    /// Asserts complete audit trail.
+    pub fn assert_audit_complete(event: &WebhookEvent, entries: &[AuditEntry]) -> Result<()> {
+        Invariants::audit_trail_complete(event, entries)
+            .context("Audit completeness invariant violated")
+    }
+
+    /// Asserts rate limit compliance.
+    pub fn assert_rate_limit_respected(
+        requests: &[RequestRecord],
+        limit: usize,
+        window: Duration,
+    ) -> Result<()> {
+        Invariants::rate_limit_compliance(requests, limit, window)
+            .context("Rate limit invariant violated")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn webhook_events_have_valid_ids(
+            event in strategies::webhook_event_strategy()
+        ) {
+            // All generated events should have non-nil UUIDs
+            prop_assert_ne!(event.id, Uuid::nil());
+            prop_assert_ne!(event.tenant_id, Uuid::nil());
+            prop_assert_ne!(event.endpoint_id, Uuid::nil());
+        }
+
+        #[test]
+        fn retry_bounds_always_respected(
+            event in strategies::webhook_event_strategy(),
+            max_retries in 1u32..100
+        ) {
+            let result = Invariants::retry_count_bounded(&event, max_retries);
+
+            if event.attempt_count <= max_retries + 1 {
+                prop_assert!(result.is_ok());
+            } else {
+                prop_assert!(result.is_err());
+            }
+        }
+
+        #[test]
+        fn idempotency_detection_works(
+            id in strategies::uuid_strategy(),
+            status in 200u16..204
+        ) {
+            let response1 = WebhookResponse {
+                event_id: id,
+                status_code: status,
+            };
+            let response2 = response1.clone();
+
+            prop_assert!(
+                Invariants::idempotency_guarantee(&response1, &response2).is_ok()
+            );
+        }
     }
 }
 
@@ -422,219 +717,5 @@ pub mod strategies {
                 failure_rate_threshold: rate,
                 request_outcomes: outcomes,
             })
-    }
-}
-
-/// Test data structures for invariant testing.
-
-#[derive(Debug, Clone)]
-pub struct WebhookEvent {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub endpoint_id: Uuid,
-    pub source_event_id: String,
-    pub idempotency_strategy: String,
-    pub status: EventStatus,
-    pub attempt_count: u32,
-    pub next_retry_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub headers: HashMap<String, String>,
-    pub body: bytes::Bytes,
-    pub content_type: String,
-    pub received_at: chrono::DateTime<chrono::Utc>,
-    pub delivered_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-impl WebhookEvent {
-    pub fn is_terminal_state(&self) -> bool {
-        matches!(self.status, EventStatus::Delivered | EventStatus::Failed)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EventStatus {
-    Received,
-    Pending,
-    Delivering,
-    Delivered,
-    Failed,
-}
-
-#[derive(Debug, Clone)]
-pub struct WebhookResponse {
-    pub event_id: Uuid,
-    pub status_code: u16,
-}
-
-#[derive(Debug, Clone)]
-pub struct DeliveryAttempt {
-    pub attempt_number: u32,
-    pub attempted_at: chrono::DateTime<chrono::Utc>,
-    pub response_status: Option<u16>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CircuitState {
-    Closed,
-    Open,
-    HalfOpen,
-}
-
-#[derive(Debug)]
-pub struct CircuitBreakerHistory {
-    pub events: Vec<(CircuitEvent, bool)>,
-    pub open_threshold: usize,
-}
-
-#[derive(Debug)]
-pub struct CircuitEvent {
-    pub circuit_state: CircuitState,
-    pub made_request: bool,
-}
-
-#[derive(Debug)]
-pub struct AuditEntry {
-    pub event_id: Uuid,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub action: String,
-}
-
-#[derive(Debug)]
-pub struct RequestRecord {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub endpoint_id: Uuid,
-}
-
-#[derive(Debug)]
-pub struct RetryScenario {
-    pub max_attempts: u32,
-    pub outcomes: Vec<bool>,
-    pub total_duration: Duration,
-}
-
-#[derive(Debug)]
-pub struct CircuitBreakerScenario {
-    pub open_threshold: usize,
-    pub failure_rate_threshold: f32,
-    pub request_outcomes: Vec<bool>,
-}
-
-/// Assertion helpers for common invariant checks.
-pub mod assertions {
-    use super::*;
-
-    /// Asserts that all events reach a terminal state.
-    pub fn assert_all_terminal(events: &[WebhookEvent]) -> Result<()> {
-        Invariants::at_least_once_delivery(events)
-            .context("At-least-once delivery invariant violated")
-    }
-
-    /// Asserts idempotency for duplicate requests.
-    pub fn assert_idempotent(
-        original: &WebhookResponse,
-        duplicate: &WebhookResponse,
-    ) -> Result<()> {
-        Invariants::idempotency_guarantee(original, duplicate)
-            .context("Idempotency invariant violated")
-    }
-
-    /// Asserts retry bounds are respected.
-    pub fn assert_retry_bounded(event: &WebhookEvent, max: u32) -> Result<()> {
-        Invariants::retry_count_bounded(event, max).context("Retry bound invariant violated")
-    }
-
-    /// Asserts proper exponential backoff timing.
-    pub fn assert_exponential_backoff(attempts: &[DeliveryAttempt]) -> Result<()> {
-        Invariants::exponential_backoff_timing(attempts)
-            .context("Exponential backoff invariant violated")
-    }
-
-    /// Asserts tenant isolation.
-    pub fn assert_tenant_isolated(
-        tenant_a: &[WebhookEvent],
-        tenant_b: &[WebhookEvent],
-        id_a: Uuid,
-        id_b: Uuid,
-    ) -> Result<()> {
-        Invariants::tenant_isolation(tenant_a, tenant_b, id_a, id_b)
-            .context("Tenant isolation invariant violated")
-    }
-
-    /// Asserts FIFO ordering per endpoint.
-    pub fn assert_fifo_ordering(events: &[WebhookEvent]) -> Result<()> {
-        Invariants::fifo_ordering_per_endpoint(events).context("FIFO ordering invariant violated")
-    }
-
-    /// Asserts no events are lost.
-    pub fn assert_no_lost_events(
-        ingested: &HashSet<Uuid>,
-        current: &HashMap<Uuid, WebhookEvent>,
-    ) -> Result<()> {
-        Invariants::no_lost_events(ingested, current).context("No lost events invariant violated")
-    }
-
-    /// Asserts complete audit trail.
-    pub fn assert_audit_complete(event: &WebhookEvent, entries: &[AuditEntry]) -> Result<()> {
-        Invariants::audit_trail_complete(event, entries)
-            .context("Audit completeness invariant violated")
-    }
-
-    /// Asserts rate limit compliance.
-    pub fn assert_rate_limit_respected(
-        requests: &[RequestRecord],
-        limit: usize,
-        window: Duration,
-    ) -> Result<()> {
-        Invariants::rate_limit_compliance(requests, limit, window)
-            .context("Rate limit invariant violated")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[allow(unused_imports)]
-    use proptest::prelude::*;
-
-    use super::*;
-
-    proptest! {
-        #[test]
-        fn webhook_events_have_valid_ids(
-            event in strategies::webhook_event_strategy()
-        ) {
-            // All generated events should have non-nil UUIDs
-            prop_assert_ne!(event.id, Uuid::nil());
-            prop_assert_ne!(event.tenant_id, Uuid::nil());
-            prop_assert_ne!(event.endpoint_id, Uuid::nil());
-        }
-
-        #[test]
-        fn retry_bounds_always_respected(
-            event in strategies::webhook_event_strategy(),
-            max_retries in 1u32..100
-        ) {
-            let result = Invariants::retry_count_bounded(&event, max_retries);
-
-            if event.attempt_count <= max_retries + 1 {
-                prop_assert!(result.is_ok());
-            } else {
-                prop_assert!(result.is_err());
-            }
-        }
-
-        #[test]
-        fn idempotency_detection_works(
-            id in strategies::uuid_strategy(),
-            status in 200u16..204
-        ) {
-            let response1 = WebhookResponse {
-                event_id: id,
-                status_code: status,
-            };
-            let response2 = response1.clone();
-
-            prop_assert!(
-                Invariants::idempotency_guarantee(&response1, &response2).is_ok()
-            );
-        }
     }
 }

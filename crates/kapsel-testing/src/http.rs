@@ -16,6 +16,7 @@ use wiremock::{
 
 /// HTTP mock server for testing webhook deliveries.
 pub struct MockServer {
+    /// Underlying wiremock server instance for handling HTTP requests
     pub server: WiremockServer,
     recorded_requests: Arc<RwLock<Vec<RecordedRequest>>>,
 }
@@ -54,7 +55,6 @@ impl MockServer {
 
         let mut mock = Mock::given(method("POST")).and(path(endpoint.path.clone()));
 
-        // Add header matchers if specified
         for (key, value) in &endpoint.expected_headers {
             mock = mock.and(header(key.as_str(), value.as_str()));
         }
@@ -112,8 +112,11 @@ impl MockServer {
 
 /// Configuration for a mock endpoint.
 pub struct MockEndpoint {
+    /// URL path that this expectation should match
     pub path: String,
+    /// HTTP headers that must be present in the request
     pub expected_headers: HashMap<String, String>,
+    /// Response to return when this expectation is matched
     pub response: MockResponse,
 }
 
@@ -161,19 +164,43 @@ impl MockEndpoint {
 
 /// Types of mock responses.
 pub enum MockResponse {
-    Success { status: StatusCode, body: Bytes },
-    Failure { status: StatusCode, retry_after: Option<Duration> },
-    ServerError { status: u16, body: Vec<u8> },
+    /// Successful HTTP response with status code and body
+    Success {
+        /// HTTP status code for the response
+        status: StatusCode,
+        /// Response body as raw bytes
+        body: Bytes,
+    },
+    /// Failed HTTP response with optional retry delay
+    Failure {
+        /// HTTP error status code
+        status: StatusCode,
+        /// Optional delay before client should retry
+        retry_after: Option<Duration>,
+    },
+    /// Server error response with custom status and body
+    ServerError {
+        /// HTTP status code as raw number
+        status: u16,
+        /// Response body as byte vector
+        body: Vec<u8>,
+    },
+    /// Request timeout - connection will be dropped
     Timeout,
 }
 
 /// A recorded HTTP request.
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
+    /// HTTP method (GET, POST, etc.) of the recorded request
     pub method: String,
+    /// URL path of the recorded request
     pub path: String,
+    /// HTTP headers from the recorded request
     pub headers: HeaderMap,
+    /// Request body as raw bytes
     pub body: Bytes,
+    /// When this request was recorded
     pub timestamp: std::time::Instant,
 }
 
@@ -257,8 +284,8 @@ impl<'a> MockSequenceBuilder<'a> {
 
     /// Builds and mounts the mock sequence.
     pub async fn build(self) {
-        // For simplicity, we'll mount all responses at once
-        // In a real implementation, this would cycle through responses
+        // TODO: Right now we mount all responses at once,
+        // this should cycle through responses
         for (status, body) in self.responses {
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(status).set_body_string(body))

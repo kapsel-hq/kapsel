@@ -538,12 +538,15 @@ pub struct Endpoint {
     pub total_events_failed: i64,
 }
 /// HTTP methods supported for webhook delivery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {
     /// HTTP GET method.
     Get,
     /// HTTP POST method (default).
+    #[default]
     Post,
     /// HTTP PUT method.
     Put,
@@ -562,12 +565,6 @@ impl fmt::Display for HttpMethod {
     }
 }
 
-impl Default for HttpMethod {
-    fn default() -> Self {
-        Self::Post
-    }
-}
-
 impl sqlx::Type<PgDb> for HttpMethod {
     fn type_info() -> PgTypeInfo {
         <str as sqlx::Type<PgDb>>::type_info()
@@ -582,7 +579,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for HttpMethod {
             "POST" => Ok(Self::Post),
             "PUT" => Ok(Self::Put),
             "PATCH" => Ok(Self::Patch),
-            _ => Err(format!("invalid http method: {}", s).into()),
+            _ => Err(format!("invalid http method: {s}").into()),
         }
     }
 }
@@ -594,11 +591,12 @@ impl sqlx::Encode<'_, PgDb> for HttpMethod {
 }
 
 /// Webhook signature configuration using tagged union pattern.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 #[serde(tag = "type")]
 pub enum SignatureConfig {
     /// No signature validation.
     #[serde(rename = "none")]
+    #[default]
     None,
     /// HMAC-SHA256 signature with custom header.
     #[serde(rename = "hmac_sha256")]
@@ -608,12 +606,6 @@ pub enum SignatureConfig {
         /// Header name for signature (defaults to X-Webhook-Signature).
         header: String,
     },
-}
-
-impl Default for SignatureConfig {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl SignatureConfig {
@@ -672,7 +664,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for SignatureConfig {
             }
         }
 
-        Err(format!("invalid signature config: {}", s).into())
+        Err(format!("invalid signature config: {s}").into())
     }
 }
 
@@ -681,7 +673,7 @@ impl sqlx::Encode<'_, PgDb> for SignatureConfig {
         let s = match self {
             Self::None => "none".to_string(),
             Self::HmacSha256 { secret, header } => {
-                format!("hmac_sha256:{}:{}", header, secret)
+                format!("hmac_sha256:{header}:{secret}")
             },
         };
         <String as sqlx::Encode<PgDb>>::encode_by_ref(&s, buf)
@@ -723,7 +715,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
             "header" => Ok(Self::Header),
             "source_id" => Ok(Self::SourceId),
             "content_hash" => Ok(Self::ContentHash),
-            _ => Err(format!("invalid idempotency strategy: {}", s).into()),
+            _ => Err(format!("invalid idempotency strategy: {s}").into()),
         }
     }
 }
@@ -769,7 +761,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for BackoffStrategy {
             "fixed" => Ok(Self::Fixed),
             "exponential" => Ok(Self::Exponential),
             "linear" => Ok(Self::Linear),
-            _ => Err(format!("invalid backoff strategy: {}", s).into()),
+            _ => Err(format!("invalid backoff strategy: {s}").into()),
         }
     }
 }
@@ -839,7 +831,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for DeliveryAttemptErrorType {
             "rate_limited" => Ok(Self::RateLimited),
             "protocol_error" => Ok(Self::ProtocolError),
             "network_error" => Ok(Self::NetworkError),
-            _ => Err(format!("invalid delivery error type: {}", s).into()),
+            _ => Err(format!("invalid delivery error type: {s}").into()),
         }
     }
 }

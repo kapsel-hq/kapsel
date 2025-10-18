@@ -62,10 +62,8 @@ impl TestClock {
 
     /// Advances both clocks by the specified duration.
     pub fn advance(&self, duration: Duration) {
-        // Update monotonic time
+        // Update monotonic time and system time
         self.monotonic_ns.fetch_add(duration.as_nanos() as u64, Ordering::AcqRel);
-
-        // Update system time
         self.system_secs.fetch_add(duration.as_secs(), Ordering::AcqRel);
     }
 
@@ -78,7 +76,7 @@ impl TestClock {
             let diff = target_secs - current_secs;
             self.advance(Duration::from_secs(diff));
         } else {
-            // Allow jumping backwards for system time (monotonic stays forward)
+            // System time is allowed to jump backwards (monotonic stays forward)
             self.system_secs.store(target_secs, Ordering::Release);
         }
     }
@@ -104,7 +102,7 @@ pub trait Clock: Send + Sync {
     fn now_system(&self) -> SystemTime;
 
     /// Sleeps for the specified duration.
-    #[allow(async_fn_in_trait)] // Test-only trait, Send bound not required
+    #[allow(async_fn_in_trait)]
     async fn sleep(&self, duration: Duration);
 }
 

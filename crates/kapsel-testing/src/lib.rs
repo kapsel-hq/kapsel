@@ -4,6 +4,9 @@
 //! and property-based testing utilities. Ensures reproducible test execution
 //! with proper resource cleanup and invariant checking
 
+#![warn(unsafe_code)]
+#![warn(missing_docs)]
+
 pub mod database;
 pub mod fixtures;
 pub mod http;
@@ -229,7 +232,7 @@ impl TestEnv {
 
         sqlx::query(
             "INSERT INTO endpoints (id, tenant_id, url, name, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())",
         )
         .bind(endpoint_id)
         .bind(tenant_id.0)
@@ -671,7 +674,7 @@ impl TestEnv {
         .fetch_optional(self.pool())
         .await?;
 
-        Ok(result.map(|row| SignedTreeHeadInfo {
+        Ok(result.map(|row: sqlx::postgres::PgRow| SignedTreeHeadInfo {
             tree_size: row.get("tree_size"),
             root_hash: row.get("root_hash"),
             timestamp_ms: row.get("timestamp_ms"),
@@ -712,21 +715,41 @@ impl TestEnv {
 
 /// Attestation leaf information for testing.
 #[derive(Debug, Clone)]
+/// Test environment attestation information for delivery attempts.
+///
+/// Contains information about a Merkle tree leaf representing a webhook
+/// delivery attempt that has been attested and committed to the transparency
+/// log.
 pub struct AttestationLeafInfo {
+    /// Unique identifier for the delivery attempt
     pub delivery_attempt_id: uuid::Uuid,
+    /// Target endpoint URL where the webhook was delivered
     pub endpoint_url: String,
+    /// Sequential attempt number for this delivery
     pub attempt_number: i32,
+    /// HTTP response status code (None if delivery failed before response)
     pub response_status: Option<i32>,
+    /// SHA-256 hash of the Merkle tree leaf content
     pub leaf_hash: Vec<u8>,
 }
 
 /// Signed tree head information for testing.
 #[derive(Debug, Clone)]
+/// Signed tree head information from the transparency log.
+///
+/// Represents a cryptographically signed commitment to the state of the
+/// Merkle tree at a specific point in time, providing tamper-proof evidence
+/// of all delivery attempts that have been logged.
 pub struct SignedTreeHeadInfo {
+    /// Total number of leaves in the Merkle tree
     pub tree_size: i64,
+    /// SHA-256 hash of the Merkle tree root
     pub root_hash: Vec<u8>,
+    /// Unix timestamp in milliseconds when the tree head was signed
     pub timestamp_ms: i64,
+    /// Ed25519 signature over the tree head data
     pub signature: Vec<u8>,
+    /// Number of leaves in the batch that created this tree head
     pub batch_size: i32,
 }
 
@@ -760,10 +783,21 @@ enum Step {
 }
 
 #[derive(Debug, Clone)]
+/// Types of failures that can be injected during testing.
+///
+/// Used by the scenario builder to simulate various failure conditions
+/// that webhook delivery systems must handle gracefully.
 pub enum FailureKind {
+    /// Network timeout during HTTP request
     NetworkTimeout,
+    /// HTTP 500 Internal Server Error response
     Http500,
-    Http429 { retry_after: Duration },
+    /// HTTP 429 Too Many Requests with optional retry delay
+    Http429 {
+        /// Duration to wait before retrying (sent in Retry-After header)
+        retry_after: Duration,
+    },
+    /// Database connection unavailable
     DatabaseUnavailable,
 }
 

@@ -57,36 +57,43 @@ impl WebhookBuilder {
         headers
     }
 
+    /// Sets the tenant ID for this webhook.
     pub fn tenant(mut self, id: Uuid) -> Self {
         self.tenant_id = Some(id);
         self
     }
 
+    /// Sets the endpoint ID for this webhook.
     pub fn endpoint(mut self, id: Uuid) -> Self {
         self.endpoint_id = Some(id);
         self
     }
 
+    /// Sets the source event ID for idempotency tracking.
     pub fn source_event(mut self, id: impl Into<String>) -> Self {
         self.source_event_id = Some(id.into());
         self
     }
 
+    /// Sets the idempotency strategy (e.g., "source_event_id").
     pub fn strategy(mut self, strategy: impl Into<String>) -> Self {
         self.idempotency_strategy = Some(strategy.into());
         self
     }
 
+    /// Adds an HTTP header to the webhook request.
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
     }
 
+    /// Sets the webhook payload body as raw bytes.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.body = Some(body.into());
         self
     }
 
+    /// Sets the webhook payload as JSON, automatically setting Content-Type.
     pub fn json_body(mut self, value: Value) -> Self {
         self.body = Some(Bytes::from(value.to_string()));
         self.content_type = Some("application/json".to_string());
@@ -94,6 +101,7 @@ impl WebhookBuilder {
         self
     }
 
+    /// Sets the Content-Type header for the webhook payload.
     pub fn content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type = Some(content_type.into());
         self
@@ -124,12 +132,19 @@ impl Default for WebhookBuilder {
 /// Test webhook event data.
 #[derive(Debug, Clone)]
 pub struct TestWebhook {
+    /// Tenant that owns this webhook event
     pub tenant_id: Uuid,
+    /// Target endpoint for webhook delivery
     pub endpoint_id: Uuid,
+    /// External source identifier for idempotency
     pub source_event_id: String,
+    /// Strategy used for duplicate detection
     pub idempotency_strategy: String,
+    /// HTTP headers to include in webhook request
     pub headers: HashMap<String, String>,
+    /// Webhook payload body as raw bytes
     pub body: Bytes,
+    /// MIME type of the payload body
     pub content_type: String,
 }
 
@@ -171,36 +186,43 @@ impl EndpointBuilder {
         }
     }
 
+    /// Sets the tenant ID that owns this endpoint.
     pub fn tenant(mut self, id: Uuid) -> Self {
         self.tenant_id = Some(id);
         self
     }
 
+    /// Sets a human-readable name for this endpoint.
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
+    /// Sets the target URL for webhook delivery.
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
     }
 
+    /// Sets the secret key used for HMAC signature generation.
     pub fn signing_secret(mut self, secret: impl Into<String>) -> Self {
         self.signing_secret = Some(secret.into());
         self
     }
 
+    /// Sets the HTTP header name for the HMAC signature.
     pub fn signature_header(mut self, header: impl Into<String>) -> Self {
         self.signature_header = Some(header.into());
         self
     }
 
+    /// Sets the maximum number of delivery attempts.
     pub fn max_retries(mut self, retries: u32) -> Self {
         self.max_retries = Some(retries);
         self
     }
 
+    /// Sets the HTTP request timeout in seconds.
     pub fn timeout(mut self, seconds: u32) -> Self {
         self.timeout_seconds = Some(seconds);
         self
@@ -230,13 +252,21 @@ impl Default for EndpointBuilder {
 /// Test endpoint data.
 #[derive(Debug, Clone)]
 pub struct TestEndpoint {
+    /// Unique identifier for this endpoint
     pub id: Uuid,
+    /// Tenant that owns this endpoint
     pub tenant_id: Uuid,
+    /// Human-readable name for the endpoint
     pub name: String,
+    /// Target URL for webhook delivery
     pub url: String,
+    /// Optional HMAC signing key for request authentication
     pub signing_secret: Option<String>,
+    /// HTTP header name for HMAC signature (if signing enabled)
     pub signature_header: Option<String>,
+    /// Maximum number of delivery attempts before marking as failed
     pub max_retries: u32,
+    /// HTTP request timeout in seconds
     pub timeout_seconds: u32,
 }
 
