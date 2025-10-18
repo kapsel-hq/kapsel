@@ -230,7 +230,7 @@ mod tests {
         let base_time = Utc::now();
 
         // Test progression without jitter for predictability
-        let mut policy_no_jitter = policy.clone();
+        let mut policy_no_jitter = policy;
         policy_no_jitter.jitter_factor = 0.0;
 
         let delays = (1..=5)
@@ -269,7 +269,7 @@ mod tests {
                 assert!(reason.contains("maximum attempts"));
             },
             RetryDecision::Retry { .. } => {
-                panic!("Should not retry when at max attempts");
+                unreachable!("Should not retry when at max attempts");
             },
         }
     }
@@ -288,7 +288,7 @@ mod tests {
                 assert!(reason.contains("non-retryable"));
             },
             RetryDecision::Retry { .. } => {
-                panic!("Should not retry client errors");
+                unreachable!("Should not retry client errors");
             },
         }
     }

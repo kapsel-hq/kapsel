@@ -1001,7 +1001,7 @@ mod tests {
         if let Err(DeliveryError::CircuitOpen { .. }) = result {
             // Expected error type
         } else {
-            panic!("expected circuit open error");
+            unreachable!("expected circuit open error");
         }
 
         // Event should remain in delivering status (unchanged)
@@ -1034,7 +1034,7 @@ mod tests {
         .bind(event2_id)
         .bind(tenant_id)
         .bind(endpoint_id)
-        .bind(format!("source-{}", event2_id))
+        .bind(format!("source-{event2_id}"))
         .bind("header")
         .bind("pending")
         .bind(0)
@@ -1158,7 +1158,7 @@ mod tests {
         .bind(event_id)
         .bind(tenant_id)
         .bind(endpoint_id)
-        .bind(format!("source-{}", event_id))
+        .bind(format!("source-{event_id}"))
         .bind("header")
         .bind("pending")
         .bind(0)
@@ -1235,7 +1235,7 @@ mod tests {
             "delivered" => EventStatus::Delivered,
             "failed" => EventStatus::Failed,
             "dead_letter" => EventStatus::DeadLetter,
-            _ => panic!("unknown event status: {}", status_str),
+            _ => unreachable!("unknown event status: {status_str}"),
         };
 
         WebhookEvent {
@@ -1249,7 +1249,9 @@ mod tests {
             status,
             failure_count: row
                 .try_get::<i32, _>("failure_count")
-                .expect("failed to get failure_count") as u32,
+                .expect("failed to get failure_count")
+                .try_into()
+                .expect("failure_count should be non-negative"),
             last_attempt_at: row.try_get("last_attempt_at").expect("failed to get last_attempt_at"),
             next_retry_at: row.try_get("next_retry_at").expect("failed to get next_retry_at"),
             headers: sqlx::types::Json(headers),

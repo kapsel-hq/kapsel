@@ -554,7 +554,7 @@ mod tests {
         if let Err(DeliveryError::CircuitOpen { endpoint_id }) = result {
             assert_eq!(endpoint_id, endpoint);
         } else {
-            panic!("Expected CircuitOpen error");
+            unreachable!("Expected CircuitOpen error, got: {:?}", result);
         }
     }
 }
