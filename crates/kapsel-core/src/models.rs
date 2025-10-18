@@ -298,6 +298,7 @@ pub struct WebhookEvent {
     /// Strategy for idempotency checks.
     ///
     /// Currently supports "header" based deduplication.
+    /// TODO: Change to IdempotencyStrategy enum for type safety
     pub idempotency_strategy: String,
 
     /// Current processing status.
@@ -494,6 +495,7 @@ pub struct Endpoint {
     pub timeout_seconds: u32,
 
     /// Retry backoff strategy: exponential, linear, or fixed.
+    /// TODO: Change to BackoffStrategy enum for type safety
     pub retry_strategy: String,
 
     /// Circuit breaker current state.
@@ -540,6 +542,167 @@ pub struct Endpoint {
 
     /// Total number permanently failed (status = failed or dead_letter).
     pub total_events_failed: i64,
+}
+/// Strategy for determining webhook idempotency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdempotencyStrategy {
+    /// Use X-Idempotency-Key header for deduplication.
+    Header,
+    /// Extract event ID from webhook payload using JSONPath.
+    SourceId,
+    /// Use SHA256 hash of payload content.
+    ContentHash,
+}
+
+impl fmt::Display for IdempotencyStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Header => write!(f, "header"),
+            Self::SourceId => write!(f, "source_id"),
+            Self::ContentHash => write!(f, "content_hash"),
+        }
+    }
+}
+
+impl sqlx::Type<PgDb> for IdempotencyStrategy {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "header" => Ok(Self::Header),
+            "source_id" => Ok(Self::SourceId),
+            "content_hash" => Ok(Self::ContentHash),
+            _ => Err(format!("invalid idempotency strategy: {}", s).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for IdempotencyStrategy {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+    }
+}
+
+/// Retry backoff strategy for failed webhook deliveries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackoffStrategy {
+    /// Fixed delay between retries.
+    Fixed,
+    /// Exponential backoff: delay doubles each attempt.
+    Exponential,
+    /// Linear backoff: delay increases by base amount each attempt.
+    Linear,
+}
+
+impl fmt::Display for BackoffStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed => write!(f, "fixed"),
+            Self::Exponential => write!(f, "exponential"),
+            Self::Linear => write!(f, "linear"),
+        }
+    }
+}
+
+impl sqlx::Type<PgDb> for BackoffStrategy {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl sqlx::Decode<'r, PgDb> for BackoffStrategy {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "fixed" => Ok(Self::Fixed),
+            "exponential" => Ok(Self::Exponential),
+            "linear" => Ok(Self::Linear),
+            _ => Err(format!("invalid backoff strategy: {}", s).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for BackoffStrategy {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+    }
+}
+
+/// Classification of delivery attempt errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryAttemptErrorType {
+    /// Request timeout (network or HTTP).
+    Timeout,
+    /// Connection could not be established.
+    ConnectionRefused,
+    /// DNS resolution failed for target host.
+    DnsFailure,
+    /// TLS/SSL handshake failed.
+    TlsFailure,
+    /// HTTP 4xx client error response.
+    ClientError,
+    /// HTTP 5xx server error response.
+    ServerError,
+    /// Rate limiting (HTTP 429 or similar).
+    RateLimited,
+    /// Malformed response or protocol error.
+    ProtocolError,
+    /// Network partition or unreachable.
+    NetworkError,
+}
+
+impl fmt::Display for DeliveryAttemptErrorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "timeout"),
+            Self::ConnectionRefused => write!(f, "connection_refused"),
+            Self::DnsFailure => write!(f, "dns_failure"),
+            Self::TlsFailure => write!(f, "tls_failure"),
+            Self::ClientError => write!(f, "client_error"),
+            Self::ServerError => write!(f, "server_error"),
+            Self::RateLimited => write!(f, "rate_limited"),
+            Self::ProtocolError => write!(f, "protocol_error"),
+            Self::NetworkError => write!(f, "network_error"),
+        }
+    }
+}
+
+impl sqlx::Type<PgDb> for DeliveryAttemptErrorType {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl sqlx::Decode<'r, PgDb> for DeliveryAttemptErrorType {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "timeout" => Ok(Self::Timeout),
+            "connection_refused" => Ok(Self::ConnectionRefused),
+            "dns_failure" => Ok(Self::DnsFailure),
+            "tls_failure" => Ok(Self::TlsFailure),
+            "client_error" => Ok(Self::ClientError),
+            "server_error" => Ok(Self::ServerError),
+            "rate_limited" => Ok(Self::RateLimited),
+            "protocol_error" => Ok(Self::ProtocolError),
+            "network_error" => Ok(Self::NetworkError),
+            _ => Err(format!("invalid delivery error type: {}", s).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for DeliveryAttemptErrorType {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+    }
 }
 
 /// Circuit breaker state machine.
@@ -632,6 +795,7 @@ pub struct DeliveryAttempt {
     /// Classification of any error that occurred.
     ///
     /// Examples: "timeout", `"connection_refused"`, `"dns_failure"`
+    /// TODO: Change to DeliveryAttemptErrorType enum for type safety
     pub error_type: Option<String>,
 
     /// Human-readable error description.
