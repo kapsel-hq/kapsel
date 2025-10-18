@@ -775,7 +775,10 @@ impl DeliveryWorker {
 mod tests {
     use std::collections::HashMap;
 
-    use kapsel_core::models::{EventStatus, TenantId};
+    use kapsel_core::{
+        models::{EventStatus, TenantId},
+        IdempotencyStrategy,
+    };
     use kapsel_testing::TestEnv;
     use sqlx::Row;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1006,7 +1009,7 @@ mod tests {
         .bind(tenant_id)
         .bind(endpoint_id)
         .bind(format!("source-{event2_id}"))
-        .bind("header")
+        .bind(IdempotencyStrategy::Header)
         .bind("pending")
         .bind(0)
         .bind(serde_json::json!({"x-test-2": "value"}))
@@ -1130,7 +1133,7 @@ mod tests {
         .bind(tenant_id)
         .bind(endpoint_id)
         .bind(format!("source-{event_id}"))
-        .bind("header")
+        .bind(IdempotencyStrategy::Header)
         .bind("pending")
         .bind(0)
         .bind(serde_json::json!({"x-test": "value"}))

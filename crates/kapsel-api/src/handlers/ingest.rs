@@ -13,7 +13,9 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-use kapsel_core::{EndpointId, EventId, EventStatus, KapselError, Result, TenantId};
+use kapsel_core::{
+    EndpointId, EventId, EventStatus, IdempotencyStrategy, KapselError, Result, TenantId,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
@@ -288,7 +290,7 @@ async fn persist_event(
     .bind(tenant_id.0)
     .bind(endpoint_id.0)
     .bind(if idempotency_key.is_empty() { event_id.0.to_string() } else { idempotency_key })
-    .bind("header") // Using header-based idempotency for now
+    .bind(IdempotencyStrategy::Header) // Using header-based idempotency for now
     .bind(EventStatus::Received.to_string())
     .bind(headers)
     .bind(body.as_ref())

@@ -747,6 +747,7 @@ enum Step {
     InjectHttpSuccess,
     AssertState(AssertionFn),
     ExpectStatus(EventId, String),
+
     ExpectDeliveryAttempts(EventId, i64),
     RunAttestationCommitment,
     ExpectAttestationLeafCount(EventId, i64),

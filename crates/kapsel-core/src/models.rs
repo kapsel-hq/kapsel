@@ -298,8 +298,7 @@ pub struct WebhookEvent {
     /// Strategy for idempotency checks.
     ///
     /// Currently supports "header" based deduplication.
-    /// TODO: Change to IdempotencyStrategy enum for type safety
-    pub idempotency_strategy: String,
+    pub idempotency_strategy: IdempotencyStrategy,
 
     /// Current processing status.
     pub status: EventStatus,
@@ -428,7 +427,7 @@ impl WebhookEvent {
             tenant_id,
             endpoint_id,
             source_event_id,
-            idempotency_strategy: "header".to_string(),
+            idempotency_strategy: IdempotencyStrategy::Header,
             status: EventStatus::Received,
             failure_count: 0,
             last_attempt_at: None,
@@ -474,15 +473,11 @@ pub struct Endpoint {
     /// without deleting endpoint configuration.
     pub is_active: bool,
 
-    /// Secret for HMAC signature generation.
+    /// Signature configuration for webhook validation.
     ///
-    /// When present, webhooks include an HMAC-SHA256 signature.
-    pub signing_secret: Option<String>,
-
-    /// HTTP header name for the signature.
-    ///
-    /// Defaults to "X-Webhook-Signature" if signing is enabled.
-    pub signature_header: Option<String>,
+    /// Uses tagged union pattern to ensure signing secret and header
+    /// are always configured together when signatures are enabled.
+    pub signature_config: SignatureConfig,
 
     /// Maximum delivery attempts before marking as failed.
     ///
@@ -495,8 +490,7 @@ pub struct Endpoint {
     pub timeout_seconds: u32,
 
     /// Retry backoff strategy: exponential, linear, or fixed.
-    /// TODO: Change to BackoffStrategy enum for type safety
-    pub retry_strategy: String,
+    pub retry_strategy: BackoffStrategy,
 
     /// Circuit breaker current state.
     pub circuit_state: CircuitState,
@@ -543,6 +537,157 @@ pub struct Endpoint {
     /// Total number permanently failed (status = failed or dead_letter).
     pub total_events_failed: i64,
 }
+/// HTTP methods supported for webhook delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    /// HTTP GET method.
+    Get,
+    /// HTTP POST method (default).
+    Post,
+    /// HTTP PUT method.
+    Put,
+    /// HTTP PATCH method.
+    Patch,
+}
+
+impl fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Get => write!(f, "GET"),
+            Self::Post => write!(f, "POST"),
+            Self::Put => write!(f, "PUT"),
+            Self::Patch => write!(f, "PATCH"),
+        }
+    }
+}
+
+impl Default for HttpMethod {
+    fn default() -> Self {
+        Self::Post
+    }
+}
+
+impl sqlx::Type<PgDb> for HttpMethod {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for HttpMethod {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "GET" => Ok(Self::Get),
+            "POST" => Ok(Self::Post),
+            "PUT" => Ok(Self::Put),
+            "PATCH" => Ok(Self::Patch),
+            _ => Err(format!("invalid http method: {}", s).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for HttpMethod {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+    }
+}
+
+/// Webhook signature configuration using tagged union pattern.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum SignatureConfig {
+    /// No signature validation.
+    #[serde(rename = "none")]
+    None,
+    /// HMAC-SHA256 signature with custom header.
+    #[serde(rename = "hmac_sha256")]
+    HmacSha256 {
+        /// Secret key for HMAC generation.
+        secret: String,
+        /// Header name for signature (defaults to X-Webhook-Signature).
+        header: String,
+    },
+}
+
+impl Default for SignatureConfig {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl SignatureConfig {
+    /// Create HMAC SHA256 signature config with default header.
+    pub fn hmac_sha256(secret: String) -> Self {
+        Self::HmacSha256 { secret, header: "X-Webhook-Signature".to_string() }
+    }
+
+    /// Create HMAC SHA256 signature config with custom header.
+    pub fn hmac_sha256_with_header(secret: String, header: String) -> Self {
+        Self::HmacSha256 { secret, header }
+    }
+
+    /// Check if signature validation is enabled.
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Get the signing secret if available.
+    pub fn secret(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::HmacSha256 { secret, .. } => Some(secret),
+        }
+    }
+
+    /// Get the signature header name if available.
+    pub fn header(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::HmacSha256 { header, .. } => Some(header),
+        }
+    }
+}
+
+impl sqlx::Type<PgDb> for SignatureConfig {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for SignatureConfig {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        if s == "none" {
+            return Ok(Self::None);
+        }
+
+        // Parse "hmac_sha256:header:secret" format
+        if let Some(rest) = s.strip_prefix("hmac_sha256:") {
+            if let Some((header, secret)) = rest.split_once(':') {
+                return Ok(Self::HmacSha256 {
+                    secret: secret.to_string(),
+                    header: header.to_string(),
+                });
+            }
+        }
+
+        Err(format!("invalid signature config: {}", s).into())
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for SignatureConfig {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        let s = match self {
+            Self::None => "none".to_string(),
+            Self::HmacSha256 { secret, header } => {
+                format!("hmac_sha256:{}:{}", header, secret)
+            },
+        };
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&s, buf)
+    }
+}
+
 /// Strategy for determining webhook idempotency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -769,7 +914,7 @@ pub struct DeliveryAttempt {
     /// HTTP method used for delivery request.
     ///
     /// Defaults to POST but endpoints may configure other methods.
-    pub request_method: String,
+    pub request_method: HttpMethod,
 
     /// HTTP status code received.
     ///
@@ -795,8 +940,7 @@ pub struct DeliveryAttempt {
     /// Classification of any error that occurred.
     ///
     /// Examples: "timeout", `"connection_refused"`, `"dns_failure"`
-    /// TODO: Change to DeliveryAttemptErrorType enum for type safety
-    pub error_type: Option<String>,
+    pub error_type: Option<DeliveryAttemptErrorType>,
 
     /// Human-readable error description.
     pub error_message: Option<String>,

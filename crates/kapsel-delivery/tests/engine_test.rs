@@ -7,6 +7,7 @@
 
 use bytes::Bytes;
 use http::StatusCode;
+use kapsel_core::IdempotencyStrategy;
 use kapsel_testing::{http::MockResponse, TestEnv};
 use uuid::Uuid;
 
@@ -64,7 +65,7 @@ async fn delivery_engine_processes_pending_events() {
     .bind(tenant_id)
     .bind(endpoint_id)
     .bind("source-123")
-    .bind("header")
+    .bind(IdempotencyStrategy::Header)
     .bind("pending")
     .bind(serde_json::json!({}))
     .bind(b"test payload".as_slice())

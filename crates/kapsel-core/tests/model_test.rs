@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use kapsel_core::models::{
-    CircuitState, DeliveryAttempt, Endpoint, EndpointId, EventId, EventStatus, TenantId,
-    WebhookEvent,
+    BackoffStrategy, CircuitState, DeliveryAttempt, DeliveryAttemptErrorType, Endpoint, EndpointId,
+    EventId, EventStatus, HttpMethod, IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
 };
 use serde_json::json;
 use sqlx::types::Json;
@@ -37,7 +37,7 @@ fn webhook_event_model_creation_and_access() {
         tenant_id,
         endpoint_id,
         source_event_id: "evt_123".to_string(),
-        idempotency_strategy: "header".to_string(),
+        idempotency_strategy: IdempotencyStrategy::Header,
         status: EventStatus::Pending,
         failure_count: 0,
         last_attempt_at: None,
@@ -59,7 +59,7 @@ fn webhook_event_model_creation_and_access() {
     assert_eq!(webhook_event.tenant_id, tenant_id);
     assert_eq!(webhook_event.endpoint_id, endpoint_id);
     assert_eq!(webhook_event.source_event_id, "evt_123");
-    assert_eq!(webhook_event.idempotency_strategy, "header");
+    assert_eq!(webhook_event.idempotency_strategy, IdempotencyStrategy::Header);
     assert_eq!(webhook_event.status, EventStatus::Pending);
     assert_eq!(webhook_event.failure_count, 0);
     assert_eq!(webhook_event.last_attempt_at, None);
@@ -93,7 +93,7 @@ fn webhook_event_serialization_roundtrip() {
         tenant_id: TenantId::new(),
         endpoint_id: EndpointId::new(),
         source_event_id: "evt_serialize_test".to_string(),
-        idempotency_strategy: "source_id".to_string(),
+        idempotency_strategy: IdempotencyStrategy::SourceId,
         status: EventStatus::Delivering,
         failure_count: 2,
         last_attempt_at: Some(now),
@@ -211,11 +211,10 @@ fn endpoint_model_creation_and_validation() {
         url: "https://example.com/webhooks".to_string(),
         name: "Production Endpoint".to_string(),
         is_active: true,
-        signing_secret: Some("secret123".to_string()),
-        signature_header: Some("X-Webhook-Signature".to_string()),
+        signature_config: SignatureConfig::hmac_sha256("webhook_secret_123".to_string()),
         max_retries: 3,
         timeout_seconds: 30,
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Closed,
         circuit_failure_count: 0,
         circuit_success_count: 0,
@@ -235,8 +234,8 @@ fn endpoint_model_creation_and_validation() {
     assert_eq!(endpoint.url, "https://example.com/webhooks");
     assert_eq!(endpoint.name, "Production Endpoint");
     assert!(endpoint.is_active);
-    assert_eq!(endpoint.signing_secret, Some("secret123".to_string()));
-    assert_eq!(endpoint.signature_header, Some("X-Webhook-Signature".to_string()));
+    assert_eq!(endpoint.signature_config.secret(), Some("webhook_secret_123"));
+    assert_eq!(endpoint.signature_config.header(), Some("X-Webhook-Signature"));
     assert_eq!(endpoint.max_retries, 3);
     assert_eq!(endpoint.timeout_seconds, 30);
 }
@@ -255,11 +254,10 @@ fn endpoint_serialization_roundtrip() {
         url: "https://api.example.com/webhooks".to_string(),
         name: "Test Endpoint".to_string(),
         is_active: false,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 5,
         timeout_seconds: 60,
-        retry_strategy: "linear".to_string(),
+        retry_strategy: BackoffStrategy::Linear,
         circuit_state: CircuitState::Open,
         circuit_failure_count: 10,
         circuit_success_count: 2,
@@ -282,8 +280,7 @@ fn endpoint_serialization_roundtrip() {
     assert_eq!(deserialized.url, original.url);
     assert_eq!(deserialized.name, original.name);
     assert_eq!(deserialized.is_active, original.is_active);
-    assert_eq!(deserialized.signing_secret, original.signing_secret);
-    assert_eq!(deserialized.signature_header, original.signature_header);
+    assert_eq!(deserialized.signature_config, original.signature_config);
 }
 
 /// Test DeliveryAttempt model with realistic data.
@@ -310,7 +307,7 @@ fn delivery_attempt_model_with_realistic_data() {
         attempt_number: 1,
         request_url: "https://api.customer.com/webhooks".to_string(),
         request_headers,
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Post,
         response_status: Some(200),
         response_headers: Some(response_headers),
         response_body: Some("{\"received\": true}".to_string()),
@@ -325,7 +322,7 @@ fn delivery_attempt_model_with_realistic_data() {
     assert_eq!(delivery_attempt.event_id, event_id);
     assert_eq!(delivery_attempt.attempt_number, 1);
     assert_eq!(delivery_attempt.request_url, "https://api.customer.com/webhooks");
-    assert_eq!(delivery_attempt.request_method, "POST");
+    assert_eq!(delivery_attempt.request_method, HttpMethod::Post);
     assert_eq!(delivery_attempt.response_status, Some(200));
     assert_eq!(delivery_attempt.duration_ms, 250);
     assert!(delivery_attempt.error_type.is_none());
@@ -338,19 +335,19 @@ fn delivery_attempt_model_with_realistic_data() {
         attempt_number: 2,
         request_url: "https://api.customer.com/webhooks".to_string(),
         request_headers: HashMap::new(),
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Patch,
         response_status: None,
         response_headers: None,
         response_body: None,
         attempted_at: now,
         duration_ms: 5000,
-        error_type: Some("timeout".to_string()),
+        error_type: Some(DeliveryAttemptErrorType::Timeout),
         error_message: Some("Request timeout after 5s".to_string()),
     };
 
     assert_eq!(failed_attempt.attempt_number, 2);
     assert_eq!(failed_attempt.response_status, None);
-    assert_eq!(failed_attempt.error_type, Some("timeout".to_string()));
+    assert_eq!(failed_attempt.error_type, Some(DeliveryAttemptErrorType::Timeout));
     assert_eq!(failed_attempt.error_message, Some("Request timeout after 5s".to_string()));
 }
 
@@ -369,13 +366,13 @@ fn delivery_attempt_serialization_roundtrip() {
         attempt_number: 3,
         request_url: "https://hooks.example.com/receive".to_string(),
         request_headers: headers,
-        request_method: "PUT".to_string(),
+        request_method: HttpMethod::Put,
         response_status: Some(422),
         response_headers: Some(HashMap::new()),
         response_body: Some("{\"error\": \"validation failed\"}".to_string()),
         attempted_at: Utc::now(),
         duration_ms: 150,
-        error_type: Some("client_error".to_string()),
+        error_type: Some(DeliveryAttemptErrorType::ClientError),
         error_message: Some("Unprocessable Entity".to_string()),
     };
 
@@ -479,7 +476,7 @@ fn webhook_event_handles_complex_payload() {
         tenant_id,
         endpoint_id,
         source_event_id: "complex_payload_test".to_string(),
-        idempotency_strategy: "source_id".to_string(),
+        idempotency_strategy: IdempotencyStrategy::SourceId,
         status: EventStatus::Received,
         failure_count: 0,
         last_attempt_at: None,
@@ -508,7 +505,7 @@ fn webhook_event_handles_complex_payload() {
         tenant_id,
         endpoint_id,
         source_event_id: "binary_test".to_string(),
-        idempotency_strategy: "header".to_string(),
+        idempotency_strategy: IdempotencyStrategy::Header,
         status: EventStatus::Pending,
         failure_count: 0,
         last_attempt_at: None,
@@ -544,7 +541,7 @@ fn model_field_constraints_and_validation() {
         tenant_id: TenantId::new(),
         endpoint_id: EndpointId::new(),
         source_event_id: "constraint_test".to_string(),
-        idempotency_strategy: "header".to_string(),
+        idempotency_strategy: IdempotencyStrategy::Header,
         status: EventStatus::Received,
         failure_count: 0,
         last_attempt_at: None,
@@ -571,7 +568,7 @@ fn model_field_constraints_and_validation() {
         attempt_number: 1,
         request_url: "https://valid.example.com".to_string(),
         request_headers: HashMap::new(),
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Get,
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
         response_body: Some("OK".to_string()),
@@ -613,7 +610,7 @@ fn webhook_event_new_enforces_business_rules() {
     assert_eq!(empty_event.status, EventStatus::Received); // Correct initial status
     assert_eq!(empty_event.failure_count, 0); // No failures initially
     assert!(empty_event.received_at <= Utc::now()); // Reasonable timestamp
-    assert_eq!(empty_event.idempotency_strategy, "header"); // Default strategy
+    assert_eq!(empty_event.idempotency_strategy, IdempotencyStrategy::Header); // Default strategy
 
     // Test normal payload
     let normal_event = WebhookEvent::new(
@@ -695,11 +692,10 @@ fn endpoint_circuit_breaker_state_transitions() {
         url: "https://healthy.example.com".to_string(),
         name: "Healthy Endpoint".to_string(),
         is_active: true,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 3,
         timeout_seconds: 30,
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Closed,
         circuit_failure_count: 0,
         circuit_success_count: 5,
@@ -725,11 +721,10 @@ fn endpoint_circuit_breaker_state_transitions() {
         url: "https://failing.example.com".to_string(),
         name: "Failing Endpoint".to_string(),
         is_active: true,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 3,
         timeout_seconds: 30,
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Open,
         circuit_failure_count: 10,
         circuit_success_count: 0,
@@ -757,11 +752,10 @@ fn endpoint_circuit_breaker_state_transitions() {
         url: "https://recovering.example.com".to_string(),
         name: "Recovering Endpoint".to_string(),
         is_active: true,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 3,
         timeout_seconds: 30,
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::HalfOpen,
         circuit_failure_count: 5,
         circuit_success_count: 2,
@@ -795,11 +789,13 @@ fn endpoint_retry_configuration_validation() {
         url: "https://api.example.com".to_string(),
         name: "API Endpoint".to_string(),
         is_active: true,
-        signing_secret: Some("secret".to_string()),
-        signature_header: Some("X-Signature".to_string()),
+        signature_config: SignatureConfig::hmac_sha256_with_header(
+            "secret".to_string(),
+            "X-Signature".to_string(),
+        ),
         max_retries: 3,
         timeout_seconds: 30,
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Closed,
         circuit_failure_count: 0,
         circuit_success_count: 0,
@@ -818,7 +814,7 @@ fn endpoint_retry_configuration_validation() {
     assert!(reasonable_endpoint.max_retries <= 10); // Reasonable upper bound
     assert!(reasonable_endpoint.timeout_seconds > 0);
     assert!(reasonable_endpoint.timeout_seconds <= 300); // Max 5 minutes
-    assert!(!reasonable_endpoint.retry_strategy.is_empty());
+    assert_eq!(reasonable_endpoint.retry_strategy, BackoffStrategy::Exponential);
 
     // Test edge case configurations
     let aggressive_endpoint = Endpoint {
@@ -827,11 +823,10 @@ fn endpoint_retry_configuration_validation() {
         url: "https://critical.example.com".to_string(),
         name: "Critical Endpoint".to_string(),
         is_active: true,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 10,      // High retry count for critical endpoints
         timeout_seconds: 120, // Longer timeout
-        retry_strategy: "exponential".to_string(),
+        retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Closed,
         circuit_failure_count: 0,
         circuit_success_count: 0,
@@ -854,11 +849,10 @@ fn endpoint_retry_configuration_validation() {
         url: "https://simple.example.com".to_string(),
         name: "Simple Endpoint".to_string(),
         is_active: true,
-        signing_secret: None,
-        signature_header: None,
+        signature_config: SignatureConfig::None,
         max_retries: 1,      // Minimal retries
         timeout_seconds: 10, // Short timeout
-        retry_strategy: "linear".to_string(),
+        retry_strategy: BackoffStrategy::Linear,
         circuit_state: CircuitState::Closed,
         circuit_failure_count: 0,
         circuit_success_count: 0,
@@ -892,7 +886,7 @@ fn delivery_attempt_timing_constraints() {
         attempt_number: 1,
         request_url: "https://fast.example.com".to_string(),
         request_headers: HashMap::new(),
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Post,
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
         response_body: Some("OK".to_string()),
@@ -914,7 +908,7 @@ fn delivery_attempt_timing_constraints() {
         attempt_number: 2,
         request_url: "https://slow.example.com".to_string(),
         request_headers: HashMap::new(),
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Post,
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
         response_body: Some("Processed".to_string()),
@@ -935,13 +929,13 @@ fn delivery_attempt_timing_constraints() {
         attempt_number: 3,
         request_url: "https://timeout.example.com".to_string(),
         request_headers: HashMap::new(),
-        request_method: "POST".to_string(),
+        request_method: HttpMethod::Get,
         response_status: None,
         response_headers: None,
         response_body: None,
         attempted_at: now,
         duration_ms: 30000, // Timed out
-        error_type: Some("timeout".to_string()),
+        error_type: Some(DeliveryAttemptErrorType::Timeout),
         error_message: Some("Request timed out after 30s".to_string()),
     };
 
@@ -983,11 +977,13 @@ fn domain_model_invariants_and_edge_cases() {
         url: "https://a.co/w".to_string(), // Very short valid URL
         name: "X".to_string(),             // Single character name
         is_active: false,                  // Inactive endpoint
-        signing_secret: Some("x".to_string()), // Minimal secret
-        signature_header: Some("X".to_string()), // Minimal header
-        max_retries: 0,                    // No retries
-        timeout_seconds: 1,                // Minimal timeout
-        retry_strategy: "none".to_string(),
+        signature_config: SignatureConfig::hmac_sha256_with_header(
+            "minimal-secret".to_string(),
+            "X".to_string(),
+        ),
+        max_retries: 0,     // No retries
+        timeout_seconds: 1, // Minimal timeout
+        retry_strategy: BackoffStrategy::Fixed,
         circuit_state: CircuitState::Open,
         circuit_failure_count: u32::MAX, // Maximum failures
         circuit_success_count: 0,
@@ -1021,7 +1017,7 @@ fn domain_model_invariants_and_edge_cases() {
             }
             headers
         },
-        request_method: "PATCH".to_string(), // Less common method
+        request_method: HttpMethod::Patch, // Less common method
         response_status: Some(418), // I'm a teapot - unusual but valid
         response_headers: Some(HashMap::new()),
         response_body: Some("🫖".to_string()), // Unicode content

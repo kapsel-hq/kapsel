@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use kapsel_attestation::{LeafData, MerkleService, SigningService};
+use kapsel_core::IdempotencyStrategy;
 use kapsel_testing::database::TestDatabase;
 use uuid::Uuid;
 
@@ -46,7 +47,7 @@ async fn create_test_delivery_attempt(
     .bind(tenant_id)
     .bind(endpoint_id)
     .bind("test-source-event")
-    .bind("header")
+    .bind(IdempotencyStrategy::Header)
     .bind(serde_json::json!({}))
     .bind(&b"test payload"[..])
     .bind("application/json")

@@ -12,6 +12,7 @@ use std::{
 };
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use kapsel_core::IdempotencyStrategy;
 use kapsel_testing::TestEnv;
 use serde_json::json;
 use tokio::runtime::Runtime;
@@ -373,7 +374,7 @@ async fn ingest_webhook(env: &TestEnv, webhook: TestWebhook) {
     .bind(Uuid::new_v4())
     .bind(Uuid::new_v4())
     .bind(webhook.idempotency_key)
-    .bind("header")
+    .bind(IdempotencyStrategy::Header)
     .bind("pending")
     .bind(0i32)
     .bind(json!({}))

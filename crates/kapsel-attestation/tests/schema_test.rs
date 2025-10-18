@@ -3,6 +3,7 @@
 //! Tests database table structure, constraints, and relationships
 //! for attestation components including Merkle leaves and signed tree heads.
 
+use kapsel_core::IdempotencyStrategy;
 use kapsel_testing::database::TestDatabase;
 
 #[tokio::test]
@@ -130,7 +131,7 @@ async fn create_test_delivery_attempt(
     .bind(tenant_id)
     .bind(endpoint_id)
     .bind("test-event")
-    .bind("header")
+    .bind(IdempotencyStrategy::Header)
     .bind(serde_json::json!({}))
     .bind(&b"test"[..])
     .bind("application/json")

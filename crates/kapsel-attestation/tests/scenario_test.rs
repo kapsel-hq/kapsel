@@ -9,7 +9,7 @@ use chrono::Utc;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
 use kapsel_core::{
     models::{EventId, EventStatus, TenantId},
-    EventHandler, MulticastEventHandler,
+    EventHandler, IdempotencyStrategy, MulticastEventHandler,
 };
 use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
 use kapsel_testing::TestEnv;
@@ -318,13 +318,14 @@ async fn setup_webhook_event(env: &TestEnv, webhook_url: &str) -> (TenantId, uui
         INSERT INTO webhook_events (
             id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
             status, headers, body, content_type, payload_size, received_at
-        ) VALUES ($1, $2, $3, 'test-source-event', 'source_id', 'pending',
+        ) VALUES ($1, $2, $3, 'test-source-event', $4, 'pending',
                   '{}', 'test payload', 'application/json', 12, NOW())
         "#,
     )
-    .bind(event_id.0)
-    .bind(tenant_id.0)
+    .bind(event_id)
+    .bind(tenant_id)
     .bind(endpoint_id)
+    .bind(IdempotencyStrategy::SourceId)
     .execute(env.pool())
     .await
     .expect("should insert webhook event");

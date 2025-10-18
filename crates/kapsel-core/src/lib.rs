@@ -17,6 +17,6 @@ pub use events::{
     MulticastEventHandler, NoOpEventHandler,
 };
 pub use models::{
-    CircuitState, DeliveryAttempt, Endpoint, EndpointId, EventId, EventStatus, TenantId,
-    WebhookEvent,
+    BackoffStrategy, CircuitState, DeliveryAttempt, DeliveryAttemptErrorType, Endpoint, EndpointId,
+    EventId, EventStatus, HttpMethod, IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
 };
