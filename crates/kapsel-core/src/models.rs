@@ -293,7 +293,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for EventStatus {
 ///
 /// Events are deduplicated using `source_event_id` within a 24-hour window.
 /// This prevents duplicate processing when source systems retry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookEvent {
     /// Unique identifier for this event.
     pub id: EventId,
@@ -466,7 +466,7 @@ impl WebhookEvent {
 /// Defines where and how to deliver webhooks. Each endpoint has its own
 /// retry policy, timeout settings, and circuit breaker to prevent cascading
 /// failures.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
     /// Unique identifier for this endpoint.
     pub id: EndpointId,
@@ -599,7 +599,7 @@ impl fmt::Display for CircuitState {
 ///
 /// Captures full request/response details for debugging and compliance.
 /// Immutable once created - we never modify audit records.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryAttempt {
     /// Unique identifier for this attempt.
     pub id: Uuid,

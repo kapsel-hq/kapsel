@@ -160,6 +160,13 @@ pub trait EventHandler: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Default)]
 pub struct NoOpEventHandler;
 
+impl NoOpEventHandler {
+    /// Creates a new no-op event handler.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 #[async_trait::async_trait]
 impl EventHandler for NoOpEventHandler {
     async fn handle_event(&self, _event: DeliveryEvent) {
@@ -172,7 +179,7 @@ impl EventHandler for NoOpEventHandler {
 /// This allows multiple services to subscribe to delivery events without
 /// the delivery system needing to know about each subscriber individually.
 /// Events are delivered to all subscribers concurrently.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MulticastEventHandler {
     handlers: Vec<Arc<dyn EventHandler>>,
 }
