@@ -1,34 +1,40 @@
 # Kapsel Code Style Guide
 
-Last Updated: 2025-01-03
+## Philosophy
 
-## Overview
+Code is written once and read hundreds of times. Kapsel prioritizes clarity, type safety, and performance without sacrificing maintainability. Our style builds on standard Rust idioms documented in the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), filling gaps specific to webhook reliability engineering.
 
-This document establishes coding standards for Kapsel development. The goal is consistent, maintainable, and performant code that follows Rust idioms while incorporating battle-tested patterns from high-performance systems.
+**Guiding principles:**
 
-## Naming Conventions (TIGERSTYLE)
+- **Types prevent bugs** - Use the type system to make illegal states unrepresentable
+- **Errors are values** - All failure paths return `Result`, never panic in production
+- **Performance by design** - Zero-copy operations, connection pooling, lock-free concurrency
+- **Clarity over cleverness** - Code should be immediately understandable to competent Rust developers
+
+## Naming Conventions
+
+Kapsel follows standard Rust naming with specific patterns for webhook reliability concerns.
 
 ### Functions: `verb_object` Pattern
 
-Functions should describe what they do using active verbs followed by the object they operate on:
+Functions describe actions using active verbs followed by the object they operate on:
 
 ```rust
 // GOOD: Clear action + target
 fn create_webhook_event(payload: &[u8]) -> WebhookEvent
-fn validate_signature(payload: &[u8], secret: &str) -> Result<bool>
+fn validate_signature(payload: &[u8], secret: &str) -> Result<()>
 fn claim_pending_events(pool: &PgPool) -> Result<Vec<WebhookEvent>>
 fn deliver_webhook(event: &WebhookEvent) -> Result<()>
 
-// BAD: Unclear, passive, or non-standard patterns
+// BAD: Unclear, passive, or non-standard
 fn webhookCreation(payload: &[u8]) -> WebhookEvent  // camelCase
 fn webhook_deliver(event: &WebhookEvent) -> Result<()>  // object_verb
-fn doValidation(payload: &[u8]) -> Result<bool>  // generic verb
-fn signature_check(payload: &[u8]) -> Result<bool>  // noun instead of verb
+fn doValidation(payload: &[u8]) -> Result<()>  // generic verb
 ```
 
-### Predicates: `is_`, `has_`, `can_`
+### Boolean Predicates: `is_`, `has_`, `can_`
 
-Boolean functions should use clear predicate prefixes:
+Boolean functions use clear predicate prefixes:
 
 ```rust
 // GOOD: Clear boolean predicates
@@ -37,77 +43,113 @@ fn has_expired(&self, now: DateTime<Utc>) -> bool
 fn can_retry(&self, max_attempts: u32) -> bool
 fn is_terminal_state(&self) -> bool
 
-// BAD: Missing predicates or unclear
+// BAD: Missing predicates
 fn retryable(&self) -> bool
 fn expired(&self) -> bool
-fn check_terminal(&self) -> bool
 ```
 
-### NO get*/set* Prefixes
+### No `get_`/`set_` Prefixes
 
-Rust convention omits get*/set* prefixes:
+Rust convention omits Java-style prefixes. The operation type determines the name:
+
+**For direct field access:**
 
 ```rust
-// GOOD: Rust idiomatic accessors
-fn status(&self) -> EventStatus
-fn update_status(&mut self, status: EventStatus)
-fn body(&self) -> &[u8]
-fn body_bytes(&self) -> Bytes
+pub struct WebhookEvent {
+    id: EventId,
+    body: Vec<u8>,
+}
 
-// BAD: Unnecessary get_/set_ prefixes
-fn get_status(&self) -> EventStatus
-fn set_status(&mut self, status: EventStatus)
-fn get_body(&self) -> &[u8]
+impl WebhookEvent {
+    // GOOD: Simple accessor, same name as field
+    pub fn id(&self) -> EventId {
+        self.id
+    }
+
+    // GOOD: Mutable accessor
+    pub fn body_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.body
+    }
+}
+
+// BAD: Unnecessary prefixes
+fn get_id(&self) -> EventId
+fn set_body(&mut self, body: Vec<u8>)
+```
+
+**For computed values:**
+
+When computation is involved, use `verb_object` pattern:
+
+```rust
+// GOOD: Computation clear from verb
+fn formatted_id(&self) -> String {
+    format!("evt_{}", self.id.0)
+}
+
+fn body_bytes(&self) -> Bytes {
+    Bytes::from(self.body.as_slice())
+}
+
+fn compute_signature(&self, secret: &str) -> String {
+    // HMAC computation
+}
+
+// BAD: Looks like simple field access
+fn signature(&self, secret: &str) -> String {
+    // Expensive computation hidden
+}
 ```
 
 ### Type Conversions: `as_*`, `into_*`, `to_*`
 
-Follow Rust std conventions for conversions:
+Follow standard library conventions:
 
 ```rust
 // GOOD: Standard conversion patterns
-fn as_bytes(&self) -> &[u8]           // Cheap reference conversion
-fn into_bytes(self) -> Vec<u8>        // Owned conversion
-fn to_string(&self) -> String         // Expensive conversion
+fn as_bytes(&self) -> &[u8]           // Cheap reference cast
+fn into_bytes(self) -> Vec<u8>        // Consuming conversion
+fn to_string(&self) -> String         // Expensive allocation
 
-// Type-specific conversions
-fn as_event_id(&self) -> EventId      // Cheap wrapper
+// GOOD: Type-specific wrappers
+fn as_event_id(&self) -> EventId      // Cheap newtype wrap
 fn into_uuid(self) -> Uuid            // Extract inner value
-fn to_json(&self) -> serde_json::Value // Serialize
+fn to_json(&self) -> Value            // Serialize
 ```
 
-### Optional Types: `maybe_*`
+### Fallible Operations
 
-Use `maybe_` prefix for functions that return `Option<T>`:
-
-```rust
-// GOOD: Clear optional semantics
-fn maybe_parse_header(value: &str) -> Option<DateTime<Utc>>
-fn maybe_extract_tenant_id(headers: &HeaderMap) -> Option<TenantId>
-
-// ALSO ACCEPTABLE: Standard try_ prefix for Result
-fn try_parse_header(value: &str) -> Result<DateTime<Utc>, ParseError>
-```
-
-### Result Types: `try_*`
-
-Use `try_` prefix for fallible operations:
+**The `Result<T, E>` return type is the indicator of fallibility.** Function names describe the action, not error handling:
 
 ```rust
-// GOOD: Clear fallible operations
+// GOOD: Name describes action, Result indicates fallibility
+fn deliver_webhook(event: &WebhookEvent) -> Result<()>
+fn parse_endpoint_url(url: &str) -> Result<Url>
+fn connect_database(url: &str) -> Result<PgPool>
+
+// BAD: Redundant try_ prefix
 fn try_deliver_webhook(event: &WebhookEvent) -> Result<()>
 fn try_parse_endpoint_url(url: &str) -> Result<Url>
-fn try_connect_database(url: &str) -> Result<PgPool>
+```
 
-// Exception: Standard new() constructors can be fallible
-fn new(config: Config) -> Result<Self, Error>
+**Exception**: Use `try_` prefix only when providing a non-panicking alternative to a function that would panic:
+
+```rust
+// This pattern is rare in Kapsel (we forbid panics in production)
+fn parse_id(s: &str) -> EventId {
+    // Panics on invalid input
+}
+
+fn try_parse_id(s: &str) -> Result<EventId, ParseError> {
+    // Non-panicking alternative
+}
 ```
 
 ## Error Handling
 
 ### Library Code: Use `thiserror`
 
-For libraries (`kapsel-core`, `kapsel-delivery`), use `thiserror` for structured errors:
+For reusable libraries (`kapsel-core`, `kapsel-delivery`), use `thiserror` for structured errors:
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -121,11 +163,17 @@ pub enum DeliveryError {
     #[error("webhook delivery failed after {attempts} attempts")]
     RetriesExhausted { attempts: u32 },
 }
+
+impl DeliveryError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::NetworkError { .. } | Self::Timeout { .. })
+    }
+}
 ```
 
 ### Application Code: Use `anyhow`
 
-For applications (`kapsel-api`), use `anyhow::Result` and `.context()`:
+For application code (`kapsel-api`), use `anyhow::Result` with `.context()`:
 
 ```rust
 async fn ingest_webhook(payload: Bytes) -> anyhow::Result<EventId> {
@@ -145,109 +193,17 @@ async fn ingest_webhook(payload: Bytes) -> anyhow::Result<EventId> {
 Production code must never use `unwrap()`, `expect()`, or `panic!()`:
 
 ```rust
-// BAD: Can panic in production
+// BAD: Can panic
 let value = map.get(&key).unwrap();
 let number = string.parse::<u32>().expect("invalid number");
 
-// GOOD: Handle errors gracefully
-let value = map.get(&key).ok_or_else(|| anyhow!("key not found"))?;
+// GOOD: Explicit error handling
+let value = map.get(&key).ok_or_else(|| anyhow!("key not found: {key}"))?;
 let number = string.parse::<u32>()
     .with_context(|| format!("failed to parse number: {string}"))?;
 ```
 
 **Exception**: Test code may use `unwrap()` and `expect()` for clarity.
-
-### Retry Classification
-
-Errors must implement retry logic:
-
-```rust
-impl DeliveryError {
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            // Retryable: temporary failures
-            Self::NetworkError { .. }
-            | Self::Timeout { .. }
-            | Self::ServerError { .. } => true,
-
-            // Non-retryable: permanent failures
-            Self::ClientError { .. }
-            | Self::RetriesExhausted { .. } => false,
-        }
-    }
-}
-```
-
-## Documentation Standards
-
-### Module-Level Documentation
-
-Every public module needs comprehensive documentation:
-
-````rust
-//! Webhook delivery engine with reliability guarantees.
-//!
-//! This module orchestrates webhook delivery using a pool of async workers
-//! that claim events from PostgreSQL and deliver them to configured endpoints.
-//! Integrates circuit breakers, retry logic, and graceful shutdown.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌────────────────┐   ┌──────────────┐   ┌─────────────┐
-//! │ DeliveryEngine │──▶│ Worker Pool  │──▶│ HTTP Client │
-//! └────────────────┘   └──────────────┘   └─────────────┘
-//! ```
-//!
-//! # Example
-//!
-//! ```rust
-//! let engine = DeliveryEngine::new(pool, config)?;
-//! engine.start().await?;
-//! ```
-````
-
-### Function Documentation
-
-Document WHY, not WHAT:
-
-```rust
-/// Claims pending events from the database for processing.
-///
-/// Uses `FOR UPDATE SKIP LOCKED` to enable lock-free work distribution
-/// across multiple workers. This PostgreSQL-specific feature allows
-/// concurrent workers to claim different events without blocking each other.
-///
-/// Returns up to `batch_size` events ordered by `received_at` to ensure
-/// FIFO processing within each endpoint.
-async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>>
-```
-
-### Explain Non-Obvious Optimizations
-
-```rust
-// PostgreSQL's SKIP LOCKED allows multiple workers to claim
-// rows without blocking each other, giving us free work distribution
-let query = sqlx::query!(
-    "SELECT * FROM webhook_events
-     WHERE status = 'pending'
-     ORDER BY received_at ASC
-     LIMIT $1
-     FOR UPDATE SKIP LOCKED"
-);
-```
-
-### Database Constraints
-
-Document critical constraints that affect application logic:
-
-```rust
-/// Size of the payload in bytes.
-///
-/// Must be between 1 and 10MB (10485760 bytes) to satisfy database
-/// CHECK constraint. Even empty payloads are stored as size 1.
-pub payload_size: i32,
-```
 
 ## Type Safety
 
@@ -256,35 +212,57 @@ pub payload_size: i32,
 Prevent ID confusion with type-safe wrappers:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// GOOD: Derive traits for ergonomics
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash,
+    serde::Serialize, serde::Deserialize,
+    sqlx::Type,
+)]
+#[serde(transparent)]  // Serialize as the inner type
 pub struct EventId(pub Uuid);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct TenantId(pub Uuid);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EndpointId(pub Uuid);
+impl EventId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
 
-// This prevents bugs like:
+// Convenience conversions
+impl From<Uuid> for EventId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<EventId> for Uuid {
+    fn from(id: EventId) -> Self {
+        id.0
+    }
+}
+
+// Type safety prevents bugs:
 fn process_event(event_id: EventId, tenant_id: TenantId) {
-    // Compiler error if we swap the arguments:
-    // process_event(tenant_id, event_id); // ❌ Won't compile
+    // Compiler prevents swapping arguments
 }
 ```
 
 ### Make Illegal States Unrepresentable
 
-Use the type system to enforce invariants:
+Use enums to enforce state machines:
 
 ```rust
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventStatus {
     Received,
     Pending,
     Delivering,
-    Delivered,    // Terminal state
-    Failed,       // Terminal state
-    DeadLetter,   // Terminal state
+    Delivered,    // Terminal
+    Failed,       // Terminal
+    DeadLetter,   // Terminal
 }
 
 impl EventStatus {
@@ -292,28 +270,59 @@ impl EventStatus {
         matches!(self, Self::Delivered | Self::Failed | Self::DeadLetter)
     }
 
-    pub fn can_retry(&self) -> bool {
-        matches!(self, Self::Pending | Self::Failed)
+    pub fn can_transition_to(&self, target: EventStatus) -> bool {
+        use EventStatus::*;
+        matches!(
+            (self, target),
+            (Received, Pending)
+                | (Pending, Delivering)
+                | (Delivering, Delivered)
+                | (Delivering, Failed)
+                | (Failed, DeadLetter)
+        )
     }
 }
 ```
 
 ## Performance Guidelines
 
-### Zero-Copy Operations
+### Zero-Copy Operations with `Bytes`
 
-Use `Bytes` for payload handling:
+`Bytes` enables cheap cloning through reference counting. The key is to receive `Bytes` at system boundaries and pass it through:
 
 ```rust
-// GOOD: Zero-copy byte handling
+// GOOD: Receive Bytes and pass it along
+async fn ingest_webhook(payload: Bytes) -> anyhow::Result<()> {
+    // Clone is cheap (atomic refcount increment, no data copy)
+    let payload_for_analytics = payload.clone();
+    tokio::spawn(async move {
+        process_analytics(payload_for_analytics).await;
+    });
+
+    // Original payload continues processing
+    let event = WebhookEvent::new(payload)?;
+    persist_event(&event).await
+}
+
+// Store Bytes directly
 pub struct WebhookEvent {
-    pub body: Vec<u8>,  // Database storage format
+    pub body: Bytes,
 }
 
 impl WebhookEvent {
-    /// Get the body as Bytes for zero-copy operations.
+    pub fn body(&self) -> Bytes {
+        self.body.clone()  // Cheap clone
+    }
+}
+
+// BAD: Converting Vec to Bytes loses the zero-copy benefit
+pub struct WebhookEvent {
+    pub body: Vec<u8>,
+}
+
+impl WebhookEvent {
     pub fn body_bytes(&self) -> Bytes {
-        Bytes::from(self.body.clone())
+        Bytes::from(self.body.clone())  // Full data copy!
     }
 }
 ```
@@ -323,21 +332,47 @@ impl WebhookEvent {
 Use prepared statements and connection pooling:
 
 ```rust
-// GOOD: Prepared statement with parameter binding
+// GOOD: Parameterized query with type safety
 sqlx::query!(
     "INSERT INTO webhook_events (id, tenant_id, body) VALUES ($1, $2, $3)",
     event.id.0,
     event.tenant_id.0,
-    event.body
+    event.body.as_ref()
 )
 .execute(&pool)
 .await?;
 
-// BAD: String interpolation (SQL injection risk + no statement reuse)
+// BAD: String interpolation (SQL injection + no statement reuse)
 let query = format!(
     "INSERT INTO webhook_events (id, tenant_id) VALUES ('{}', '{}')",
     event.id, event.tenant_id
 );
+```
+
+### Work Distribution with PostgreSQL
+
+Use `SKIP LOCKED` for lock-free concurrency:
+
+```rust
+// Claim events without blocking other workers
+sqlx::query_as!(
+    WebhookEvent,
+    r#"
+    UPDATE webhook_events
+    SET status = 'delivering'
+    WHERE id IN (
+        SELECT id FROM webhook_events
+        WHERE status = 'pending'
+        ORDER BY received_at ASC
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+    )
+    RETURNING *
+    "#,
+    batch_size
+)
+.fetch_all(&pool)
+.await?
 ```
 
 ### Async Best Practices
@@ -348,23 +383,65 @@ Prefer message passing over shared state:
 // GOOD: Channel-based communication
 let (tx, mut rx) = mpsc::channel::<WebhookEvent>(100);
 
-// Worker sends events
+// Producer
 tx.send(event).await?;
 
-// Consumer processes events
+// Consumer
 while let Some(event) = rx.recv().await {
     process_event(event).await?;
 }
 
-// AVOID: Shared mutable state with locks
+// AVOID: Locks in async code
 let events = Arc<Mutex<Vec<WebhookEvent>>>::new(Vec::new());
+```
+
+## Documentation Standards
+
+### Module-Level Documentation
+
+Every public module needs documentation explaining its purpose:
+
+```rust
+//! Webhook delivery engine with reliability guarantees.
+//!
+//! Orchestrates delivery using a pool of async workers that claim events
+//! from PostgreSQL and deliver them to configured endpoints. Integrates
+//! circuit breakers, retry logic, and graceful shutdown.
+```
+
+### Function Documentation
+
+Document WHY, not WHAT. Focus on non-obvious behavior:
+
+```rust
+/// Claims pending events from the database for processing.
+///
+/// Uses `FOR UPDATE SKIP LOCKED` to enable lock-free work distribution.
+/// This PostgreSQL-specific feature allows concurrent workers to claim
+/// different events without blocking each other.
+///
+/// Returns up to `batch_size` events ordered by `received_at` to ensure
+/// FIFO processing within each endpoint.
+async fn claim_pending_events(&self, batch_size: usize) -> Result<Vec<WebhookEvent>>
+```
+
+### Database Constraints
+
+Document constraints that affect application logic:
+
+```rust
+/// Size of the payload in bytes.
+///
+/// Must be between 1 and 10MB (10485760 bytes) per database CHECK constraint.
+/// Even empty payloads are stored as size 1.
+pub payload_size: i32,
 ```
 
 ## Testing Standards
 
 ### Test Naming
 
-Tests should describe the behavior being tested:
+Tests describe behavior being verified:
 
 ```rust
 #[tokio::test]
@@ -377,43 +454,20 @@ async fn webhook_ingestion_rejects_invalid_hmac_signature() {}
 async fn delivery_worker_respects_circuit_breaker_open_state() {}
 ```
 
-### Use Test Fixtures
-
-Create reusable test helpers:
-
-```rust
-impl TestEnv {
-    /// Creates a test tenant with default settings.
-    pub async fn create_tenant(&self, name: &str) -> Result<TenantId> {
-        let tenant_id = TenantId::new();
-        sqlx::query!(
-            "INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)",
-            tenant_id.0,
-            name,
-            "enterprise"
-        )
-        .execute(&self.db.pool())
-        .await?;
-
-        Ok(tenant_id)
-    }
-}
-```
-
 ### Deterministic Testing
 
-Use controlled time for deterministic tests:
+Always use `TestClock` for time-dependent operations:
 
 ```rust
 #[tokio::test]
 async fn exponential_backoff_timing_is_deterministic() {
     let env = TestEnv::new().await?;
 
-    // Use test clock, not real time
+    // GOOD: Use test clock
     env.clock.advance(Duration::from_secs(1));
 
-    let retry_at = env.clock.now() + Duration::from_secs(2);
-    assert_eq!(retry_at, expected_time);
+    // BAD: Non-deterministic real time
+    // tokio::time::sleep(Duration::from_secs(1)).await;
 }
 ```
 
@@ -424,181 +478,51 @@ Verify invariants with generated inputs:
 ```rust
 proptest! {
     #[test]
-    fn retry_count_is_bounded(
+    fn retry_count_never_exceeds_maximum(
         failures in 0u32..100,
         max_retries in 1u32..20
     ) {
         let attempts = simulate_retries(failures, max_retries);
-        prop_assert!(attempts <= max_retries + 1); // +1 for initial attempt
+        prop_assert!(attempts <= max_retries + 1);
     }
-}
-```
-
-## Module Organization
-
-### File Naming
-
-Files should match their primary responsibility:
-
-```
-crates/kapsel-delivery/src/
-├── worker.rs           # Individual worker logic
-├── worker_pool.rs      # Pool management
-├── circuit.rs          # Circuit breaker implementation
-├── retry.rs            # Retry logic and backoff
-├── client.rs           # HTTP delivery client
-└── error.rs            # Error types
-```
-
-### Re-exports
-
-Keep public APIs clean with selective re-exports:
-
-```rust
-// lib.rs
-pub use error::{DeliveryError, Result};
-pub use worker::{DeliveryConfig, DeliveryEngine};
-pub use worker_pool::WorkerPool;
-
-// Don't expose internal implementation details
-pub(crate) use client::DeliveryClient;
-```
-
-### Dependency Direction
-
-Follow dependency inversion principle:
-
-```
-┌─────────────────┐
-│ Application     │ (kapsel-api)
-├─────────────────┤
-│ Domain          │ (kapsel-core)
-├─────────────────┤
-│ Infrastructure  │ (kapsel-testing)
-└─────────────────┘
-```
-
-Higher layers depend on lower layers, not vice versa.
-
-## Database Patterns
-
-### Idempotency
-
-All database operations that might be retried must be idempotent:
-
-```rust
-// GOOD: ON CONFLICT handles duplicate inserts
-sqlx::query!(
-    "INSERT INTO webhook_events (...) VALUES (...)
-     ON CONFLICT (tenant_id, endpoint_id, source_event_id) DO NOTHING"
-)
-.execute(&pool)
-.await?;
-```
-
-### Work Distribution
-
-Use PostgreSQL-specific features for lock-free concurrency:
-
-```rust
-// Claim work without blocking other workers
-sqlx::query_as!(
-    WebhookEvent,
-    "UPDATE webhook_events
-     SET status = 'delivering'
-     WHERE id IN (
-         SELECT id FROM webhook_events
-         WHERE status = 'pending'
-         ORDER BY received_at ASC
-         LIMIT $1
-         FOR UPDATE SKIP LOCKED
-     )
-     RETURNING *"
-)
-.bind(batch_size)
-.fetch_all(&pool)
-.await?
-```
-
-### Schema Constraints
-
-Use database constraints to enforce invariants:
-
-```sql
--- Payload size constraint
-CHECK (payload_size > 0 AND payload_size <= 10485760)
-
--- Status transitions
-CHECK (status IN ('received', 'pending', 'delivering', 'delivered', 'failed'))
-
--- Uniqueness for idempotency
-UNIQUE(tenant_id, endpoint_id, source_event_id)
-```
-
-## Performance Considerations
-
-### Memory Management
-
-Avoid unnecessary allocations:
-
-```rust
-// GOOD: Reuse buffers
-let mut buffer = Vec::with_capacity(1024);
-for item in items {
-    buffer.clear();
-    serialize_into(&mut buffer, &item)?;
-    process_buffer(&buffer)?;
-}
-
-// BAD: Allocate per iteration
-for item in items {
-    let buffer = serialize(&item)?;  // New allocation each time
-    process_buffer(&buffer)?;
-}
-```
-
-### Database Connection Pooling
-
-Configure pools for your workload:
-
-```rust
-let pool = PgPoolOptions::new()
-    .max_connections(20)                    // Adjust for your load
-    .acquire_timeout(Duration::from_secs(5)) // Fail fast
-    .idle_timeout(Duration::from_secs(300))  // Release unused connections
-    .connect(&database_url)
-    .await?;
-```
-
-### Batching
-
-Process items in batches for efficiency:
-
-```rust
-const BATCH_SIZE: usize = 100;
-
-let events = claim_events(&pool, BATCH_SIZE).await?;
-for chunk in events.chunks(BATCH_SIZE) {
-    process_batch(chunk).await?;
 }
 ```
 
 ## Commit Message Format
 
-Use conventional commits, this allows us to create changelogs:
+Use Conventional Commits for automated changelog generation:
 
 ```
-type(scope): description
+<type>(<scope>): <description>
 
+[optional body]
+```
+
+**Types:**
+
+- `feat`: New feature
+- `fix`: Bug fix
+- `perf`: Performance improvement
+- `refactor`: Code change (no behavior change)
+- `test`: Test changes
+- `docs`: Documentation only
+- `chore`: Build process, tools, dependencies
+
+**Examples:**
+
+```
 feat(delivery): implement exponential backoff retry logic
+
 fix(api): handle empty payload edge case
+
 docs(style): update naming conventions
+
 test(delivery): add property tests for retry bounds
-refactor(core): extract event validation logic
-perf(db): optimize event claiming query with index
+
+perf(db): optimize event claiming query with composite index
 ```
 
-Descriptions should be kept straight to the point.
+A good commit message and description:
 
 ```
 perf(db): optimize that thing again
@@ -609,28 +533,3 @@ solution was this.
 - Changed x to y, because z
 - Another relevant change
 ```
-
-## Code Review Checklist
-
-Before submitting:
-
-- [ ] All public functions have rustdoc comments
-- [ ] Error handling uses Result types, no panics
-- [ ] Tests cover the happy path and edge cases
-- [ ] Performance considerations documented
-- [ ] Database operations are idempotent
-- [ ] Naming follows TIGERSTYLE conventions
-- [ ] No clippy warnings with `-- -D warnings`
-- [ ] No `unwrap()` in production code paths
-
-## Enforcement
-
-These standards are enforced through:
-
-- **Pre-commit hooks**: Format and lint checks
-- **CI pipeline**: Comprehensive test suite
-- **Code review**: Manual verification of standards
-- **clippy configuration**: Custom lints for project rules
-- **Documentation**: This guide and inline comments
-
-Follow these standards to maintain Kapsel's reputation for quality and reliability.

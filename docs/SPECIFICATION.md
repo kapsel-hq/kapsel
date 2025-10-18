@@ -1,12 +1,12 @@
 # Technical Specification
 
-This document defines the functional and non-functional requirements for Kapsel's webhook reliability service. These requirements guide all implementation decisions while leaving architectural flexibility.
+This document defines functional and non-functional requirements for Kapsel. Requirements use standard RFC 2119 keywords (MUST, SHOULD, MAY).
 
 **Related Documents:**
 
-- [System Overview](OVERVIEW.md) - Architecture and design philosophy
-- [Implementation Status](IMPLEMENTATION_STATUS.md) - Current development status
-- [Testing Strategy](TESTING_STRATEGY.md) - Quality assurance approach
+- [Architecture](ARCHITECTURE.md) - System design and components
+- [Current Status](STATUS.md) - Implementation progress
+- [Testing Strategy](TESTING_STRATEGY.md) - Quality assurance
 
 ## Functional Requirements
 
@@ -14,196 +14,120 @@ This document defines the functional and non-functional requirements for Kapsel'
 
 #### FR-1: Webhook Ingestion
 
-- **FR-1.1**: Accept HTTP POST requests at unique, per-endpoint URLs
-- **FR-1.2**: Support payloads up to 10MB in size
-- **FR-1.3**: Preserve all headers from the original webhook
-- **FR-1.4**: Return 200 OK only after PostgreSQL commit (p99 < 50ms)
-- **FR-1.5**: Support Content-Type: application/json, application/x-www-form-urlencoded, text/plain
+- **FR-1.1**: MUST accept HTTP POST at `/ingest/:endpoint_id`
+- **FR-1.2**: MUST support payloads up to 10MB
+- **FR-1.3**: MUST preserve all request headers
+- **FR-1.4**: MUST return 200 OK only after database commit
+- **FR-1.5**: MUST support application/json, application/x-www-form-urlencoded, text/plain
 
 #### FR-2: Idempotency
 
-- **FR-2.1**: Detect duplicate webhooks using configurable strategy:
-  - Customer-provided key (X-Idempotency-Key header)
-  - Content hash (SHA256 of normalized payload)
-  - Source event ID (extracted from payload via JSONPath)
-- **FR-2.2**: Deduplication window of 24 hours minimum
-- **FR-2.3**: Return identical response for duplicate requests
+- **FR-2.1**: MUST detect duplicates via X-Idempotency-Key, content hash, or source event ID
+- **FR-2.2**: MUST maintain 24-hour deduplication window
+- **FR-2.3**: MUST return identical response for duplicates
 
 #### FR-3: Signature Validation
 
-- **FR-3.1**: HMAC-SHA256 validation for supported providers:
-  - Stripe (stripe-signature header)
-  - GitHub (X-Hub-Signature-256)
-  - Shopify (X-Shopify-Hmac-Sha256)
-  - Generic (X-Webhook-Signature)
-- **FR-3.2**: Configurable signature header per endpoint
-- **FR-3.3**: Optional timestamp validation to prevent replay attacks
+- **FR-3.1**: MUST support HMAC-SHA256 validation (Stripe, GitHub, Shopify, generic)
+- **FR-3.2**: MUST allow configurable signature header per endpoint
+- **FR-3.3**: SHOULD support timestamp validation for replay protection
 
 #### FR-4: Delivery
 
-- **FR-4.1**: HTTP POST delivery to configured destination URL
-- **FR-4.2**: Preserve original headers (with configurable filtering)
-- **FR-4.3**: Add delivery metadata headers:
-  - X-Kapsel-Event-Id: unique event identifier
-  - X-Kapsel-Delivery-Attempt: attempt number
-  - X-Kapsel-Original-Timestamp: ISO8601 ingestion time
-- **FR-4.4**: Support custom headers per endpoint
+- **FR-4.1**: MUST deliver via HTTP POST to destination URL
+- **FR-4.2**: MUST preserve original headers (configurable filtering)
+- **FR-4.3**: MUST add X-Kapsel-Event-Id, X-Kapsel-Delivery-Attempt, X-Kapsel-Original-Timestamp
+- **FR-4.4**: SHOULD support custom headers per endpoint
 
 #### FR-5: Retry Logic
 
-- **FR-5.1**: Exponential backoff with jitter:
-  - Base: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s
-  - Jitter: ±25% randomization
-  - Max attempts: 10 (configurable per endpoint)
-- **FR-5.2**: Retry on:
-  - Network errors (connection refused, timeout)
-  - HTTP 5xx responses
-  - HTTP 429 (rate limit) with Retry-After header support
-- **FR-5.3**: Do not retry on:
-  - HTTP 4xx responses (except 429)
-  - Payload validation failures
+- **FR-5.1**: MUST use exponential backoff (1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s) with ±25% jitter
+- **FR-5.2**: MUST retry on network errors, 5xx responses, 429 with Retry-After
+- **FR-5.3**: MUST NOT retry on 4xx responses (except 429) or validation failures
+- **FR-5.4**: MUST support configurable max attempts per endpoint (default: 10)
 
 #### FR-6: Circuit Breaker
 
-- **FR-6.1**: Per-endpoint circuit breaker with three states:
-  - Closed: Normal operation
-  - Open: All requests fail immediately
-  - Half-Open: Limited requests to test recovery
-- **FR-6.2**: Thresholds:
-  - Open after 5 consecutive failures or 50% failure rate over 10 requests
-  - Half-open after 30 seconds
-  - Close after 3 consecutive successes in half-open state
+- **FR-6.1**: MUST implement per-endpoint circuit breaker (Closed, Open, Half-Open states)
+- **FR-6.2**: MUST open after 5 consecutive failures or 50% failure rate over 10 requests
+- **FR-6.3**: MUST transition to half-open after 30s, close after 3 successes
 
 #### FR-7: Cryptographic Attestation
 
-- **FR-7.1**: Merkle tree-based attestation for all delivery attempts:
-  - Every delivery attempt becomes a Merkle tree leaf
-  - Leaf contains: delivery_attempt_id, endpoint_url, payload_hash, timestamp, status
-  - SHA-256 hashing with 0x00 prefix (RFC 6962 compliance)
-- **FR-7.2**: Periodic tree commitment:
-  - Batch events every 10 seconds or 100 events (configurable)
-  - Compute new Merkle root using rs-merkle
-  - Sign root with Ed25519 private key
-  - Store Signed Tree Head (STH) in PostgreSQL
-- **FR-7.3**: Proof generation:
-  - Inclusion proof for any delivery attempt
-  - Consistency proof between two STHs
-  - Downloadable proof package for client verification
-- **FR-7.4**: Signature management:
-  - Ed25519 key generation and secure storage
-  - Public key availability for verification
-  - Key rotation support (yearly recommended)
+- **FR-7.1**: MUST record all delivery attempts as Merkle tree leaves (RFC 6962 format)
+- **FR-7.2**: MUST commit tree every 10s or 100 events with Ed25519-signed root
+- **FR-7.3**: MUST generate inclusion proofs and consistency proofs on request
+- **FR-7.4**: MUST provide public key for independent verification
 
 ## Non-Functional Requirements
 
 ### Performance
 
-#### NFR-1: Latency
-
-- **NFR-1.1**: Ingestion latency p99 < 50ms (includes database write)
-- **NFR-1.2**: First delivery attempt p50 < 100ms
-- **NFR-1.3**: Database query p99 < 5ms
-- **NFR-1.4**: Attestation batch commit p99 < 100ms
-- **NFR-1.5**: Proof generation p99 < 50ms
-- **NFR-1.6**: STH signing p99 < 10ms
-
-#### NFR-2: Throughput
-
-- **NFR-2.1**: 10,000 webhooks/second per instance
-- **NFR-2.2**: 1,000 concurrent deliveries per instance
-- **NFR-2.3**: 100,000 queued events without degradation
-
-#### NFR-3: Resource Usage
-
-- **NFR-3.1**: Memory < 2GB at 10K webhooks/sec
-- **NFR-3.2**: CPU < 4 cores at 10K webhooks/sec
-- **NFR-3.3**: Database connections ≤ 100 per instance
+| Requirement                    | Target         | Measurement                |
+| ------------------------------ | -------------- | -------------------------- |
+| NFR-1.1: Ingestion latency     | p99 < 50ms     | Database write complete    |
+| NFR-1.2: Delivery latency      | p50 < 100ms    | First attempt start        |
+| NFR-1.3: Attestation batch     | p99 < 100ms    | Tree commit duration       |
+| NFR-1.4: Proof generation      | p99 < 50ms     | API response time          |
+| NFR-2.1: Throughput            | 10K events/sec | Per instance sustained     |
+| NFR-2.2: Concurrent deliveries | 1K/instance    | Simultaneous HTTP requests |
+| NFR-3.1: Memory                | < 2GB          | At 10K events/sec          |
+| NFR-3.2: CPU                   | < 4 cores      | At 10K events/sec          |
+| NFR-3.3: Database connections  | ≤ 100          | Per instance               |
 
 ### Reliability
 
-#### NFR-4: Availability
-
-- **NFR-4.1**: 99.95% monthly uptime (≤ 21.6 minutes downtime)
-- **NFR-4.2**: Zero data loss for accepted webhooks
-- **NFR-4.3**: Automatic recovery from transient failures
-
-#### NFR-5: Durability
-
-- **NFR-5.1**: Multi-zone replication for PostgreSQL
-- **NFR-5.2**: Point-in-time recovery to any second in last 7 days
-- **NFR-5.3**: Immutable Merkle tree audit log
-- **NFR-5.4**: Cryptographic proof of append-only property
-- **NFR-5.5**: 7-year retention for attestation records
+- **NFR-4.1**: MUST achieve 99.95% monthly uptime (≤ 21.6 minutes downtime)
+- **NFR-4.2**: MUST guarantee zero data loss for accepted webhooks
+- **NFR-4.3**: MUST auto-recover from transient failures
+- **NFR-5.1**: MUST support multi-zone PostgreSQL replication
+- **NFR-5.2**: MUST support point-in-time recovery (7 days)
+- **NFR-5.3**: MUST maintain immutable Merkle tree audit log
+- **NFR-5.4**: SHOULD retain attestation records for 7 years
 
 ### Security
 
-#### NFR-6: Encryption
-
-- **NFR-6.1**: TLS 1.2+ for all external connections
-- **NFR-6.2**: Encrypted at rest for database storage
-- **NFR-6.3**: Secure secret storage (HSM/Vault integration)
-
-#### NFR-7: Isolation
-
-- **NFR-7.1**: Complete tenant isolation (no data leakage)
-- **NFR-7.2**: Rate limiting per tenant
-- **NFR-7.3**: Resource quotas per subscription tier
+- **NFR-6.1**: MUST use TLS 1.3+ for all external connections
+- **NFR-6.2**: MUST encrypt database storage at rest
+- **NFR-6.3**: MUST store secrets in HSM/KMS (production)
+- **NFR-7.1**: MUST enforce complete tenant isolation
+- **NFR-7.2**: MUST implement per-tenant rate limiting
+- **NFR-7.3**: SHOULD enforce resource quotas per tier
 
 ## Technical Constraints
 
-### TC-1: Technology Stack
+| Constraint    | Requirement                               |
+| ------------- | ----------------------------------------- |
+| Language      | Rust 1.75+                                |
+| Web framework | Axum 0.7+                                 |
+| Database      | PostgreSQL 14+ with pgcrypto              |
+| Cryptography  | Ed25519-dalek 2.1+, rs-merkle 1.5+        |
+| Deployment    | Container-based, Kubernetes-ready         |
+| Code safety   | 100% safe Rust, no panics in production   |
+| Configuration | 12-factor app, environment variables only |
 
-- Language: Rust 1.75+
-- Web framework: Axum 0.7+
-- Async runtime: Tokio 1.35+
-- Database: PostgreSQL 14+ with pgcrypto extension
-- Cryptography: Ed25519-dalek 2.1+, rs-merkle 1.5+
-- Serialization: serde with zero-copy where possible
+## Data Model
 
-### TC-2: Deployment
+### Event Lifecycle
 
-- Container-based (Docker/OCI compliant)
-- Kubernetes-ready (health checks, graceful shutdown)
-- 12-factor app principles
-- Stateless application tier
+| State       | Description                    | Terminal |
+| ----------- | ------------------------------ | -------- |
+| Received    | Webhook accepted and persisted | No       |
+| Pending     | Queued for delivery            | No       |
+| Delivering  | Currently being delivered      | No       |
+| Delivered   | Successfully delivered         | Yes      |
+| Failed      | Exhausted all retries          | Yes      |
+| Dead Letter | Manual intervention required   | Yes      |
 
-### TC-3: Development
+### Storage Requirements
 
-- 100% safe Rust (no unsafe blocks in application code)
-- No panics in production paths (#![forbid(unwrap, expect)])
-- All errors handled explicitly
-- Structured logging only (no println!)
+**Webhooks**: All accepted events with original payload and headers. Deduplication window: 24 hours.
 
-## Data Requirements
+**Delivery Attempts**: Complete history with timestamps, status codes, response data. Retention: 90 days minimum.
 
-### Persistence Model
+**Attestation**: Merkle leaves (append-only), signed tree heads, proof cache. Retention: 7 years.
 
-- **Durability**: All accepted webhooks must survive system failures
-- **Idempotency**: Duplicate detection and prevention across 24-hour window
-- **Audit Trail**: Complete history of delivery attempts with timing and outcomes
-- **Multi-tenancy**: Strict isolation between tenant data and configurations
-
-### Event Lifecycle States
-
-- **Received**: Webhook accepted and persisted
-- **Pending**: Queued for delivery processing
-- **Delivering**: Currently being delivered by worker
-- **Delivered**: Successfully delivered to destination
-- **Failed**: Permanently failed after exhausting retries
-- **Dead Letter**: Moved to manual intervention queue
-
-### Configuration Storage
-
-- **Endpoints**: Destination URLs, retry policies, circuit breaker thresholds
-- **Security**: Signing secrets, signature validation headers
-- **Tenant Settings**: Rate limits, retention policies, feature flags
-
-### Attestation Storage
-
-- **Merkle Leaves**: Append-only log of all delivery attempts
-- **Signed Tree Heads**: Periodic commitments with Ed25519 signatures
-- **Proof Cache**: Pre-computed inclusion proofs for common queries
-- **Attestation Keys**: Ed25519 public/private key pairs for signing
+**Configuration**: Endpoints, retry policies, circuit breaker state, signing secrets. Multi-tenant isolation enforced.
 
 ## Interface Requirements
 

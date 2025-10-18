@@ -2,9 +2,10 @@
   <img width="60%" src="docs/images/logo.png" alt="LOGO Screenshot">
 </p>
 
-
 <p align="center">
-  <b><a href="docs/OVERVIEW.md">System Overview</a></b>
+  <b><a href="docs/STATUS.md">Status</a></b>
+  &nbsp;|&nbsp;
+  <b><a href="docs/ARCHITECTURE.md">Architecture</a></b>
   &nbsp;|&nbsp;
   <b><a href="docs/ATTESTATION.md">Attestation</a></b>
   &nbsp;|&nbsp;
@@ -14,7 +15,7 @@
 </p>
 
 > [!WARNING]
-> Kapsel is in alpha phase.
+> Kapsel is in early development phase.
 >
 > The API is unstable, features are incomplete, and breaking changes should be expected.
 
@@ -28,6 +29,7 @@ Kapsel is a webhook reliability service for building guaranteed at-least-once de
 - **Cryptographic Proof** - Merkle tree attestation with Ed25519 signatures
 
 ## Development
+
 ```bash
 git clone https://github.com/kapsel-hq/kapsel
 cd kapsel
@@ -52,5 +54,7 @@ Read `Makefile.toml` for all avaliable `cargo-make` tasks.
 ## License
 
 Licensed under the Apache License, Version 2.0.
+
+---
 
 See [`docs/`](docs/) for detailed design, development guide, and testing philosophy.

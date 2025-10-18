@@ -1,51 +1,29 @@
-# Merkle Tree Attestation Architecture
+# Cryptographic Attestation
 
-Kapsel provides cryptographically verifiable proof of webhook delivery through Merkle tree-based attestation with Ed25519 signatures. This document defines the implementation architecture, data structures, and verification protocol.
+Kapsel provides tamper-proof proof of webhook delivery using Merkle trees (RFC 6962) and Ed25519 signatures. Every delivery attempt is recorded in an append-only log that clients can independently verify.
 
-## Core Concept
+## Design
 
-Every delivery attempt becomes an immutable leaf in an append-only Merkle tree. Periodic commitments produce Signed Tree Heads (STH) that prove:
+Every delivery attempt becomes a Merkle tree leaf containing:
 
-- **What** was delivered (payload hash)
-- **When** it was delivered (timestamp)
-- **Where** it was delivered (endpoint URL)
-- **Result** of delivery (HTTP status, response)
-- **Authenticity** (Ed25519 signature by Kapsel)
+- Delivery attempt ID
+- Endpoint URL
+- Payload hash (SHA-256)
+- Timestamp
+- HTTP status code
+- Response hash
 
-## Architecture Components
+Periodic commitments (every 10s or 100 events) produce Signed Tree Heads (STH) with Ed25519 signatures. Clients receive inclusion proofs to verify their delivery exists in the signed tree.
 
-### Data Flow
+## Components
 
-```
-Delivery Attempt → Merkle Leaf → Batch Queue → Tree Commitment → Signed Tree Head
-                        ↓                            ↓                 ↓
-                   PostgreSQL                    Merkle Root     Ed25519 Signature
-                                                     ↓                 ↓
-                                               Inclusion Proof  Client Verification
-```
+**MerkleService**: Batches leaves, computes tree roots using rs-merkle, generates inclusion/consistency proofs
 
-### Component Responsibilities
+**SigningService**: Ed25519 signing of tree heads (root + size + timestamp), key management
 
-**MerkleService** - Tree construction and proof generation
+**AttestationCapture**: Intercepts delivery attempts, computes hashes, queues for batch processing
 
-- Batch leaf processing (every 10s or 100 events)
-- Merkle root computation using rs-merkle
-- Inclusion proof generation with caching
-- Consistency proof between STHs
-
-**SigningService** - Ed25519 cryptographic operations
-
-- Key generation and secure storage
-- Tree head signing (root + size + timestamp)
-- Public key management for verification
-- Key rotation support (future)
-
-**AttestationCapture** - Delivery event interception
-
-- Extract delivery attempt data
-- Compute payload and response hashes
-- Queue events for batch processing
-- Maintain event ordering
+Data flow: Delivery Attempt → Leaf Hash → Batch Queue → Tree Commit → STH → Inclusion Proof
 
 ## Database Schema
 
@@ -151,7 +129,7 @@ pub fn compute_leaf_hash(&self) -> [u8; 32] {
 Message format for signing:
 
 ```
-tree_size (8 bytes BE) || timestamp (8 bytes BE) || root_hash (32 bytes)
+tree_size (8 bytes BE) || root_hash (32 bytes) || timestamp (8 bytes BE)
 ```
 
 Ed25519 signature covers all 48 bytes.
@@ -519,32 +497,6 @@ proptest! {
 - **ISO 27001**: Information security management
 - **eIDAS**: Advanced electronic signatures
 
-## Migration Path
-
-### Phase 1: Schema & Foundation (Day 1-2)
-
-- Run migration 002_merkle_attestation.sql
-- Deploy MerkleService and SigningService
-- Configure batch processing parameters
-
-### Phase 2: Integration (Day 3-4)
-
-- Enable attestation capture in delivery pipeline
-- Start background batch worker
-- Monitor tree growth and performance
-
-### Phase 3: API & Proofs (Day 5)
-
-- Enable attestation endpoints
-- Test proof generation at scale
-- Deploy client verification tools
-
-### Phase 4: Production (Week 2)
-
-- Enable for 10% traffic
-- Monitor proof generation latency
-- Gradual rollout to 100%
-
 ## Success Metrics
 
 - **Attestation Latency**: p99 < 100ms batch processing
@@ -555,7 +507,7 @@ proptest! {
 
 ## Related Documentation
 
-- [System Overview](./OVERVIEW.md) - Overall architecture
-- [Technical Specification](./SPECIFICATION.md) - Requirements
-- [Testing Strategy](./TESTING_STRATEGY.md) - Test methodology
-- [Implementation Status](./IMPLEMENTATION_STATUS.md) - Current progress
+- [Architecture](ARCHITECTURE.md) - System design
+- [Technical Specification](SPECIFICATION.md) - Requirements
+- [Testing Strategy](TESTING_STRATEGY.md) - Test methodology
+- [Current Status](STATUS.md) - Implementation progress
