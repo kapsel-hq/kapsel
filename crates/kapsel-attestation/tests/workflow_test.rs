@@ -10,7 +10,7 @@ use chrono::Utc;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
 use kapsel_core::{
     models::{EventId, TenantId},
-    DeliveryEvent, DeliverySucceededEvent,
+    DeliveryEvent, DeliverySucceededEvent, EventHandler,
 };
 use kapsel_testing::TestEnv;
 use tokio::sync::RwLock;
