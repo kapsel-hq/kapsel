@@ -19,7 +19,6 @@ sha2 = { workspace = true }
 kapsel-core = { path = "../kapsel-core" }
 
 # Serialization
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Error handling
@@ -32,7 +31,6 @@ sqlx = { workspace = true }
 # Utilities
 chrono = { workspace = true }
 uuid = { workspace = true }
-hex = "0.4"
 rand = "0.8"  # Must match ed25519-dalek's rand_core 0.6 dependency
 
 # Async

@@ -69,8 +69,7 @@ impl TestEnv {
         // Set RUST_LOG=debug to see detailed logs when debugging
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
-                EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("error")),
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error")),
             )
             .with_test_writer()
             .try_init();
