@@ -146,12 +146,12 @@ impl LeafData {
         hasher.finalize().into()
     }
 
-    /// Get the endpoint URL.
+    /// Returns the endpoint URL.
     pub fn endpoint_url(&self) -> &str {
         &self.endpoint_url
     }
 
-    /// Get the attempt timestamp.
+    /// Returns the attempt timestamp.
     pub fn attempted_at(&self) -> chrono::DateTime<chrono::Utc> {
         self.attempted_at
     }
@@ -171,7 +171,7 @@ impl LeafData {
         self.response_status.is_none()
     }
 
-    /// Get a display representation for debugging.
+    /// Returns a display representation for debugging.
     ///
     /// Returns a human-readable string suitable for logging and debugging
     /// that includes key identifiers without sensitive data.

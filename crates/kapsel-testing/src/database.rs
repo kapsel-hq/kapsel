@@ -53,7 +53,7 @@ impl SharedDatabase {
             .await
             .context("failed to start PostgreSQL container")?;
 
-        // Get the mapped port for connections
+        // Extract the mapped port for connections
         let port =
             container.get_host_port_ipv4(5432).await.context("failed to get container port")?;
 
@@ -155,7 +155,7 @@ impl SharedDatabase {
         Ok(())
     }
 
-    /// Get the connection pool for this shared database.
+    /// Returns the connection pool for this shared database.
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
@@ -199,7 +199,7 @@ impl TestDatabase {
         Ok(Self { shared_db })
     }
 
-    /// Get a reference to the shared database.
+    /// Returns a reference to the shared database.
     pub fn shared_database(&self) -> &Arc<SharedDatabase> {
         &self.shared_db
     }
@@ -245,10 +245,11 @@ impl TestDatabase {
     }
 }
 
-/// Get a shared database instance for tests that need direct access.
+/// Creates a connection to the shared database instance for tests that need
+/// direct access.
 ///
-/// This is used by TestEnv to hold the Arc directly.
-pub async fn get_shared_database() -> Result<Arc<SharedDatabase>> {
+/// Initializes and returns a reference to the global shared database container.
+pub async fn create_shared_database() -> Result<Arc<SharedDatabase>> {
     let db = TestDatabase::new().await?;
     Ok(Arc::clone(&db.shared_db))
 }
@@ -261,8 +262,8 @@ mod tests {
 
     #[tokio::test]
     async fn shared_database_is_reused_across_tests() {
-        let db1 = get_shared_database().await.unwrap();
-        let db2 = get_shared_database().await.unwrap();
+        let db1 = create_shared_database().await.unwrap();
+        let db2 = create_shared_database().await.unwrap();
 
         // Both should be the same Arc instance
         assert!(Arc::ptr_eq(&db1, &db2));

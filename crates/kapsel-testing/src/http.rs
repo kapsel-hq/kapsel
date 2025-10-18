@@ -142,7 +142,7 @@ impl MockEndpoint {
         self
     }
 
-    /// Sets the response body.
+    /// Configures the response body.
     pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
         if let MockResponse::Success { status, .. } = self.response {
             self.response = MockResponse::Success { status, body: body.into() };
@@ -150,7 +150,7 @@ impl MockEndpoint {
         self
     }
 
-    /// Sets a retry-after header for rate limiting scenarios.
+    /// Configures a retry-after header for rate limiting scenarios.
     pub fn with_retry_after(mut self, duration: Duration) -> Self {
         if let MockResponse::Failure { status, .. } = self.response {
             self.response = MockResponse::Failure { status, retry_after: Some(duration) };

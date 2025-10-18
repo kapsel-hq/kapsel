@@ -80,7 +80,7 @@ impl TestEnv {
             (shared_db, db, tx)
         } else {
             // Use shared database for standard test runtime
-            let shared_db = database::get_shared_database().await?;
+            let shared_db = database::create_shared_database().await?;
             let db = TestDatabase::new().await?;
             let tx = db.begin_transaction().await?;
             (shared_db, db, tx)
@@ -121,7 +121,7 @@ impl TestEnv {
             .unwrap_or(false)
     }
 
-    /// Get a mutable reference to the database executor.
+    /// Returns a mutable reference to the database executor.
     ///
     /// All database operations in tests should go through this
     /// to ensure they're part of the transaction and will be
@@ -141,7 +141,7 @@ impl TestEnv {
         self.shared_db.pool().clone()
     }
 
-    /// Get direct access to the connection pool for isolated databases.
+    /// Returns direct access to the connection pool for isolated databases.
     ///
     /// This is only available when using isolated database mode (detected
     /// automatically for property tests and worker tests). In isolated mode,
@@ -172,17 +172,17 @@ impl TestEnv {
         self.clock.advance(duration);
     }
 
-    /// Get the current time from the test clock.
+    /// Returns the current time from the test clock.
     pub fn now(&self) -> std::time::Instant {
         self.clock.now()
     }
 
-    /// Get the current system time from the test clock.
+    /// Returns the current system time from the test clock.
     pub fn now_system(&self) -> std::time::SystemTime {
         self.clock.now_system()
     }
 
-    /// Get elapsed time since the test clock was created.
+    /// Returns elapsed time since the test clock was created.
     pub fn elapsed(&self) -> Duration {
         self.clock.elapsed()
     }
@@ -290,8 +290,8 @@ impl TestEnv {
         Ok(EventId(result.0))
     }
 
-    /// Gets the current status of a webhook event.
-    pub async fn get_webhook_status(&mut self, event_id: EventId) -> Result<String> {
+    /// Finds the current status of a webhook event from the database.
+    pub async fn find_webhook_status(&mut self, event_id: EventId) -> Result<String> {
         let status: (String,) = sqlx::query_as("SELECT status FROM webhook_events WHERE id = $1")
             .bind(event_id.0)
             .fetch_one(&mut **self.db())
@@ -300,8 +300,9 @@ impl TestEnv {
         Ok(status.0)
     }
 
-    /// Gets the number of delivery attempts for a webhook event.
-    pub async fn get_delivery_attempts_count(&mut self, event_id: EventId) -> Result<i64> {
+    /// Counts the number of delivery attempts for a webhook event in the
+    /// database.
+    pub async fn count_delivery_attempts(&mut self, event_id: EventId) -> Result<i64> {
         let count: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
                 .bind(event_id.0)
@@ -932,7 +933,7 @@ impl ScenarioBuilder {
                     assertion(env).context("state assertion failed")?;
                 },
                 Step::ExpectStatus(event_id, expected) => {
-                    let actual = env.get_webhook_status(event_id).await?;
+                    let actual = env.find_webhook_status(event_id).await?;
                     assert_eq!(
                         actual, expected,
                         "Webhook status mismatch for event {}: expected '{}', got '{}'",
@@ -940,7 +941,7 @@ impl ScenarioBuilder {
                     );
                 },
                 Step::ExpectDeliveryAttempts(event_id, expected) => {
-                    let actual = env.get_delivery_attempts_count(event_id).await?;
+                    let actual = env.count_delivery_attempts(event_id).await?;
                     assert_eq!(
                         actual, expected,
                         "Delivery attempt count mismatch for event {}: expected {}, got {}",
@@ -979,7 +980,7 @@ impl ScenarioBuilder {
                 },
                 Step::ExpectConcurrentAttestationIntegrity(event_ids) => {
                     for &event_id in &event_ids {
-                        let status = env.get_webhook_status(event_id).await?;
+                        let status = env.find_webhook_status(event_id).await?;
                         assert_eq!(status, "delivered", "All concurrent deliveries must succeed");
 
                         let leaf_count = env.count_attestation_leaves_for_event(event_id).await?;
@@ -998,7 +999,7 @@ impl ScenarioBuilder {
                 },
                 Step::ExpectAllEventsDelivered(event_ids) => {
                     for &event_id in &event_ids {
-                        let status = env.get_webhook_status(event_id).await?;
+                        let status = env.find_webhook_status(event_id).await?;
                         assert_eq!(status, "delivered", "Event {} must be delivered", event_id.0);
                     }
                 },

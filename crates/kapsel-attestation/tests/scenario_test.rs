@@ -82,7 +82,7 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
     assert_eq!(final_status, EventStatus::Delivered);
 
     // Verify webhook was delivered
-    let delivered_event = get_event_by_id(&env, &event_id).await;
+    let delivered_event = find_event_by_id(&env, &event_id).await;
     assert_eq!(delivered_event.status, EventStatus::Delivered);
     assert!(delivered_event.delivered_at.is_some());
 
@@ -189,7 +189,7 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
 
     // Verify all webhooks were delivered
     for (_tenant_id, event_id) in &event_ids {
-        let delivered_event = get_event_by_id(&env, event_id).await;
+        let delivered_event = find_event_by_id(&env, event_id).await;
         assert_eq!(delivered_event.status, EventStatus::Delivered);
         assert!(delivered_event.delivered_at.is_some());
     }
@@ -272,7 +272,7 @@ async fn attestation_failure_does_not_affect_delivery_success() {
     let final_status = wait_for_delivery_completion(&env, &event_id).await;
     assert_eq!(final_status, EventStatus::Delivered);
 
-    let delivered_event = get_event_by_id(&env, &event_id).await;
+    let delivered_event = find_event_by_id(&env, &event_id).await;
 
     // Verify delivery succeeded even without attestation integration
     assert_eq!(delivered_event.status, EventStatus::Delivered);
@@ -332,7 +332,7 @@ async fn setup_webhook_event(env: &TestEnv, webhook_url: &str) -> (TenantId, uui
     (tenant_id, endpoint_id, event_id)
 }
 
-async fn get_event_by_id(env: &TestEnv, event_id: &EventId) -> kapsel_core::WebhookEvent {
+async fn find_event_by_id(env: &TestEnv, event_id: &EventId) -> kapsel_core::WebhookEvent {
     sqlx::query_as::<_, kapsel_core::WebhookEvent>(
         r#"
         SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
@@ -388,7 +388,7 @@ async fn wait_for_delivery_completion(env: &TestEnv, event_id: &EventId) -> Even
     const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(50);
 
     for attempt in 1..=MAX_ATTEMPTS {
-        let event = get_event_by_id(env, event_id).await;
+        let event = find_event_by_id(env, event_id).await;
 
         // Check if event has reached a terminal state
         match event.status {
@@ -423,7 +423,7 @@ async fn wait_for_multiple_deliveries_completion(env: &TestEnv, event_ids: &[(Te
         let mut all_delivered = true;
 
         for (_tenant_id, event_id) in event_ids {
-            let event = get_event_by_id(env, event_id).await;
+            let event = find_event_by_id(env, event_id).await;
             if event.status != EventStatus::Delivered {
                 all_delivered = false;
                 break;
@@ -437,7 +437,7 @@ async fn wait_for_multiple_deliveries_completion(env: &TestEnv, event_ids: &[(Te
         if attempt == MAX_ATTEMPTS {
             // Print final status for debugging
             for (_tenant_id, event_id) in event_ids {
-                let event = get_event_by_id(env, event_id).await;
+                let event = find_event_by_id(env, event_id).await;
                 eprintln!("Event {} final status: {:?}", event_id.0, event.status);
             }
             panic!("Not all events completed after {} attempts", MAX_ATTEMPTS);

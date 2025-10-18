@@ -48,9 +48,9 @@ fn retryable(&self) -> bool
 fn expired(&self) -> bool
 ```
 
-### No `get_`/`set_` Prefixes
+### Avoid JavaBean-style `get_`/`set_` Prefixes for Field Accessors
 
-Rust convention omits Java-style prefixes. The operation type determines the name:
+Rust convention omits boilerplate `get_` and `set_` prefixes for methods that simply access the fields of a struct. Name the accessor method after the field itself.
 
 **For direct field access:**
 
@@ -72,9 +72,22 @@ impl WebhookEvent {
     }
 }
 
-// BAD: Unnecessary prefixes
+// BAD: Unnecessary prefixes for struct fields
 fn get_id(&self) -> EventId
 fn set_body(&mut self, body: Vec<u8>)
+```
+
+**Exception: Use `get()` for Collection Lookups**
+
+The `get()` method name is idiomatic and correct when performing a fallible lookup on a collection or container type, typically using a key or index. This follows standard library conventions.
+
+```rust
+// GOOD: Using get() for keyed lookup in a collection
+let event = event_cache.get(&event_id); // Returns Option<&Event>
+let item = my_vec.get(index);           // Returns Option<&T>
+
+// GOOD: Descriptive names for complex retrieval operations
+let resource = HEAVY_RESOURCE.get_or_init(|| compute_resource());
 ```
 
 **For computed values:**

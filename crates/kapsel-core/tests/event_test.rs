@@ -45,7 +45,7 @@ impl RealisticEventHandler {
         }
     }
 
-    fn set_should_fail(&self, should_fail: bool) {
+    fn update_should_fail(&self, should_fail: bool) {
         self.should_fail.store(should_fail, Ordering::Relaxed);
     }
 
@@ -57,7 +57,7 @@ impl RealisticEventHandler {
         self.failure_count.load(Ordering::Relaxed)
     }
 
-    fn get_processed_events(&self) -> Vec<DeliveryEvent> {
+    fn processed_events(&self) -> Vec<DeliveryEvent> {
         self.processed_events.lock().unwrap().clone()
     }
 }
@@ -92,7 +92,7 @@ async fn event_handler_failures_are_isolated() {
     let failing_handler = Arc::new(RealisticEventHandler::new("failing", Duration::ZERO));
     let another_stable = Arc::new(RealisticEventHandler::new("stable2", Duration::ZERO));
 
-    failing_handler.set_should_fail(true);
+    failing_handler.update_should_fail(true);
 
     let mut multicast = MulticastEventHandler::new();
     multicast.add_subscriber(stable_handler.clone());
@@ -169,7 +169,7 @@ async fn concurrent_event_processing_maintains_consistency() {
     assert_eq!(handler.processed_count(), 100);
 
     // Verify event data integrity
-    let processed = handler.get_processed_events();
+    let processed = handler.processed_events();
     assert_eq!(processed.len(), 100);
 
     for event in processed {
@@ -204,7 +204,7 @@ async fn event_data_integrity_preserved_during_processing() {
 
     handler.handle_event(success_event.clone()).await;
 
-    let processed = handler.get_processed_events();
+    let processed = handler.processed_events();
     assert_eq!(processed.len(), 1);
 
     match (&success_event, &processed[0]) {
@@ -252,7 +252,7 @@ async fn multicast_consistency_across_subscriber_counts() {
         assert_eq!(handler.processed_count(), 10);
         assert_eq!(handler.failure_count(), 0);
 
-        let processed = handler.get_processed_events();
+        let processed = handler.processed_events();
         assert_eq!(processed.len(), 10);
     }
 }
@@ -371,7 +371,7 @@ async fn event_handlers_process_realistic_delivery_patterns() {
     // Verify all events processed
     assert_eq!(handler.processed_count(), 9);
 
-    let processed = handler.get_processed_events();
+    let processed = handler.processed_events();
     let mut success_count = 0;
     let mut failure_count = 0;
     let mut retryable_failures = 0;
@@ -440,7 +440,7 @@ async fn event_timestamps_are_consistent_and_realistic() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
 
-    let processed = handler.get_processed_events();
+    let processed = handler.processed_events();
     assert_eq!(processed.len(), timestamps.len());
 
     // Verify timestamps are reasonable (within last minute)

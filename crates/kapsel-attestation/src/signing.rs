@@ -103,14 +103,14 @@ impl SigningService {
         }
     }
 
-    /// Get the public key as bytes.
+    /// Returns the public key as bytes.
     ///
     /// Returns the Ed25519 public key in canonical 32-byte format.
     pub fn public_key_as_bytes(&self) -> Vec<u8> {
         self.verifying_key.to_bytes().to_vec()
     }
 
-    /// Get the key identifier.
+    /// Returns the key identifier.
     ///
     /// Returns a deterministic identifier derived from the public key.
     pub fn key_id(&self) -> uuid::Uuid {

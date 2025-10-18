@@ -69,7 +69,7 @@ impl TestClock {
         self.system_secs.fetch_add(duration.as_secs(), Ordering::AcqRel);
     }
 
-    /// Sets the clock to a specific system time.
+    /// Jumps the clock to a specific system time.
     pub fn jump_to(&self, time: SystemTime) {
         let target_secs = time.duration_since(UNIX_EPOCH).unwrap().as_secs();
         let current_secs = self.system_secs.load(Ordering::Acquire);

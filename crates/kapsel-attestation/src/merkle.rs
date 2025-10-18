@@ -119,7 +119,7 @@ impl MerkleService {
         Ok(())
     }
 
-    /// Get the number of pending leaves awaiting commit.
+    /// Returns the number of pending leaves awaiting commit.
     pub async fn pending_count(&self) -> Result<usize> {
         Ok(self.pending.len())
     }
@@ -299,7 +299,7 @@ impl SignedTreeHead {
         Ok(Self { tree_size, root_hash, timestamp_ms, signature, key_id })
     }
 
-    /// Get the signing timestamp as a DateTime.
+    /// Returns the signing timestamp as a DateTime.
     pub fn timestamp(&self) -> DateTime<Utc> {
         DateTime::from_timestamp_millis(self.timestamp_ms as i64).unwrap_or_else(Utc::now)
     }
