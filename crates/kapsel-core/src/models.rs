@@ -571,7 +571,7 @@ impl sqlx::Type<PgDb> for IdempotencyStrategy {
     }
 }
 
-impl sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
+impl<'r> sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
         match s {
@@ -585,7 +585,7 @@ impl sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
 
 impl sqlx::Encode<'_, PgDb> for IdempotencyStrategy {
     fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
-        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
     }
 }
 
@@ -617,7 +617,7 @@ impl sqlx::Type<PgDb> for BackoffStrategy {
     }
 }
 
-impl sqlx::Decode<'r, PgDb> for BackoffStrategy {
+impl<'r> sqlx::Decode<'r, PgDb> for BackoffStrategy {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
         match s {
@@ -631,7 +631,7 @@ impl sqlx::Decode<'r, PgDb> for BackoffStrategy {
 
 impl sqlx::Encode<'_, PgDb> for BackoffStrategy {
     fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
-        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
     }
 }
 
@@ -681,7 +681,7 @@ impl sqlx::Type<PgDb> for DeliveryAttemptErrorType {
     }
 }
 
-impl sqlx::Decode<'r, PgDb> for DeliveryAttemptErrorType {
+impl<'r> sqlx::Decode<'r, PgDb> for DeliveryAttemptErrorType {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
         match s {
@@ -701,7 +701,7 @@ impl sqlx::Decode<'r, PgDb> for DeliveryAttemptErrorType {
 
 impl sqlx::Encode<'_, PgDb> for DeliveryAttemptErrorType {
     fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
-        <str as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
     }
 }
 
