@@ -1,4 +1,7 @@
-//! Schema validation tests for attestation tables.
+//! Integration tests for attestation database schema validation.
+//!
+//! Tests database table structure, constraints, and relationships
+//! for attestation components including Merkle leaves and signed tree heads.
 
 use kapsel_testing::database::TestDatabase;
 

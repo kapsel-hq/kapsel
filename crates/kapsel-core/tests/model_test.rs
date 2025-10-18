@@ -1,8 +1,7 @@
-//! Domain model tests for kapsel-core.
+//! Integration tests for core domain models.
 //!
-//! Tests the core domain models including WebhookEvent, Endpoint, EventStatus,
-//! CircuitState, and DeliveryAttempt. Verifies model validation, serialization,
-//! business rules, and type safety.
+//! Tests WebhookEvent, Endpoint, EventStatus, and DeliveryAttempt validation,
+//! serialization, and business rule enforcement.
 
 use std::collections::HashMap;
 

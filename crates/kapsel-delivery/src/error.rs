@@ -1,9 +1,9 @@
-//! Error types for webhook delivery operations.
+//! Error types and categorization for delivery operations.
 //!
-//! Defines all error conditions that can occur during webhook delivery,
-//! including network failures, HTTP errors, circuit breaker states, and
-//! database operations. Errors include context for debugging and proper
-//! categorization for retry decisions.
+//! Defines comprehensive error taxonomy for network failures, HTTP responses,
+//! circuit breaker states, and database operations. Includes retry
+//! classification and context preservation for debugging webhook delivery
+//! issues.
 
 use std::fmt;
 

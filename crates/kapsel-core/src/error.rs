@@ -1,6 +1,8 @@
-//! Error types for Kapsel webhook reliability service.
+//! Error types and result handling for webhook operations.
 //!
-//! Implements complete error taxonomy from specification (E1001-E3004).
+//! Defines structured error taxonomy with codes for client disambiguation
+//! and proper HTTP status mapping. Covers validation, processing, and
+//! infrastructure failures across the webhook reliability pipeline.
 
 use thiserror::Error;
 

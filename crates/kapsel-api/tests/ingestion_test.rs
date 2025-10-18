@@ -1,8 +1,7 @@
-//! Webhook ingestion endpoint integration tests.
+//! Integration tests for webhook ingestion endpoint.
 //!
-//! Tests the `/ingest/{endpoint_id}` endpoint functionality including
-//! authentication, payload validation, signature verification, database
-//! persistence, and error handling scenarios.
+//! Tests the `/ingest/{endpoint_id}` endpoint with authentication, payload
+//! validation, signature verification, and error handling scenarios.
 
 use axum::{
     body::Body,

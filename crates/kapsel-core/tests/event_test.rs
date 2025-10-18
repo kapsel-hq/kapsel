@@ -1,9 +1,7 @@
-//! Event system integration and behavior tests for kapsel-core.
+//! Integration tests for event system behavior.
 //!
-//! These tests verify that the event system behaves correctly under real
-//! conditions, focusing on integration behavior rather than simple field
-//! access. Tests use property-based testing to verify invariants hold under
-//! varied inputs.
+//! Tests event handler integration, multicast dispatch, and property-based
+//! invariant verification for the event-driven architecture.
 
 use std::{
     sync::{

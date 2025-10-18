@@ -1,7 +1,7 @@
-//! Property-based tests for delivery module.
+//! Property-based tests for delivery component invariants.
 //!
-//! These tests use randomly generated inputs to verify that delivery
-//! invariants always hold, regardless of input data or state.
+//! Uses randomly generated inputs to verify delivery invariants always
+//! hold regardless of input data or internal state.
 
 use std::time::Duration;
 

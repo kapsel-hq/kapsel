@@ -1,8 +1,7 @@
-//! Event handling tests for attestation system.
+//! Integration tests for event-driven attestation integration.
 //!
-//! Tests the event-driven architecture that allows attestation service
-//! to subscribe to delivery events without tight coupling. Verifies
-//! event propagation, multicast handling, and concurrent processing.
+//! Tests event subscription, delivery event processing, and multicast
+//! handling for attestation service integration.
 
 use std::sync::Arc;
 

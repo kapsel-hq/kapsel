@@ -1,21 +1,8 @@
-//! Domain models for Kapsel webhook reliability service.
+//! Core domain models and strongly-typed identifiers.
 //!
-//! This module defines the core domain entities used throughout the system.
-//! All models follow Domain-Driven Design principles with clear boundaries
-//! and explicit state transitions.
-//!
-//! # Key Concepts
-//!
-//! - **Event**: An incoming webhook that needs reliable delivery
-//! - **Endpoint**: A configured destination for webhook delivery
-//! - **Delivery Attempt**: A record of each delivery attempt with full audit
-//!   trail
-//!
-//! # Type Safety
-//!
-//! We use newtype wrappers for IDs to prevent mixing different identifier types
-//! at compile time. This catches bugs early and makes the code
-//! self-documenting.
+//! Defines webhook events, endpoints, delivery attempts, and newtype ID
+//! wrappers for compile-time type safety. Includes database serialization
+//! traits and state transition logic for the webhook delivery pipeline.
 
 use std::{collections::HashMap, fmt};
 
@@ -24,7 +11,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// Type aliases for common sqlx types to reduce verbosity
 type PgDb = sqlx::Postgres;
 type PgRow = sqlx::postgres::PgRow;
 type PgValueRef<'r> = sqlx::postgres::PgValueRef<'r>;
@@ -377,7 +363,6 @@ impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
 
-        // Handle failure_count i32 -> u32 conversion
         let failure_count_i32: i32 = row.try_get("failure_count")?;
         let failure_count = u32::try_from(failure_count_i32).map_err(|e| {
             sqlx::Error::ColumnDecode { index: "failure_count".to_string(), source: e.into() }
@@ -434,7 +419,7 @@ impl WebhookEvent {
         content_type: String,
     ) -> Self {
         let payload_size = i32::try_from(body.len())
-            .unwrap_or(i32::MAX) // If payload exceeds i32::MAX, use max value
+            .unwrap_or(i32::MAX) // Use i32::MAX on casting failure
             .max(1); // Ensure minimum size of 1
 
         Self {

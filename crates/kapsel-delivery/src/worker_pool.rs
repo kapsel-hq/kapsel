@@ -1,9 +1,7 @@
-//! Worker pool management for webhook delivery.
+//! Worker pool management with structured concurrency.
 //!
-//! This module provides structured concurrency for managing delivery workers
-//! with proper lifecycle management, health monitoring, and graceful shutdown.
-//! Workers are supervised tasks that process webhook deliveries from the
-//! database.
+//! Provides lifecycle management, health monitoring, and graceful shutdown
+//! for supervised delivery worker tasks.
 
 use std::{sync::Arc, time::Duration};
 
@@ -63,13 +61,11 @@ impl WorkerPool {
     pub async fn spawn_workers(&mut self) -> Result<()> {
         info!(worker_count = self.config.worker_count, "spawning delivery workers");
 
-        // Update stats to reflect active workers
         {
             let mut stats = self.stats.write().await;
             stats.active_workers = self.config.worker_count;
         }
 
-        // Spawn each worker with supervision
         for worker_id in 0..self.config.worker_count {
             let worker = DeliveryWorker::new(
                 worker_id,
@@ -123,10 +119,8 @@ impl WorkerPool {
             "initiating graceful worker shutdown"
         );
 
-        // Signal cancellation to all workers
         self.cancellation_token.cancel();
 
-        // Wait for all workers to complete with timeout
         let shutdown_future = async {
             let mut results = Vec::new();
 
@@ -158,7 +152,6 @@ impl WorkerPool {
                 }
             }
 
-            // Update stats to show no active workers
             {
                 let mut stats = self.stats.write().await;
                 stats.active_workers = 0;
@@ -167,7 +160,6 @@ impl WorkerPool {
             results
         };
 
-        // Apply timeout to shutdown
         match tokio::time::timeout(timeout, shutdown_future).await {
             Ok(results) => {
                 let error_count = results.iter().filter(|r| r.is_err()).count();
@@ -199,23 +191,18 @@ impl WorkerPool {
 
 impl Drop for WorkerPool {
     fn drop(&mut self) {
-        // Check if we have active workers that weren't shut down properly
         if !self.worker_handles.is_empty() {
             let active_count = self.worker_handles.iter().filter(|h| !h.is_finished()).count();
 
             if active_count > 0 && !self.cancellation_token.is_cancelled() {
-                // This is a programming error - workers should be explicitly shut down
                 error!(
                     active_workers = active_count,
                     "WorkerPool dropped with {} active workers! Forcing cancellation to prevent orphaned tasks",
                     active_count
                 );
 
-                // Force cancellation to prevent workers from running forever
                 self.cancellation_token.cancel();
 
-                // Note: We can't await the workers here since Drop is sync,
-                // but at least we've signaled them to stop
                 warn!(
                     "WorkerPool was not shut down gracefully. Call shutdown_graceful() before dropping to ensure clean shutdown."
                 );
@@ -224,7 +211,6 @@ impl Drop for WorkerPool {
     }
 }
 
-// Re-export DeliveryWorker from engine for use in worker pool
 use crate::worker::DeliveryWorker;
 
 #[cfg(test)]

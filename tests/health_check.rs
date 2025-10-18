@@ -1,7 +1,7 @@
-//! Health check integration tests.
+//! Health check integration tests for test infrastructure validation.
 //!
-//! Verifies that the test infrastructure and basic server functionality work
-//! correctly.
+//! Verifies that the test environment initializes correctly and basic
+//! server functionality works as expected.
 
 use kapsel_testing::{fixtures::WebhookBuilder, Clock, TestEnv};
 

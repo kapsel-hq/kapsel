@@ -1,18 +1,7 @@
-//! HTTP server configuration and startup.
+//! HTTP server configuration and request routing.
 //!
-//! This module handles the Axum server setup, routing configuration,
-//! and graceful shutdown. The server uses connection pooling, request
-//! tracing, and structured logging for production readiness.
-//!
-//! # Architecture
-//!
-//! The server follows a layered architecture:
-//! - Router layer: Request routing and middleware
-//! - Handler layer: Business logic and validation
-//! - Database layer: PostgreSQL connection pooling
-//!
-//! # Middleware Stack
-//!
+//! Provides Axum server setup with middleware stack, graceful shutdown,
+//! and connection pooling integration for webhook ingestion endpoints.
 //! Requests flow through middleware in order:
 //! 1. Request ID generation
 //! 2. Request/response logging
@@ -66,26 +55,15 @@ use crate::{handlers, middleware::auth::auth_middleware};
 /// }
 /// ```
 pub fn create_router(db: PgPool) -> Router {
-    // Health check routes (no authentication required)
     let health_routes = Router::new()
         .route("/health", get(handlers::health_check))
         .route("/ready", get(handlers::readiness_check))
         .route("/live", get(handlers::liveness_check));
 
-    // Authenticated API routes
     let api_routes = Router::new()
         .route("/ingest/{endpoint_id}", post(handlers::ingest_webhook))
-        // Future endpoints
-        // .route("/endpoints", post(handlers::create_endpoint))
-        // .route("/endpoints/{id}", get(handlers::get_endpoint))
-        // .route("/events/{id}", get(handlers::get_event_status))
-        // .route("/events/{id}/attempts", get(handlers::list_delivery_attempts))
-        .layer(middleware::from_fn_with_state(
-            db.clone(),
-            auth_middleware
-        ));
+        .layer(middleware::from_fn_with_state(db.clone(), auth_middleware));
 
-    // Combine routes with global middleware
     Router::new()
         .merge(health_routes)
         .merge(api_routes)
@@ -101,14 +79,11 @@ pub fn create_router(db: PgPool) -> Router {
 async fn inject_request_id(req: Request, next: Next) -> Response {
     let request_id = Uuid::new_v4().to_string();
 
-    // Add to request extensions for handlers to access
     let mut req = req;
     req.extensions_mut().insert(request_id.clone());
 
-    // Process request
     let mut response = next.run(req).await;
 
-    // Add request ID to response headers
     if let Ok(header_value) = request_id.parse() {
         response.headers_mut().insert("X-Request-Id", header_value);
     }
@@ -197,6 +172,5 @@ async fn shutdown_signal() {
         },
     }
 
-    // Give in-flight requests 30 seconds to complete
     warn!("Waiting up to 30 seconds for in-flight requests to complete");
 }

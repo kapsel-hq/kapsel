@@ -1,8 +1,7 @@
-//! Complete workflow tests for attestation system.
+//! Integration tests for complete attestation workflows.
 //!
-//! Tests end-to-end attestation workflows from event ingestion through
-//! merkle tree construction to signed tree head generation. Verifies
-//! the complete cryptographic audit trail pipeline.
+//! Tests end-to-end workflows from event ingestion through Merkle tree
+//! construction to signed tree head generation and audit trail creation.
 
 use std::sync::Arc;
 

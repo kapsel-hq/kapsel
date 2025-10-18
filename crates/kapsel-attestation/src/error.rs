@@ -1,4 +1,8 @@
-//! Error types for attestation operations.
+//! Error types and result handling for attestation operations.
+//!
+//! Defines comprehensive error taxonomy for cryptographic signing, Merkle tree
+//! operations, key management, and database persistence with detailed context
+//! for debugging attestation failures.
 
 /// Errors that can occur during attestation operations.
 ///

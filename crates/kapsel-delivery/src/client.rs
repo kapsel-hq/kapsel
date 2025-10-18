@@ -1,11 +1,7 @@
-//! HTTP client for webhook delivery with timeout and retry support.
+//! HTTP client for webhook delivery with configurable timeouts.
 //!
-//! Provides a specialized HTTP client for delivering webhooks to destination
-//! endpoints. Handles timeouts, response parsing, and error categorization
-//! to support the retry logic and circuit breaker systems.
-//!
-//! The client preserves original webhook headers while adding delivery
-//! metadata headers for traceability and debugging.
+//! Handles request construction, response processing, and error categorization
+//! for retry logic and circuit breaker integration.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -141,29 +137,24 @@ impl DeliveryClient {
         async move {
             tracing::debug!("Starting webhook delivery");
 
-            // Build HTTP request
             let mut http_request = self
                 .client
                 .post(&request.url)
                 .body(request.body.clone())
                 .header("content-type", &request.content_type);
 
-            // Add original headers
             for (key, value) in &request.headers {
-                // Skip headers that we manage ourselves
                 if !is_managed_header(key) {
                     http_request = http_request.header(key, value);
                 }
             }
 
-            // Add delivery metadata headers
             http_request = http_request
                 .header("X-Kapsel-Event-Id", request.event_id.to_string())
                 .header("X-Kapsel-Delivery-Id", request.delivery_id.to_string())
                 .header("X-Kapsel-Delivery-Attempt", request.attempt_number.to_string())
                 .header("X-Kapsel-Original-Timestamp", chrono::Utc::now().to_rfc3339());
 
-            // Execute request
             let response = match http_request.send().await {
                 Ok(response) => response,
                 Err(e) => {
@@ -189,10 +180,8 @@ impl DeliveryClient {
                 "Received response"
             );
 
-            // Parse response
             let delivery_response = self.parse_response(response, duration).await?;
 
-            // Log appropriate messages based on status code
             match delivery_response.status_code {
                 200..=299 => {
                     tracing::info!("Webhook delivered successfully");
@@ -211,7 +200,6 @@ impl DeliveryClient {
                 },
             }
 
-            // Always return response for HTTP transactions - let caller decide retry logic
             Ok(delivery_response)
         }
         .instrument(span)
@@ -227,17 +215,14 @@ impl DeliveryClient {
         let status_code = response.status().as_u16();
         let is_success = response.status().is_success();
 
-        // Extract headers
         let headers = extract_headers(response.headers());
 
-        // Read body with size limit to prevent memory exhaustion
         let body = match response.bytes().await {
             Ok(bytes) => {
                 const MAX_RESPONSE_BODY_SIZE: usize = 64 * 1024; // 64KB - reasonable for webhook responses
                 const MAX_AUDIT_SIZE: usize = 1024; // 1KB for audit storage
 
                 if bytes.len() > MAX_RESPONSE_BODY_SIZE {
-                    // For very large responses, truncate to fit in audit size
                     let suffix = "... (truncated)";
                     let max_content = MAX_AUDIT_SIZE - suffix.len();
                     let truncated = String::from_utf8_lossy(&bytes[..max_content]);
@@ -289,11 +274,10 @@ fn is_managed_header(header_name: &str) -> bool {
     )
 }
 
-/// Returns the delay in seconds, defaulting to 60 if parsing fails.
 /// Extracts retry-after delay from response headers.
 ///
-/// Returns the delay in seconds, or a default value if parsing fails.
-/// Supports both seconds format and HTTP-date format.
+/// Supports both seconds format and HTTP-date format. Returns the delay in
+/// seconds, or a default value (60s) if parsing fails.
 pub fn extract_retry_after_seconds<S: std::hash::BuildHasher>(
     headers: &HashMap<String, String, S>,
 ) -> Option<u64> {

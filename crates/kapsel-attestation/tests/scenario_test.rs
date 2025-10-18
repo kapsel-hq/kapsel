@@ -1,13 +1,7 @@
-//! End-to-end integration test for delivery-to-attestation event flow.
+//! Integration tests for delivery-to-attestation event flow scenarios.
 //!
-//! This test demonstrates the complete event-driven architecture where:
-//! 1. Delivery worker successfully delivers a webhook
-//! 2. Delivery worker emits success event (without knowing about attestation)
-//! 3. Attestation service receives event and creates merkle leaf
-//! 4. Complete cryptographic audit trail is established
-//!
-//! This showcases the clean separation of concerns and extensibility
-//! of the event-driven design.
+//! Tests complete event-driven architecture from delivery success events
+//! through attestation leaf creation and cryptographic audit trail.
 
 use std::sync::Arc;
 

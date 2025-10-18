@@ -1,8 +1,10 @@
-//! Merkle tree attestation and cryptographic signing.
+//! Cryptographic attestation using Merkle trees and Ed25519 signatures.
 //!
-//! Provides RFC 6962 compliant Merkle tree construction and Ed25519 signing
-//! for webhook delivery attestation.
+//! Implements RFC 6962 compliant Merkle tree construction for webhook delivery
+//! audit trails. Provides batch leaf processing, signed tree heads, and
+//! cryptographic proof generation for tamper-evident delivery records.
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod error;

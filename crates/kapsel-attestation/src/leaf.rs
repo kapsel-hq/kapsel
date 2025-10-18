@@ -1,8 +1,7 @@
-//! Merkle tree leaf data structures for webhook delivery attestation.
+//! Merkle tree leaf structures and RFC 6962 compliant hashing.
 //!
-//! Implements RFC 6962 compliant leaf hashing for webhook delivery attempts,
-//! providing deterministic and verifiable representation of delivery events
-//! in the Merkle tree.
+//! Provides deterministic leaf data representation and hash computation
+//! for webhook delivery attempts in cryptographic audit trails.
 
 use sha2::{Digest, Sha256};
 

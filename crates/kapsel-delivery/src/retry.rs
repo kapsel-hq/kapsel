@@ -1,11 +1,8 @@
-//! Retry logic with exponential backoff and jitter.
+//! Exponential backoff retry strategies with jitter.
 //!
-//! Implements configurable retry strategies for webhook delivery failures.
-//! Uses exponential backoff with jitter to prevent thundering herd effects
-//! when multiple workers retry simultaneously.
-//!
-//! The retry logic respects HTTP 429 Retry-After headers and implements
-//! circuit breaker integration to prevent cascade failures during outages.
+//! Implements configurable retry policies for failed webhook deliveries.
+//! Includes exponential backoff timing, jitter for load distribution,
+//! and integration with circuit breaker failure detection.
 
 use std::time::Duration;
 
@@ -109,21 +106,18 @@ impl RetryContext {
     /// make retry decisions. Respects HTTP 429 Retry-After headers and
     /// prevents retries for non-retryable errors.
     pub fn decide_retry(&self) -> RetryDecision {
-        // Check if we've exceeded maximum attempts
         if self.attempt_number >= self.policy.max_attempts {
             return RetryDecision::GiveUp {
                 reason: format!("maximum attempts ({}) exceeded", self.policy.max_attempts),
             };
         }
 
-        // Check if error is retryable
         if !self.error.is_retryable() {
             return RetryDecision::GiveUp {
                 reason: format!("non-retryable error: {}", self.error),
             };
         }
 
-        // Calculate next attempt time
         let delay = self.calculate_delay();
         let Ok(chrono_delay) = chrono::Duration::from_std(delay) else {
             return RetryDecision::GiveUp {
@@ -140,7 +134,6 @@ impl RetryContext {
     /// Uses the configured backoff strategy with jitter to determine wait time.
     /// For rate limit errors (HTTP 429), respects the Retry-After header.
     fn calculate_delay(&self) -> Duration {
-        // Use Retry-After header for rate limit errors
         if let Some(retry_after_seconds) = self.error.retry_after_seconds() {
             return Duration::from_secs(retry_after_seconds);
         }
@@ -151,20 +144,16 @@ impl RetryContext {
                 self.policy.base_delay * self.attempt_number.saturating_sub(1)
             },
             BackoffStrategy::Exponential => {
-                // Cap exponent to prevent overflow (2^20 = ~1M multiplier is plenty)
                 let exponent = self.attempt_number.saturating_sub(1).min(20);
                 let multiplier = 2_u32.saturating_pow(exponent);
                 self.policy.base_delay * multiplier
             },
         };
 
-        // Cap at maximum delay
         let capped_delay = std::cmp::min(base_delay, self.policy.max_delay);
 
-        // Apply jitter to prevent thundering herd
         let jittered_delay = apply_jitter(capped_delay, self.policy.jitter_factor);
 
-        // Ensure final delay doesn't exceed max_delay after jitter
         std::cmp::min(jittered_delay, self.policy.max_delay)
     }
 }
@@ -178,7 +167,6 @@ fn apply_jitter(duration: Duration, jitter_factor: f64) -> Duration {
         return duration;
     }
 
-    // Clamp jitter factor to reasonable bounds to prevent negative delays
     let clamped_jitter = jitter_factor.clamp(0.0, 1.0);
 
     let mut rng = rand::rng();
@@ -186,7 +174,6 @@ fn apply_jitter(duration: Duration, jitter_factor: f64) -> Duration {
     let jitter_offset = rng.random_range(-jitter_range..=jitter_range);
     let jittered_secs = duration.as_secs_f64() + jitter_offset;
 
-    // Ensure we don't go below zero
     Duration::from_secs_f64(jittered_secs.max(0.0))
 }
 

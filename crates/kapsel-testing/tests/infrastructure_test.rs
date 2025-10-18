@@ -1,4 +1,7 @@
-//! Integration test for test infrastructure without Docker dependencies.
+//! Integration tests for test infrastructure components.
+//!
+//! Tests test utilities, fixtures, and infrastructure without external
+//! dependencies like Docker containers.
 
 use std::time::Duration;
 

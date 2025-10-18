@@ -1,4 +1,7 @@
-//! HTTP mocking utilities for webhook testing.
+//! HTTP mocking utilities for webhook delivery testing.
+//!
+//! Provides mock HTTP server infrastructure for testing webhook deliveries
+//! with configurable responses, request matching, and failure simulation.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 

@@ -1,22 +1,40 @@
-//! Circuit breaker implementation for endpoint protection.
+//! Circuit breaker implementation for endpoint failure protection.
 //!
-//! Implements per-endpoint circuit breakers to prevent cascade failures during
-//! outages. Circuit breakers automatically fail fast when an endpoint becomes
-//! unhealthy, then gradually allow requests to test recovery.
+//! Provides per-endpoint circuit breakers that fail fast during outages
+//! and gradually test recovery. Prevents cascade failures by tracking
+//! request success/failure rates and automatically switching states.
 //!
-//! # Circuit States
+//! # Circuit Breaker State Machine
 //!
-//! - **Closed**: Normal operation, all requests allowed
-//! - **Open**: Endpoint is unhealthy, all requests fail immediately
-//! - **Half-Open**: Testing recovery, limited requests allowed
-//!
-//! # State Transitions
-//!
-//! - Closed → Open: After 5 consecutive failures OR 50% failure rate over 10
-//!   requests
-//! - Open → Half-Open: After 30 seconds timeout
-//! - Half-Open → Closed: After 3 consecutive successes
-//! - Half-Open → Open: On any failure
+//! ```text
+//!                          ┌─────────────────────────┐
+//!                          │        CLOSED           │
+//!                          │   (Normal Operation)    │
+//!                          │                         │
+//!                          │ ● All requests allowed  │
+//!                          │ ● Tracking failure rate │
+//!                          └─────────────────────────┘
+//!                           │                        ▲
+//!                           │                        │
+//!               5 failures  │                        │ 3 successes
+//!               OR 50% rate │                        │
+//!                           ▼                        │
+//!    ┌─────────────────────────┐                  ┌───────────────────────┐
+//!    │         OPEN            │                  │       HALF-OPEN       │
+//!    │      (Fail Fast)        │                  │   (Testing Recovery)  │
+//!    │                         │   30s timeout    │                       │
+//!    │ ● All requests blocked  │ ───────────────▶ │ ● Limited requests    │
+//!    │ ● Immediate failure     │                  │ ● Gradual testing     │
+//!    └─────────────────────────┘                  └───────────────────────┘
+//!                                                             │
+//!                                                             │
+//!                                                 Any failure │
+//!                                                             │
+//!                                                             ▼
+//!                                                 ┌───────────────────────┐
+//!                                                 │     BACK TO OPEN      │
+//!                                                 └───────────────────────┘
+//! ```
 //!
 //! # Usage
 //!
@@ -190,7 +208,6 @@ impl CircuitBreakerManager {
             let endpoint_stats =
                 circuits.entry(endpoint_id.to_string()).or_insert_with(CircuitStats::new);
 
-            // Check if we should transition from Open to Half-Open
             if endpoint_stats.state == CircuitState::Open {
                 if let Some(time_since_opened) = endpoint_stats.time_since_opened() {
                     if time_since_opened >= self.config.open_timeout {
@@ -205,10 +222,7 @@ impl CircuitBreakerManager {
         match current_state {
             CircuitState::Closed => true,
             CircuitState::Open => false,
-            CircuitState::HalfOpen => {
-                // Allow limited requests in Half-Open state
-                half_open_requests < self.config.half_open_max_requests
-            },
+            CircuitState::HalfOpen => half_open_requests < self.config.half_open_max_requests,
         }
     }
 
@@ -222,24 +236,18 @@ impl CircuitBreakerManager {
         let endpoint_stats =
             circuits.entry(endpoint_id.to_string()).or_insert_with(CircuitStats::new);
 
-        // Update counters
         endpoint_stats.total_requests += 1;
         endpoint_stats.consecutive_failures = 0;
 
-        // Handle state-specific logic
         match endpoint_stats.state {
-            CircuitState::Closed => {
-                // Normal operation - counters already updated
-            },
+            CircuitState::Closed => {},
             CircuitState::Open => {
-                // Shouldn't happen, but handle gracefully
                 tracing::warn!("Recorded success for open circuit: {endpoint_id}");
             },
             CircuitState::HalfOpen => {
                 endpoint_stats.consecutive_successes += 1;
                 endpoint_stats.half_open_requests += 1;
 
-                // Check if we should close the circuit
                 if endpoint_stats.consecutive_successes >= self.config.success_threshold {
                     Self::transition_to_closed(endpoint_stats);
                 }
@@ -257,26 +265,20 @@ impl CircuitBreakerManager {
         let endpoint_stats =
             circuits.entry(endpoint_id.to_string()).or_insert_with(CircuitStats::new);
 
-        // Update all counters first
         endpoint_stats.total_requests += 1;
         endpoint_stats.failed_requests += 1;
         endpoint_stats.consecutive_failures += 1;
         endpoint_stats.consecutive_successes = 0;
 
-        // Handle state transitions based on current state
         match endpoint_stats.state {
             CircuitState::Closed => {
-                // Check if we should open the circuit
                 if self.should_open_circuit(endpoint_stats) {
                     Self::transition_to_open(endpoint_stats);
                 }
             },
-            CircuitState::Open => {
-                // Already open - counters already updated
-            },
+            CircuitState::Open => {},
             CircuitState::HalfOpen => {
                 endpoint_stats.half_open_requests += 1;
-                // Any failure in Half-Open immediately reopens circuit
                 Self::transition_to_open(endpoint_stats);
             },
         }
@@ -300,7 +302,6 @@ impl CircuitBreakerManager {
         let endpoint_stats =
             circuits.entry(endpoint_id.to_string()).or_insert_with(CircuitStats::new);
 
-        // Apply state change and associated updates atomically
         endpoint_stats.state = state;
         endpoint_stats.last_state_change = Instant::now();
 
@@ -315,12 +316,10 @@ impl CircuitBreakerManager {
 
     /// Checks if circuit should be opened based on failure thresholds.
     fn should_open_circuit(&self, endpoint_stats: &CircuitStats) -> bool {
-        // Check consecutive failure threshold
         if endpoint_stats.consecutive_failures >= self.config.failure_threshold {
             return true;
         }
 
-        // Check failure rate threshold (only if we have enough requests)
         if endpoint_stats.total_requests >= self.config.min_requests_for_rate
             && endpoint_stats.failure_rate() >= self.config.failure_rate_threshold
         {

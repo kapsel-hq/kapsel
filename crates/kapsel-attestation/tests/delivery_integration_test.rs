@@ -1,7 +1,7 @@
-//! Scenario-based tests for delivery attestation integration.
+//! Integration tests for delivery attestation integration scenarios.
 //!
-//! Tests core assumptions about how successful webhook deliveries integrate
-//! with Merkle tree attestation for cryptographic audit trails.
+//! Tests webhook delivery integration with Merkle tree attestation
+//! and cryptographic audit trail creation.
 
 use std::time::Duration;
 

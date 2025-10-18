@@ -1,4 +1,7 @@
-//! Deterministic time control for testing.
+//! Deterministic time control and clock utilities for testing.
+//!
+//! Provides controllable time progression, duration measurement, and
+//! timestamp generation for reproducible time-based test scenarios.
 
 use std::{
     sync::{

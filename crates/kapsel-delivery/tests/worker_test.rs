@@ -1,7 +1,7 @@
-//! Tests for worker pool cleanup and orphaned task prevention.
+//! Integration tests for worker pool cleanup and task management.
 //!
-//! This test verifies that worker pools properly clean up their background
-//! tasks and don't leave orphaned workers running after tests complete.
+//! Tests worker pool lifecycle, background task cleanup, and prevention
+//! of orphaned workers after test completion.
 
 use std::{sync::Arc, time::Duration};
 

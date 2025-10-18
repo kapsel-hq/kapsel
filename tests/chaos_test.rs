@@ -1,7 +1,7 @@
-//! True chaos testing for webhook delivery system resilience.
+//! Chaos testing for webhook delivery system resilience.
 //!
-//! These tests verify system behavior under failure conditions using
-//! ScenarioBuilder for declarative chaos scenarios.
+//! Verifies system behavior under failure conditions using ScenarioBuilder
+//! for declarative chaos scenarios and fault injection.
 
 use std::time::Duration;
 

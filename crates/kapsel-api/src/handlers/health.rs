@@ -1,8 +1,7 @@
-//! Health check handler for monitoring service status.
+//! Health check handlers for service monitoring.
 //!
-//! Provides lightweight health monitoring endpoints for orchestration systems
-//! like Kubernetes. Checks critical dependencies like database connectivity
-//! and returns structured health information.
+//! Provides liveness, readiness, and health endpoints with database
+//! connectivity checks for orchestration systems like Kubernetes.
 
 use axum::{
     extract::State,
@@ -84,11 +83,9 @@ pub async fn health_check(State(db): State<PgPool>) -> Response {
     let timestamp = Utc::now();
     let start_time = std::time::Instant::now();
 
-    // Check database connectivity
     let db_health = check_database_health(&db).await;
     let db_duration = start_time.elapsed();
 
-    // Determine overall status
     let overall_status = match db_health.status {
         ComponentStatus::Up => HealthStatus::Healthy,
         ComponentStatus::Down => HealthStatus::Unhealthy,
@@ -163,11 +160,6 @@ struct DatabaseHealth {
 /// include additional startup-specific checks in the future.
 #[instrument(name = "readiness_check", skip(db))]
 pub async fn readiness_check(State(db): State<PgPool>) -> Response {
-    // For now, readiness is the same as health
-    // In the future, this could include additional checks like:
-    // - Configuration loaded
-    // - External dependencies available
-    // - Startup procedures completed
     health_check(State(db)).await
 }
 

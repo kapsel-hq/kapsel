@@ -3,6 +3,39 @@
 //! Provides high-level coordination of Merkle tree operations including leaf
 //! batching, tree construction, cryptographic signing, and database
 //! persistence. Designed for high-throughput webhook delivery attestation.
+//!
+//! # Batch Processing Flow
+//!
+//! ```text
+//! Delivery Events          Pending Queue           Batch Commit
+//!       │                        │                      │
+//!       ▼                        ▼                      ▼
+//! ┌──────────────┐         ┌─────────────┐       ┌──────────────┐
+//! │ Success      │────────▶│ ┌─────────┐ │       │ ┌──────────┐ │
+//! │ Event        │         │ │ Leaf  1 │ │       │ │ Merkle   │ │
+//! └──────────────┘         │ │ Leaf  2 │ │ ────▶ │ │ Tree     │ │
+//! ┌──────────────┐         │ │ Leaf  3 │ │ ────▶ │ │ Tree     │ │
+//! │ Success      │────────▶│ │ Leaf  4 │ │ ────▶ │ │ Tree     │ │
+//! │ Event        │         │ │   ...   │ │       │ │ Build    │ │
+//! └──────────────┘         │ │ Leaf  N │ │       │ └──────────┘ │
+//!        ▲                 │ └─────────┘ │       └──────────────┘
+//!        │                 └─────────────┘             │
+//!   Event-Driven           In-Memory Queue             │
+//!   Architecture                                       ▼
+//!                                                ┌──────────────┐
+//!                                                │  Database    │
+//!                                                │  Transaction │
+//!                                                │              │
+//!    ┌──────────────┐       ┌──────────────┐     │ ● Leaves     │
+//!    │ Ed25519      │◀─────▶│ Signed Tree  │     │ ● Tree Head  │
+//!    │ Signing      │       │ Head (STH)   │     │ ● Signature  │
+//!    └──────────────┘       └──────────────┘     └──────────────┘
+//! ```
+//!
+//! Benefits of batch processing:
+//! - **Amortized crypto costs**: One signature covers many delivery attempts
+//! - **Atomic consistency**: Database transaction ensures tree/DB alignment
+//! - **High throughput**: Processes hundreds of events per batch efficiently
 
 use std::collections::VecDeque;
 
@@ -15,8 +48,6 @@ use crate::{
     leaf::LeafData,
     signing::SigningService,
 };
-
-// Using the built-in SHA256 algorithm from rs_merkle
 
 /// Merkle tree service for webhook delivery attestation.
 ///
@@ -78,7 +109,6 @@ impl MerkleService {
     /// # Arguments
     /// * `leaf` - Delivery attempt leaf data to add
     pub async fn add_leaf(&mut self, leaf: LeafData) -> Result<()> {
-        // Validate leaf data before adding to queue
         if leaf.attempt_number <= 0 {
             return Err(AttestationError::InvalidTreeSize {
                 tree_size: leaf.attempt_number as i64,
@@ -120,16 +150,13 @@ impl MerkleService {
         let batch_size = self.pending.len();
         let batch_id = uuid::Uuid::new_v4();
 
-        // Begin database transaction
         let mut tx = self.db.begin().await.map_err(|e| AttestationError::Database { source: e })?;
 
-        // Compute leaf hashes and prepare for tree insertion
         let mut leaf_hashes = Vec::with_capacity(batch_size);
         for leaf in &self.pending {
             leaf_hashes.push(leaf.compute_hash());
         }
 
-        // Add leaves to Merkle tree
         let mut tree_hashes = leaf_hashes.clone();
         self.tree.append(&mut tree_hashes);
         self.tree.commit();
@@ -138,7 +165,6 @@ impl MerkleService {
             tree_size: self.tree.leaves_len() as u64,
         })?;
 
-        // Generate signed tree head
         let tree_size = self.tree.leaves_len() as i64;
         let timestamp_ms = Utc::now().timestamp_millis();
         let signature =
@@ -146,14 +172,12 @@ impl MerkleService {
                 AttestationError::batch_commit_failed("failed to sign tree head".to_string())
             })?;
 
-        // Insert leaves into database
         let start_index = tree_size - batch_size as i64;
         for (i, leaf) in self.pending.iter().enumerate() {
             self.insert_leaf(&mut tx, leaf, &leaf_hashes[i], batch_id, start_index + i as i64)
                 .await?;
         }
 
-        // Insert signed tree head
         sqlx::query(
             r#"
             INSERT INTO signed_tree_heads
@@ -172,10 +196,9 @@ impl MerkleService {
         .await
         .map_err(|e| AttestationError::Database { source: e })?;
 
-        // Commit transaction
         tx.commit().await.map_err(|e| AttestationError::Database { source: e })?;
 
-        // Clear pending queue only after successful commit
+        // Ordering matters: only clear queue after transaction commits successfully
         self.pending.clear();
 
         Ok(SignedTreeHead {

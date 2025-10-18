@@ -1,39 +1,11 @@
-//! HTTP request handlers for the Kapsel API.
+//! HTTP request handlers for API endpoints.
 //!
-//! This module contains all HTTP endpoint handlers following a consistent
-//! pattern:
-//! - Input validation with appropriate error codes
-//! - Tracing for observability
-//! - Database transaction management
-//! - Standardized error responses
-//!
-//! # Handler Organization
-//!
-//! Handlers are grouped by functionality:
-//! - `ingest` - Webhook ingestion endpoints
-//! - `health` - Health check and readiness probes
-//! - Future: `delivery` - Delivery status and retry management
-//! - Future: `endpoints` - Endpoint CRUD operations
-//!
-//! # Error Handling
-//!
-//! All handlers return standardized error responses with:
-//! - Appropriate HTTP status codes
-//! - Error codes from our taxonomy (E1001-E3004)
-//! - Human-readable error messages
-//! - Request tracing IDs for debugging
-//!
-//! # Security
-//!
-//! Handlers implement defense-in-depth:
-//! - Input validation before processing
-//! - Tenant isolation for all operations
-//! - Rate limiting per tenant
-//! - Payload size limits (10MB max)
+//! Provides webhook ingestion and health check handlers with input validation,
+//! tenant isolation, and standardized error responses. Handlers follow
+//! consistent patterns for tracing, database transactions, and error codes.
 
 pub mod health;
 pub mod ingest;
 
-// Re-export handlers for convenient access
 pub use health::{health_check, liveness_check, readiness_check};
 pub use ingest::ingest_webhook;

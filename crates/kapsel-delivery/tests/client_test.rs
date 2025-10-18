@@ -1,8 +1,7 @@
-//! HTTP delivery client tests
+//! Integration tests for HTTP delivery client.
 //!
-//! These tests define the expected behavior of the HTTP delivery client
-//! for webhook delivery. Following TDD principles, these tests are written
-//! before the implementation.
+//! Tests webhook delivery client behavior with timeout handling,
+//! error categorization, and response processing.
 
 use std::{collections::HashMap, time::Duration};
 

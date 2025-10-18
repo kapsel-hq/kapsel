@@ -1,8 +1,7 @@
-//! Ed25519 signing service for Merkle tree attestation.
+//! Ed25519 cryptographic signing and verification.
 //!
-//! Provides cryptographic signing and verification of Merkle tree heads using
-//! Ed25519. Designed for high-performance webhook delivery attestation with
-//! deterministic signatures.
+//! Provides deterministic signing of Merkle tree heads and signature
+//! verification for tamper-evident audit trails.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;

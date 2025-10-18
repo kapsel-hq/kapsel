@@ -1,4 +1,7 @@
-//! Test fixtures and data builders for consistent test data creation.
+//! Test data builders and fixtures for deterministic testing.
+//!
+//! Provides builder patterns for webhooks, tenants, and endpoints with
+//! configurable properties and sensible defaults for test setup.
 
 use std::collections::HashMap;
 

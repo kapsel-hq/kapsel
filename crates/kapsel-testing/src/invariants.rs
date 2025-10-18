@@ -1,7 +1,7 @@
-//! Invariant testing framework for webhook reliability guarantees.
+//! Invariant checking and property-based testing utilities.
 //!
-//! This module provides tools to verify that critical system invariants
-//! always hold true, regardless of input or system state.
+//! Provides tools to verify critical system invariants and reliability
+//! guarantees hold across different system states and inputs.
 
 use std::{
     collections::{HashMap, HashSet},

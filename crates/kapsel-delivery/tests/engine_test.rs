@@ -1,13 +1,7 @@
-//! Delivery engine tests.
+//! Integration tests for delivery engine component.
 //!
-//! Tests the webhook delivery engine component that processes pending
-//! events from the database and coordinates their delivery. Verifies
-//! engine behavior, event processing, and database integration.
-//!
-//! ## Test Coverage
-//! - Pending event processing from database
-//! - Engine startup and shutdown behavior
-//! - Event claiming and processing workflows
+//! Tests webhook delivery engine processing of pending events from database
+//! with engine lifecycle, event claiming, and coordination workflows.
 //! - Error handling during event processing
 //! - Integration with HTTP client and database
 

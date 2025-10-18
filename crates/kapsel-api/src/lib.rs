@@ -1,4 +1,8 @@
-//! Kapsel HTTP API.
+//! HTTP API server and request handling.
+//!
+//! Provides REST endpoints for webhook ingestion, health checks, and service
+//! management. Includes request validation, authentication middleware, and
+//! structured error responses with proper HTTP status codes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

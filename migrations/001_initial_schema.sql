@@ -6,9 +6,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- ============================================================================
 -- Tenants table - Multi-tenancy support
--- ============================================================================
 CREATE TABLE tenants (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
@@ -33,9 +31,7 @@ CREATE TABLE tenants (
     stripe_subscription_id TEXT
 );
 
--- ============================================================================
 -- Endpoints table - Webhook destination configuration
--- ============================================================================
 CREATE TABLE endpoints (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -72,9 +68,7 @@ CREATE TABLE endpoints (
     total_events_failed BIGINT NOT NULL DEFAULT 0
 );
 
--- ============================================================================
 -- Webhook events table - Core event storage
--- ============================================================================
 CREATE TABLE webhook_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -117,9 +111,7 @@ CREATE TABLE webhook_events (
     CHECK (payload_size > 0 AND payload_size <= 10485760)  -- 10MB max
 );
 
--- ============================================================================
 -- Delivery attempts table - Tracks each delivery attempt
--- ============================================================================
 CREATE TABLE delivery_attempts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     event_id UUID NOT NULL REFERENCES webhook_events(id) ON DELETE CASCADE,
@@ -152,9 +144,7 @@ CREATE TABLE delivery_attempts (
     UNIQUE(event_id, attempt_number)
 );
 
--- ============================================================================
 -- API keys table - For API authentication
--- ============================================================================
 CREATE TABLE api_keys (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -178,9 +168,7 @@ CREATE TABLE api_keys (
     CHECK (revoked_at IS NULL OR revoked_at >= created_at)
 );
 
--- ============================================================================
 -- Attestation keys table - Ed25519 key storage and rotation
--- ============================================================================
 CREATE TABLE attestation_keys (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
@@ -204,9 +192,7 @@ CREATE TABLE attestation_keys (
     CHECK (deactivated_at IS NULL OR deactivated_at >= created_at)
 );
 
--- ============================================================================
 -- Merkle leaves table - Individual leaf storage for tree construction
--- ============================================================================
 CREATE TABLE merkle_leaves (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
@@ -242,9 +228,7 @@ CREATE TABLE merkle_leaves (
     UNIQUE(tree_index) DEFERRABLE INITIALLY DEFERRED
 );
 
--- ============================================================================
 -- Signed tree heads table - Cryptographically signed Merkle tree states
--- ============================================================================
 CREATE TABLE signed_tree_heads (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
@@ -273,9 +257,7 @@ CREATE TABLE signed_tree_heads (
     UNIQUE(batch_id)
 );
 
--- ============================================================================
 -- Proof cache table - Cached inclusion and consistency proofs
--- ============================================================================
 CREATE TABLE proof_cache (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
 
@@ -312,9 +294,7 @@ CREATE TABLE proof_cache (
     -- PostgreSQL CHECK constraints cannot contain subqueries
 );
 
--- ============================================================================
 -- Indexes for performance
--- ============================================================================
 
 -- Tenants indexes - partial unique index for soft deletes
 CREATE UNIQUE INDEX idx_tenants_name_active
@@ -421,9 +401,7 @@ CREATE INDEX idx_proof_cache_consistency
 CREATE INDEX idx_proof_cache_expiry
     ON proof_cache(expires_at);
 
--- ============================================================================
 -- Functions and triggers
--- ============================================================================
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -497,9 +475,7 @@ CREATE TRIGGER update_proof_cache_access_trigger
     WHEN (OLD.access_count IS DISTINCT FROM NEW.access_count)
     EXECUTE FUNCTION update_proof_cache_access();
 
--- ============================================================================
 -- Initial data
--- ============================================================================
 
 -- Create default system tenant for internal use
 INSERT INTO tenants (id, name, plan, max_events_per_month, max_endpoints)
@@ -511,9 +487,7 @@ VALUES (
     2147483647
 ) ON CONFLICT DO NOTHING;
 
--- ============================================================================
 -- Comments for documentation
--- ============================================================================
 
 COMMENT ON TABLE webhook_events IS 'Core table storing all received webhook events and their delivery status';
 COMMENT ON COLUMN webhook_events.status IS 'Event lifecycle: received -> pending -> delivering -> delivered/failed';

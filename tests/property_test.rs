@@ -1,18 +1,8 @@
-//! E2E property-based tests for cross-system webhook reliability invariants.
+//! Property-based tests for webhook reliability invariants.
 //!
-//! These tests use randomly generated inputs to verify that system-wide
-//! invariants always hold across all components, regardless of input data,
-//! timing, or internal state. They test the complete webhook delivery pipeline
-//! from ingestion through retry logic, circuit breakers, and final delivery.
-//!
-//! ## Coverage
-//! - Idempotency guarantees across restarts
-//! - Retry count bounds and backoff timing
-//! - Circuit breaker state transitions
-//! - Tenant isolation enforcement
-//! - Rate limiting compliance
-//! - Payload size validation
-//! - Signature verification correctness
+//! Uses randomly generated inputs to verify system-wide invariants always
+//! hold across components, including retry bounds, circuit breaker states,
+//! tenant isolation, and delivery guarantees.
 
 use std::{
     collections::{HashMap, HashSet},

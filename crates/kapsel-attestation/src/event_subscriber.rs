@@ -1,8 +1,7 @@
-//! Event subscriber for integrating delivery events with attestation service.
+//! Event subscriber for delivery-to-attestation integration.
 //!
-//! This module provides the bridge between the delivery system and attestation
-//! system. It subscribes to delivery events and creates attestation leaves
-//! for successful deliveries, maintaining the cryptographic audit trail.
+//! Bridges delivery system events with Merkle tree attestation by converting
+//! successful delivery events into cryptographic audit trail leaves.
 
 use std::sync::Arc;
 
@@ -45,7 +44,6 @@ impl AttestationEventSubscriber {
             },
         };
 
-        // Add leaf to merkle service
         let mut service = self.merkle_service.write().await;
         if let Err(e) = service.add_leaf(leaf_data).await {
             error!(

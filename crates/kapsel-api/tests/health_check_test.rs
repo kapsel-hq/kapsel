@@ -1,8 +1,7 @@
-//! Health check endpoint tests.
+//! Integration tests for health check endpoint.
 //!
 //! Tests the `/health` endpoint functionality including service readiness,
-//! database connectivity checks, and proper response formatting. Verifies
-//! that the health check endpoint provides accurate service status information.
+//! database connectivity checks, and response formatting.
 
 use axum::http::StatusCode;
 use kapsel_api::create_router;

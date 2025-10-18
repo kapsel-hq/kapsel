@@ -1,8 +1,7 @@
-//! Error handling tests for attestation system.
+//! Integration tests for attestation error handling.
 //!
-//! Tests that the attestation service handles various error conditions
-//! gracefully without affecting other system components. Verifies fault
-//! isolation and graceful degradation behavior.
+//! Tests error condition handling, fault isolation, and graceful degradation
+//! behavior without affecting other system components.
 
 use std::sync::Arc;
 

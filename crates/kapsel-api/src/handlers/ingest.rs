@@ -1,8 +1,7 @@
-//! Webhook ingestion handler.
+//! Webhook ingestion handler with validation and persistence.
 //!
-//! Accepts incoming webhooks, validates them, and persists to the database
-//! for reliable delivery. Applies idempotency checks to prevent duplicate
-//! processing of events.
+//! Accepts incoming webhooks, validates signatures and payload constraints,
+//! and persists to database with idempotency protection.
 
 use std::collections::HashMap;
 
@@ -87,7 +86,6 @@ pub async fn ingest_webhook(
 ) -> Response {
     info!("Processing webhook ingestion request");
 
-    // Check payload size (10MB limit)
     const MAX_PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
     if body.len() > MAX_PAYLOAD_SIZE {
         warn!(payload_size = body.len(), limit = MAX_PAYLOAD_SIZE, "Payload exceeds size limit");
@@ -97,7 +95,6 @@ pub async fn ingest_webhook(
         );
     }
 
-    // Fetch endpoint and validate it exists
     let endpoint_id = EndpointId::from(endpoint_id);
     let endpoint_result = fetch_endpoint(&db, endpoint_id).await;
 
@@ -113,14 +110,12 @@ pub async fn ingest_webhook(
 
     debug!(tenant_id = %tenant_id, "Endpoint validated");
 
-    // Extract idempotency key for deduplication
     let idempotency_key = headers
         .get("x-idempotency-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
 
-    // Check for duplicate event
     if !idempotency_key.is_empty() {
         match check_duplicate(&db, &idempotency_key, endpoint_id).await {
             Ok(Some(existing_id)) => {
@@ -150,7 +145,6 @@ pub async fn ingest_webhook(
         }
     }
 
-    // Validate signature if endpoint has signing secret configured
     let (signature_valid, signature_error) =
         match validate_webhook_signature(&db, endpoint_id, &headers, &body).await {
             Ok(validation_result) => {
@@ -165,7 +159,6 @@ pub async fn ingest_webhook(
             },
         };
 
-    // If signature validation failed, reject the webhook
     if signature_valid == Some(false) {
         warn!("Webhook signature validation failed");
         return create_error_response(
@@ -174,11 +167,9 @@ pub async fn ingest_webhook(
         );
     }
 
-    // Generate new event ID
     let event_id = EventId::new();
     info!(event_id = %event_id, "Generated new event ID");
 
-    // Convert headers to JSON for storage
     let headers_map = extract_headers(&headers);
     let headers_json = match serde_json::to_value(&headers_map) {
         Ok(json) => json,
@@ -191,14 +182,12 @@ pub async fn ingest_webhook(
         },
     };
 
-    // Extract content type
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    // Persist event to database
     let insert_result = persist_event(
         &db,
         event_id,
@@ -282,7 +271,6 @@ async fn persist_event(
     signature_valid: Option<bool>,
     signature_error: Option<String>,
 ) -> sqlx::Result<()> {
-    // Calculate payload size, ensuring at least 1 to satisfy CHECK constraint
     let payload_size = i32::try_from(body.len()).unwrap_or(i32::MAX).max(1);
 
     sqlx::query(
@@ -335,7 +323,6 @@ async fn validate_webhook_signature(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<ValidationResult> {
-    // Fetch endpoint signature configuration
     let signature_config = sqlx::query_as::<_, (Option<String>, Option<String>)>(
         "SELECT signing_secret, signature_header FROM endpoints WHERE id = $1",
     )
@@ -346,21 +333,16 @@ async fn validate_webhook_signature(
 
     let (signing_secret, signature_header) = signature_config;
 
-    // If no signing secret configured, skip validation
     let Some(signing_secret) = signing_secret else { return Ok(ValidationResult::valid()) };
 
-    // Determine signature header name (default to X-Webhook-Signature)
     let header_name = signature_header.unwrap_or_else(|| "X-Webhook-Signature".to_string());
 
-    // Extract signature from headers
     let signature = headers.get(&header_name).and_then(|v| v.to_str().ok()).unwrap_or("");
 
-    // If signing secret is configured but signature is missing, fail
     if signature.is_empty() {
         return Ok(ValidationResult::invalid("signature required but missing"));
     }
 
-    // Validate signature
     Ok(validate_signature(body, signature, &signing_secret))
 }
 
@@ -382,8 +364,6 @@ mod tests {
         let error = KapselError::PayloadTooLarge { size_bytes: 11_000_000 };
         let response = create_error_response(StatusCode::PAYLOAD_TOO_LARGE, &error);
 
-        // Response type is opaque, so we can't easily inspect it in tests
-        // This would be better tested as an integration test
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 

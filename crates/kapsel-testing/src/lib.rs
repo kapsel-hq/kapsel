@@ -1,7 +1,8 @@
-//! Test harness for Kapsel integration and unit tests.
+//! Test infrastructure and utilities for deterministic testing.
 //!
-//! Provides deterministic test infrastructure with transaction-based database
-//! isolation, HTTP mocking, and fixture builders for reliable testing.
+//! Provides database transaction isolation, HTTP mocking, fixture builders,
+//! and property-based testing utilities. Ensures reproducible test execution
+//! with proper resource cleanup and invariant checking
 
 pub mod database;
 pub mod fixtures;

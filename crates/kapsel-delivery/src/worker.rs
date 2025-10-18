@@ -1,30 +1,8 @@
-//! Webhook delivery engine with worker pool and reliability guarantees.
+//! Worker pool engine for reliable webhook delivery.
 //!
-//! The delivery engine orchestrates webhook delivery using a pool of async
-//! workers that claim events from PostgreSQL and deliver them to configured
-//! endpoints. Integrates circuit breakers, retry logic, and graceful shutdown.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌────────────────┐   ┌──────────────┐   ┌─────────────┐
-//! │ DeliveryEngine │──▶│ Worker Pool  │──▶│ HTTP Client │
-//! └────────────────┘   └──────────────┘   └─────────────┘
-//!        │                   │                   │
-//!        ▼                   ▼                   ▼
-//! ┌───────────────┐    ┌──────────────┐   ┌─────────────┐
-//! │ PostgreSQL    │    │ Circuit      │   │ Destination │
-//! │ Event Queue   │    │ Breakers     │   │ Endpoints   │
-//! └───────────────┘    └──────────────┘   └─────────────┘
-//! ```
-//!
-//! # Key Features
-//!
-//! - **Lock-free work distribution** using PostgreSQL `FOR UPDATE SKIP LOCKED`
-//! - **Circuit breaker integration** prevents cascade failures
-//! - **Exponential backoff** with configurable jitter
-//! - **Graceful shutdown** completes in-flight deliveries
-//! - **Observable by default** with structured logging and metrics
+//! Orchestrates async workers that claim events from PostgreSQL using SKIP
+//! LOCKED for lock-free distribution. Integrates circuit breakers, exponential
+//! backoff, and graceful shutdown with event-driven architecture support.
 
 use std::{sync::Arc, time::Duration};
 
@@ -159,13 +137,9 @@ impl DeliveryEngine {
 
     /// Gracefully shuts down the delivery engine.
     ///
-    /// Signals all workers to stop and waits for in-flight deliveries to
-    /// Gracefully shuts down the delivery engine, allowing in-flight deliveries
-    /// to complete within the configured timeout.
-    ///
-    /// This method signals all workers to stop processing new events and waits
-    /// for current deliveries to complete. If the shutdown timeout is exceeded,
-    /// workers may be terminated forcefully.
+    /// Signals all workers to stop processing new events and waits for current
+    /// deliveries to complete. If the shutdown timeout is exceeded, workers may
+    /// be terminated forcefully.
     pub async fn shutdown(mut self) -> Result<()> {
         info!("shutting down delivery engine");
 
@@ -252,19 +226,19 @@ impl DeliveryWorker {
         info!(worker_id = self.id, "delivery worker starting");
 
         loop {
-            // Check for cancellation
+            // Early cancellation check prevents unnecessary work if shutdown signaled
             if self.cancellation_token.is_cancelled() {
                 info!(worker_id = self.id, "delivery worker received shutdown signal");
                 break;
             }
 
-            // Claim and process batch of events
             match self.process_batch().await {
                 Ok(processed_count) => {
                     if processed_count == 0 {
-                        // No events available, wait before polling again
                         tokio::select! {
-                            () = sleep(self.config.poll_interval) => {}
+                            () = sleep(self.config.poll_interval) => {
+                                // No events available, wait before polling again
+                            }
                             () = self.cancellation_token.cancelled() => break,
                         }
                     }
@@ -275,9 +249,10 @@ impl DeliveryWorker {
                         error = %error,
                         "worker batch processing failed"
                     );
-                    // Wait before retrying to avoid tight error loops
                     tokio::select! {
-                        () = sleep(Duration::from_secs(5)) => {}
+                        () = sleep(Duration::from_secs(5)) => {
+                            // Wait before retrying to avoid tight error loops
+                        }
                         () = self.cancellation_token.cancelled() => break,
                     }
                 },
@@ -296,7 +271,6 @@ impl DeliveryWorker {
 
         debug!(worker_id = self.id, batch_size, "processing event batch");
 
-        // Process each event
         for event in events {
             if self.cancellation_token.is_cancelled() {
                 break;
@@ -324,7 +298,7 @@ impl DeliveryWorker {
                 DeliveryError::database(format!("failed to begin transaction: {e}"))
             })?;
 
-        // First, select events to claim using FOR UPDATE SKIP LOCKED
+        // Select events to claim using FOR UPDATE SKIP LOCKED
         let event_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
             r"
             SELECT id FROM webhook_events
@@ -343,7 +317,6 @@ impl DeliveryWorker {
             DeliveryError::database(format!("failed to select events for claiming: {e}"))
         })?;
 
-        // If no events to process, return empty vec
         if event_ids.is_empty() {
             tx.rollback().await.map_err(|e| {
                 DeliveryError::database(format!("failed to rollback transaction: {e}"))
@@ -368,7 +341,6 @@ impl DeliveryWorker {
         .await
         .map_err(|e| DeliveryError::database(format!("failed to claim events: {e}")))?;
 
-        // Commit the transaction
         tx.commit()
             .await
             .map_err(|e| DeliveryError::database(format!("failed to commit transaction: {e}")))?;
@@ -719,7 +691,6 @@ impl DeliveryWorker {
         Ok(())
     }
 
-    /// Records a delivery attempt in the audit trail.
     /// Records a delivery attempt in the audit trail.
     async fn record_delivery_attempt(
         &self,

@@ -1,8 +1,7 @@
-//! Authentication middleware integration tests.
+//! Integration tests for authentication middleware.
 //!
-//! Tests the authentication middleware behavior through HTTP requests,
-//! verifying API key validation, tenant context injection, and proper
-//! error responses for various authentication scenarios.
+//! Tests API key validation, tenant context injection, and error responses
+//! through HTTP request scenarios.
 
 use axum::{
     body::Body,

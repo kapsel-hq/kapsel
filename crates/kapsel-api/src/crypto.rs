@@ -93,19 +93,16 @@ pub fn validate_signature(payload: &[u8], signature: &str, secret: &str) -> Vali
         return ValidationResult::invalid("secret key is empty");
     }
 
-    // Parse signature format
     let hex_signature = match parse_signature_format(signature) {
         Ok(hex) => hex,
         Err(err) => return ValidationResult::invalid(err.to_string()),
     };
 
-    // Generate expected signature
     let expected_signature = match generate_hmac_hex(payload, secret) {
         Ok(sig) => sig,
         Err(err) => return ValidationResult::invalid(err.to_string()),
     };
 
-    // Timing-safe comparison
     if timing_safe_eq(&hex_signature, &expected_signature) {
         ValidationResult::valid()
     } else {
@@ -138,17 +135,14 @@ pub fn generate_hmac_hex(payload: &[u8], secret: &str) -> Result<String, Signatu
 /// - "v1=<hex>" (Stripe style)
 /// - "<hex>" (raw hex)
 fn parse_signature_format(signature: &str) -> Result<String, SignatureError> {
-    // GitHub format: "sha256=<hex>"
     if let Some(hex) = signature.strip_prefix("sha256=") {
         return Ok(hex.to_string());
     }
 
-    // Stripe format: "v1=<hex>"
     if let Some(hex) = signature.strip_prefix("v1=") {
         return Ok(hex.to_string());
     }
 
-    // Check if it's valid hex (raw format)
     if signature.chars().all(|c| c.is_ascii_hexdigit()) && signature.len() == 64 {
         return Ok(signature.to_string());
     }
@@ -187,7 +181,6 @@ mod tests {
         let payload = b"test payload";
         let secret = "test_secret";
 
-        // Generate expected signature
         let expected = generate_hmac_hex(payload, secret).unwrap();
         let signature = format!("sha256={expected}");
 

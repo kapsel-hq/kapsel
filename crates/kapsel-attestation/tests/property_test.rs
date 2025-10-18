@@ -1,7 +1,7 @@
-//! Property-based tests for attestation module.
+//! Property-based tests for attestation component invariants.
 //!
-//! These tests use randomly generated inputs to verify that cryptographic
-//! invariants always hold, regardless of input data.
+//! Uses randomly generated inputs to verify cryptographic invariants
+//! always hold regardless of input data or system state.
 
 use kapsel_attestation::{LeafData, SigningService};
 use proptest::{prelude::*, test_runner::Config as ProptestConfig};

@@ -1,4 +1,7 @@
-//! Integration tests for MerkleService with database persistence.
+//! Integration tests for Merkle tree service operations.
+//!
+//! Tests MerkleService with database persistence, batch leaf processing,
+//! signed tree head generation, and cryptographic proof verification.
 
 use chrono::{DateTime, Utc};
 use kapsel_attestation::{LeafData, MerkleService, SigningService};

@@ -1,17 +1,7 @@
-//! Axum middleware for API key authentication.
+//! API key authentication middleware with tenant isolation.
 //!
-//! This module provides the primary authentication mechanism for the Kapsel
-//! API. It validates API keys provided in the `Authorization: Bearer` header
-//! and injects the corresponding `tenant_id` into the request for downstream
-//! use.
-//!
-//! # Authentication Flow
-//!
-//! 1. Extract API key from `Authorization` header.
-//! 2. Compute SHA256 hash of the key.
-//! 3. Query database for a matching, non-revoked, non-expired key.
-//! 4. On success, inject `tenant_id` into request extensions.
-//! 5. On failure, return 401 Unauthorized or 500 Internal Server Error.
+//! Validates API keys from Authorization headers, performs database lookup
+//! with SHA256 hashing, and injects tenant context for downstream handlers.
 
 use axum::{
     body::Body,
@@ -56,7 +46,6 @@ async fn validate_api_key(db: &PgPool, api_key: &str) -> Result<Uuid, AuthError>
 
     match row {
         Some((tenant_id,)) => {
-            // Update last_used_at
             let _ = sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1")
                 .bind(&key_hash)
                 .execute(db)
@@ -99,13 +88,10 @@ pub async fn auth_middleware(
 ) -> Result<Response, AuthError> {
     let headers = req.headers();
 
-    // Extract API key from Authorization header
     let api_key = extract_api_key(headers).ok_or(AuthError::MissingHeader)?;
 
-    // Validate key and get tenant ID
     let tenant_id = validate_api_key(&db, &api_key).await?;
 
-    // Store tenant ID in request extensions for downstream handlers
     req.extensions_mut().insert(tenant_id);
 
     Ok(next.run(req).await)
@@ -139,7 +125,6 @@ mod tests {
 
         let env = TestEnv::new().await.expect("test env setup");
 
-        // Insert test tenant and API key
         let tenant_id = Uuid::new_v4();
         let api_key = "test-key-abc123";
         let key_hash = sha256::digest(api_key.as_bytes());
@@ -161,7 +146,6 @@ mod tests {
             .await
             .expect("insert api key");
 
-        // Validate key
         let result = validate_api_key(env.pool(), api_key).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), tenant_id);

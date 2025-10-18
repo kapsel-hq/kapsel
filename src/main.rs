@@ -12,12 +12,10 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing with structured logging
     init_tracing();
 
     info!("Starting Kapsel webhook reliability service");
 
-    // Load configuration from environment
     let config = Config::from_env()?;
     info!(
         database_url = %config.database_url_masked(),
@@ -26,15 +24,12 @@ async fn main() -> Result<()> {
         "Configuration loaded"
     );
 
-    // Create database connection pool
     let db_pool = create_database_pool(&config).await?;
     info!("Database connection pool established");
 
-    // Run database migrations
     run_migrations(&db_pool).await?;
     info!("Database migrations completed");
 
-    // Start delivery engine
     let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
         db_pool.clone(),
         config.delivery_config.clone(),
@@ -43,7 +38,6 @@ async fn main() -> Result<()> {
     delivery_engine.start().await.context("Failed to start delivery engine")?;
     info!(worker_count = config.delivery_config.worker_count, "Delivery engine started");
 
-    // Start HTTP server
     let server_handle = tokio::spawn({
         let db_pool = db_pool.clone();
         let addr = config.server_addr;
@@ -56,15 +50,12 @@ async fn main() -> Result<()> {
 
     info!(addr = %config.server_addr, "Kapsel is ready to receive webhooks");
 
-    // Wait for shutdown signal
     shutdown_signal().await;
     info!("Shutdown signal received, starting graceful shutdown");
 
-    // Shutdown delivery engine first
     info!("Shutting down delivery engine");
     delivery_engine.shutdown().await.context("Delivery engine shutdown failed")?;
 
-    // Give in-flight requests time to complete
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(30)) => {
             info!("Shutdown grace period expired");
@@ -74,7 +65,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Close database connections
     db_pool.close().await;
     info!("Database connections closed");
 

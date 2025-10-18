@@ -1,12 +1,7 @@
-//! Test database infrastructure with shared container and transaction
-//! isolation.
+//! Database testing infrastructure with transaction isolation.
 //!
-//! This module provides optimal test isolation through a two-tier approach:
-//! 1. Process-level: One PostgreSQL container per test process
-//! 2. Test-level: Transaction rollback for each individual test
-//!
-//! This design gives us perfect isolation with minimal overhead - no schema
-//! juggling, no manual cleanup, just fast and reliable tests.
+//! Provides PostgreSQL container management and per-test transaction rollback
+//! for fast, isolated testing without manual cleanup or schema management.
 
 use std::{sync::Arc, time::Duration};
 

@@ -1,28 +1,34 @@
-//! Delivery event system for decoupled service integration.
+//! Event system for decoupled service integration.
 //!
-//! This module defines events emitted by the delivery system and the traits
-//! for handling these events. This enables clean separation between delivery
-//! logic and services like attestation that need to react to delivery outcomes.
+//! Defines delivery events and handler traits for clean separation between
+//! webhook delivery and downstream services like attestation. Enables
+//! extensible event-driven architecture with multicast dispatch.
 //!
-//! # Architecture
+//! # Event Flow Architecture
 //!
 //! ```text
-//! ┌─────────────────┐    Events    ┌────────────────────┐
-//! │ DeliveryWorker  │─────────────▶│  MulticastHandler  │
-//! └─────────────────┘              └────────────────────┘
-//!                                            │
-//!                                            ▼
-//!                                  ┌────────────────────┐
-//!                                  │ AttestationService │
-//!                                  │ (Event Handler)    │
-//!                                  └────────────────────┘
+//!                    DeliverySucceeded/Failed
+//! ┌─────────────────┐        Events         ┌────────────────────┐
+//! │ DeliveryWorker  │ ─────────────────────▶│ MulticastHandler   │
+//! │ (Producer)      │                       │ (Event Dispatcher) │
+//! └─────────────────┘                       └────────────────────┘
+//!                                                     │
+//!                                                     │ Distribute
+//!                                                     ▼
+//!                                          ┌─────────────────────┐
+//!                                          │ AttestationService  │
+//!                                          │ (Event Subscriber)  │
+//!                                          │                     │
+//!                                          │ Creates audit trail │
+//!                                          │ ● Merkle leaves     │
+//!                                          │ ● Signed tree heads │
+//!                                          └─────────────────────┘
 //! ```
 //!
-//! # Event-Driven Integration
-//!
-//! The delivery system emits events when deliveries succeed or fail. Other
-//! services can subscribe to these events by implementing `EventHandler`.
-//! This provides clean separation of concerns and makes the system extensible.
+//! This architecture enables:
+//! - **Loose coupling**: Components don't directly reference each other
+//! - **Extensibility**: New subscribers can be added without changes
+//! - **Testability**: Each component can be tested in isolation
 
 use std::sync::Arc;
 
@@ -169,9 +175,7 @@ impl NoOpEventHandler {
 
 #[async_trait::async_trait]
 impl EventHandler for NoOpEventHandler {
-    async fn handle_event(&self, _event: DeliveryEvent) {
-        // Intentionally do nothing
-    }
+    async fn handle_event(&self, _event: DeliveryEvent) {}
 }
 
 /// Multi-cast event handler that forwards events to multiple subscribers.
@@ -213,7 +217,6 @@ impl Default for MulticastEventHandler {
 #[async_trait::async_trait]
 impl EventHandler for MulticastEventHandler {
     async fn handle_event(&self, event: DeliveryEvent) {
-        // Handle event for all subscribers concurrently
         let futures = self.handlers.iter().map(|handler| {
             let event = event.clone();
             async move {
@@ -221,7 +224,6 @@ impl EventHandler for MulticastEventHandler {
             }
         });
 
-        // Wait for all handlers to complete
         // We don't propagate errors since event handling should not
         // interfere with delivery processing
         futures::future::join_all(futures).await;

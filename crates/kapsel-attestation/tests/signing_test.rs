@@ -1,4 +1,7 @@
-//! Integration tests for database-backed signing service.
+//! Integration tests for Ed25519 signing service operations.
+//!
+//! Tests cryptographic signing, key management, and signature verification
+//! with database-backed key storage and retrieval.
 
 use kapsel_testing::database::TestDatabase;
 

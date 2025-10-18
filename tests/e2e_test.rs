@@ -1,17 +1,7 @@
-//! End-to-end tests verifying complete webhook delivery workflows.
+//! End-to-end tests for complete webhook delivery workflows.
 //!
-//! These tests exercise the full system from HTTP ingestion through database
-//! persistence, retry logic, circuit breakers, and final delivery. They serve
-//! as golden samples demonstrating expected system behavior under various
-//! conditions including failures and recovery scenarios.
-//!
-//! ## Test Coverage
-//! - Complete webhook ingestion and delivery pipeline
-//! - Deterministic retry behavior with exponential backoff
-//! - Circuit breaker integration and recovery
-//! - Tenant isolation at the system level
-//! - Graceful handling of endpoint failures
-//! - Idempotency guarantees across system restarts
+//! Exercises the full system from HTTP ingestion through delivery with
+//! failure scenarios, retry logic, circuit breakers, and tenant isolation.
 
 use std::time::Duration;
 
