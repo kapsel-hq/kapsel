@@ -18,7 +18,7 @@ env:
 jobs:
   format:
     name: Format Check
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Clippy
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
 
   test:
     name: Test Suite
-    runs-on: self-hosted
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -73,7 +73,7 @@ jobs:
 
   coverage:
     name: Code Coverage
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +101,7 @@ jobs:
 
   security:
     name: Security Audit
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -113,7 +113,7 @@ jobs:
 
   unused-deps:
     name: Check Unused Dependencies
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -126,7 +126,7 @@ jobs:
 
   docs:
     name: Documentation
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -138,7 +138,7 @@ jobs:
 
   sqlx-prepare:
     name: SQLx Prepare Check
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -155,7 +155,7 @@ jobs:
 
   msrv:
     name: Minimum Supported Rust Version
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -179,7 +179,7 @@ jobs:
         sqlx-prepare,
         msrv,
       ]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check if all jobs succeeded
