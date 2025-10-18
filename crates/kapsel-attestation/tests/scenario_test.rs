@@ -83,8 +83,9 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
     // Start delivery processing
     delivery_engine.start().await.expect("delivery engine should start");
 
-    // Wait for delivery to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Wait for delivery to complete deterministically
+    let final_status = wait_for_delivery_completion(&env, &event_id).await;
+    assert_eq!(final_status, EventStatus::Delivered);
 
     // Verify webhook was delivered
     let delivered_event = get_event_by_id(&env, &event_id).await;
@@ -189,8 +190,8 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
     // Start delivery processing
     delivery_engine.start().await.expect("delivery engine should start");
 
-    // Wait for deliveries to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Wait for deliveries to complete deterministically
+    wait_for_multiple_deliveries_completion(&env, &event_ids).await;
 
     // Verify all webhooks were delivered
     for (_tenant_id, event_id) in &event_ids {
@@ -273,11 +274,13 @@ async fn attestation_failure_does_not_affect_delivery_success() {
     // Start delivery processing
     delivery_engine.start().await.expect("delivery engine should start");
 
-    // Wait for delivery to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Wait for delivery to complete deterministically
+    let final_status = wait_for_delivery_completion(&env, &event_id).await;
+    assert_eq!(final_status, EventStatus::Delivered);
+
+    let delivered_event = get_event_by_id(&env, &event_id).await;
 
     // Verify delivery succeeded even without attestation integration
-    let delivered_event = get_event_by_id(&env, &event_id).await;
     assert_eq!(delivered_event.status, EventStatus::Delivered);
     assert!(delivered_event.delivered_at.is_some());
 
@@ -380,4 +383,72 @@ fn compute_payload_hash(payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(payload);
     hasher.finalize().into()
+}
+
+/// Deterministically wait for a single delivery to complete.
+///
+/// Polls the database at regular intervals until the event reaches a terminal
+/// state. Returns the final status of the event.
+async fn wait_for_delivery_completion(env: &TestEnv, event_id: &EventId) -> EventStatus {
+    const MAX_ATTEMPTS: u32 = 200; // 10 seconds at 50ms intervals
+    const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(50);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let event = get_event_by_id(env, event_id).await;
+
+        // Check if event has reached a terminal state
+        match event.status {
+            EventStatus::Delivered | EventStatus::Failed | EventStatus::DeadLetter => {
+                return event.status;
+            },
+            EventStatus::Pending | EventStatus::Delivering | EventStatus::Received => {
+                // Continue polling
+                tokio::time::sleep(POLL_INTERVAL).await;
+            },
+        }
+
+        if attempt == MAX_ATTEMPTS {
+            panic!(
+                "Event {} did not complete after {} attempts. Final status: {:?}",
+                event_id.0, MAX_ATTEMPTS, event.status
+            );
+        }
+    }
+
+    unreachable!()
+}
+
+/// Deterministically wait for multiple deliveries to complete.
+///
+/// Polls the database until all events reach the Delivered state.
+async fn wait_for_multiple_deliveries_completion(env: &TestEnv, event_ids: &[(TenantId, EventId)]) {
+    const MAX_ATTEMPTS: u32 = 200; // 10 seconds at 50ms intervals
+    const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(50);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let mut all_delivered = true;
+
+        for (_tenant_id, event_id) in event_ids {
+            let event = get_event_by_id(env, event_id).await;
+            if event.status != EventStatus::Delivered {
+                all_delivered = false;
+                break;
+            }
+        }
+
+        if all_delivered {
+            return;
+        }
+
+        if attempt == MAX_ATTEMPTS {
+            // Print final status for debugging
+            for (_tenant_id, event_id) in event_ids {
+                let event = get_event_by_id(env, event_id).await;
+                eprintln!("Event {} final status: {:?}", event_id.0, event.status);
+            }
+            panic!("Not all events completed after {} attempts", MAX_ATTEMPTS);
+        }
+
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }

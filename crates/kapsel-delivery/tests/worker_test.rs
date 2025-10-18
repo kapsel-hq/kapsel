@@ -7,8 +7,9 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use kapsel_delivery::{
-    circuit::CircuitBreakerManager,
+    circuit::{CircuitBreakerManager, CircuitConfig},
     client::{ClientConfig, DeliveryClient},
+    retry::RetryPolicy,
     worker::{DeliveryConfig, EngineStats},
     worker_pool::WorkerPool,
 };
@@ -25,13 +26,14 @@ async fn worker_pool_explicit_shutdown() -> Result<()> {
         batch_size: 10,
         poll_interval: Duration::from_millis(100),
         client_config: ClientConfig { timeout: Duration::from_secs(5), ..Default::default() },
-        default_retry_policy: Default::default(),
+        default_retry_policy: RetryPolicy::default(),
 
         shutdown_timeout: Duration::from_secs(5),
     };
 
     let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
-    let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+    let circuit_manager =
+        Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
     let stats = Arc::new(RwLock::new(EngineStats::default()));
     let cancellation_token = CancellationToken::new();
 
@@ -65,13 +67,14 @@ async fn worker_pool_drop_cleanup() -> Result<()> {
         batch_size: 10,
         poll_interval: Duration::from_millis(100),
         client_config: ClientConfig::default(),
-        default_retry_policy: Default::default(),
+        default_retry_policy: RetryPolicy::default(),
 
         shutdown_timeout: Duration::from_secs(5),
     };
 
     let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
-    let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+    let circuit_manager =
+        Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
     let stats = Arc::new(RwLock::new(EngineStats::default()));
     let cancellation_token = CancellationToken::new();
     let cancellation_token_clone = cancellation_token.clone();
@@ -112,7 +115,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         batch_size: 5,
         poll_interval: Duration::from_millis(100),
         client_config: ClientConfig::default(),
-        default_retry_policy: Default::default(),
+        default_retry_policy: RetryPolicy::default(),
 
         shutdown_timeout: Duration::from_secs(5),
     };
@@ -122,7 +125,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         env1.create_pool(),
         config.clone(),
         client1,
-        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
     );
@@ -132,7 +135,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         env2.create_pool(),
         config,
         client2,
-        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
     );
@@ -169,7 +172,7 @@ async fn worker_pool_shutdown_timeout() -> Result<()> {
         batch_size: 10,
         poll_interval: Duration::from_millis(100),
         client_config: ClientConfig::default(),
-        default_retry_policy: Default::default(),
+        default_retry_policy: RetryPolicy::default(),
 
         shutdown_timeout: Duration::from_secs(5),
     };
@@ -179,7 +182,7 @@ async fn worker_pool_shutdown_timeout() -> Result<()> {
         env.create_pool(),
         config,
         client,
-        Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default()))),
+        Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
     );
@@ -201,8 +204,8 @@ async fn worker_pool_shutdown_timeout() -> Result<()> {
             // Worker shutdown may have timed out, which is acceptable for this test
             tracing::info!("Worker shutdown timed out as expected: {}", e);
         },
-        Err(_) => {
-            panic!("Test itself timed out - shutdown_graceful took too long");
+        Err(e) => {
+            unreachable!("Test itself timed out - shutdown_graceful took too long: {}", e);
         },
     }
 

@@ -235,7 +235,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        circuit::CircuitBreakerManager,
+        circuit::{CircuitBreakerManager, CircuitConfig},
         client::DeliveryClient,
         worker_pool::{DeliveryConfig, EngineStats},
     };
@@ -244,7 +244,8 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
-        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let circuit_manager =
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
@@ -257,7 +258,8 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
-        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let circuit_manager =
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
@@ -268,7 +270,7 @@ mod tests {
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
         // Workers should be spawned successfully
-        assert!(pool.worker_handles.len() > 0);
+        assert!(!pool.worker_handles.is_empty());
 
         // Shutdown gracefully
         pool.shutdown_graceful(Duration::from_secs(1))
@@ -281,7 +283,8 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
-        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let circuit_manager =
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
@@ -337,7 +340,8 @@ mod tests {
 
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
-        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let circuit_manager =
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
 
@@ -354,6 +358,7 @@ mod tests {
         {
             let stats_guard = stats.read().await;
             assert_eq!(stats_guard.active_workers, 0);
+            drop(stats_guard);
         }
 
         pool.spawn_workers().await.expect("workers should spawn successfully");
@@ -391,7 +396,8 @@ mod tests {
         };
 
         let client = Arc::new(DeliveryClient::new(config.client_config.clone()).unwrap());
-        let circuit_manager = Arc::new(RwLock::new(CircuitBreakerManager::new(Default::default())));
+        let circuit_manager =
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
