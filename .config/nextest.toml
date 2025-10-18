@@ -1,0 +1,7 @@
+[profile.default]
+# Only show failures, not all test output
+status-level = "fail"
+
+# Show test output only on failure (not for passing tests)
+failure-output = "immediate-final"
+success-output = "never"

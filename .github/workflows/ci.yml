@@ -10,7 +10,6 @@ on:
     - cron: "0 2 * * *"
 
 env:
-  RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
   SQLX_VERSION: 0.8.6
   SQLX_FEATURES: "rustls,postgres"

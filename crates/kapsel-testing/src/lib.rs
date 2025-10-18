@@ -65,10 +65,12 @@ impl TestEnv {
     /// - A deterministic test clock
     pub async fn new() -> Result<Self> {
         // Initialize tracing once per process
+        // Default to error-level logging to keep test output clean
+        // Set RUST_LOG=debug to see detailed logs when debugging
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("warn,kapsel=debug")),
+                    .unwrap_or_else(|_| EnvFilter::new("error")),
             )
             .with_test_writer()
             .try_init();
