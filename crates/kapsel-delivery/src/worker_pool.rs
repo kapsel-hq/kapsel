@@ -58,6 +58,11 @@ impl WorkerPool {
     ///
     /// Workers will run until cancellation is requested via the cancellation
     /// token. Returns immediately after spawning all workers.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns error but signature allows for future
+    /// validation.
     pub async fn spawn_workers(&mut self) -> Result<()> {
         info!(worker_count = self.config.worker_count, "spawning delivery workers");
 
@@ -111,6 +116,10 @@ impl WorkerPool {
     ///
     /// This method will signal cancellation to all workers and wait for them to
     /// complete their current work within the configured shutdown timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if shutdown timeout is exceeded or workers fail to join.
     #[allow(dead_code)]
     pub async fn shutdown_graceful(mut self, timeout: Duration) -> Result<()> {
         info!(

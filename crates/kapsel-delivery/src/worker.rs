@@ -90,6 +90,10 @@ pub struct DeliveryEngine {
 
 impl DeliveryEngine {
     /// Creates a new delivery engine with the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the delivery client cannot be initialized.
     pub fn new(pool: PgPool, config: DeliveryConfig) -> Result<Self> {
         let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
         let circuit_manager =
@@ -112,6 +116,10 @@ impl DeliveryEngine {
     ///
     /// Returns immediately after spawning workers. Use `shutdown()` to stop
     /// gracefully, or drop the engine to cancel workers immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if worker pool fails to spawn.
     pub async fn start(&mut self) -> Result<()> {
         info!(
             worker_count = self.config.worker_count,
@@ -140,6 +148,10 @@ impl DeliveryEngine {
     /// Signals all workers to stop processing new events and waits for current
     /// deliveries to complete. If the shutdown timeout is exceeded, workers may
     /// be terminated forcefully.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if graceful shutdown fails or times out.
     pub async fn shutdown(mut self) -> Result<()> {
         info!("shutting down delivery engine");
 
@@ -222,6 +234,11 @@ impl DeliveryWorker {
     }
 
     /// Main worker loop - claims and processes events until cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns error only if worker setup fails. Batch processing errors are
+    /// logged and retried.
     pub async fn run(&self) -> Result<()> {
         info!(worker_id = self.id, "delivery worker starting");
 
@@ -264,6 +281,10 @@ impl DeliveryWorker {
     }
 
     /// Claims and processes a batch of pending events.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database transaction or event claiming fails.
     async fn process_batch(&self) -> Result<usize> {
         // Claim pending events using FOR UPDATE SKIP LOCKED
         let events = self.claim_pending_events().await?;
@@ -289,6 +310,10 @@ impl DeliveryWorker {
     }
 
     /// Claims pending events from the database for processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database transaction or query fails.
     pub async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
         let now = Utc::now();
 
@@ -351,6 +376,10 @@ impl DeliveryWorker {
     }
 
     /// Processes a single webhook event through delivery pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if delivery attempt or database update fails.
     async fn process_event(&self, event: WebhookEvent) -> Result<()> {
         let _ = event.id;
 
@@ -379,6 +408,11 @@ impl DeliveryWorker {
     }
 
     /// Attempts delivery of a webhook event.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if circuit breaker is open, endpoint URL is invalid, or
+    /// database update fails.
     #[allow(clippy::too_many_lines)]
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
         let start_time = std::time::Instant::now();
@@ -538,6 +572,11 @@ impl DeliveryWorker {
     }
 
     /// Handles failed delivery attempts with retry logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database update fails while scheduling retry or
+    /// marking event as failed.
     async fn handle_failed_delivery(
         &self,
         event_id: &EventId,
@@ -619,6 +658,10 @@ impl DeliveryWorker {
     }
 
     /// Endpoint URL from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if endpoint is not found or database query fails.
     async fn endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
         let url = sqlx::query_scalar::<_, String>("SELECT url FROM endpoints WHERE id = $1")
             .bind(endpoint_id.0)
@@ -635,6 +678,10 @@ impl DeliveryWorker {
     }
 
     /// Updates event status to 'delivered' after successful delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database update fails.
     async fn mark_event_delivered(&self, event_id: &EventId) -> Result<()> {
         let now = Utc::now();
         sqlx::query(
@@ -652,6 +699,10 @@ impl DeliveryWorker {
     }
 
     /// Updates event with retry schedule after failed delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database update fails.
     async fn schedule_retry(
         &self,
         event: &WebhookEvent,
@@ -675,6 +726,10 @@ impl DeliveryWorker {
     }
 
     /// Marks event as permanently failed when retries are exhausted.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database update fails.
     async fn mark_event_failed(&self, event_id: &EventId) -> Result<()> {
         let now = Utc::now();
         sqlx::query(

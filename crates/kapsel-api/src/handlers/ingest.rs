@@ -319,6 +319,10 @@ fn extract_headers(headers: &HeaderMap) -> HashMap<String, String> {
 /// Validates webhook signature against endpoint configuration.
 ///
 /// Returns validation result or error if endpoint configuration is invalid.
+///
+/// # Errors
+///
+/// Returns error if endpoint lookup fails or signature verification fails.
 async fn validate_webhook_signature(
     db: &PgPool,
     endpoint_id: EndpointId,

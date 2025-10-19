@@ -43,6 +43,10 @@ pub struct TestDatabase {
 
 impl SharedDatabase {
     /// Initialize the shared PostgreSQL container and run migrations.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if container startup, connection, or migration fails.
     async fn new() -> Result<Self> {
         info!("initializing shared PostgreSQL test container");
 
@@ -71,6 +75,10 @@ impl SharedDatabase {
     }
 
     /// Create a properly configured connection pool for tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if connection fails after maximum retry attempts.
     async fn create_connection_pool(connection_string: &str) -> Result<PgPool> {
         // Retry connection with backoff - container needs time to start
         let mut retries = 0;
@@ -111,6 +119,10 @@ impl SharedDatabase {
     }
 
     /// Enable required PostgreSQL extensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if extension creation fails.
     async fn setup_extensions(pool: &PgPool) -> Result<()> {
         // We need UUID generation support
         sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
@@ -128,6 +140,10 @@ impl SharedDatabase {
     }
 
     /// Run database migrations to create schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if migration loading or execution fails.
     async fn run_migrations(pool: &PgPool) -> Result<()> {
         let workspace_root =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
@@ -157,6 +173,10 @@ impl TestDatabase {
     /// This manages sharing of the database container across tests in the same
     /// process. Uses a weak reference to allow proper cleanup when all
     /// tests finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database container fails to start or connection fails.
     pub async fn new() -> Result<Self> {
         // Try to upgrade existing weak reference to shared database
         {
@@ -183,6 +203,10 @@ impl TestDatabase {
     /// This bypasses the shared database mechanism and creates a fresh
     /// database container. Used by property tests that run in custom
     /// runtimes to avoid runtime conflicts.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database container fails to start or connection fails.
     pub async fn new_isolated() -> Result<Self> {
         let shared_db = Arc::new(SharedDatabase::new().await?);
         Ok(Self { shared_db })
@@ -203,6 +227,10 @@ impl TestDatabase {
     /// This uses unsafe code to transmute lifetimes. This is currently
     /// necessary for ergonomics in TestEnv, but should be eliminated in the
     /// future.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if transaction creation fails.
     #[allow(unsafe_code)]
     pub async fn begin_transaction(&self) -> Result<Transaction<'static, Postgres>> {
         let tx = self.shared_db.pool.begin().await.context("failed to begin transaction")?;
@@ -231,6 +259,10 @@ impl TestDatabase {
     ///
     /// This returns a new pool connected to the same shared container,
     /// useful for testing components that manage their own connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database connection fails.
     pub async fn create_isolated_pool(&self) -> Result<PgPool> {
         Ok(self.shared_db.pool.clone())
     }
@@ -245,6 +277,10 @@ impl TestDatabase {
 /// direct access.
 ///
 /// Initializes and returns a reference to the global shared database container.
+///
+/// # Errors
+///
+/// Returns error if database container fails to start or connection fails.
 pub async fn create_shared_database() -> Result<Arc<SharedDatabase>> {
     let db = TestDatabase::new().await?;
     Ok(Arc::clone(&db.shared_db))

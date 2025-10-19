@@ -63,6 +63,11 @@ impl TestEnv {
     /// - A database transaction that auto-rollbacks
     /// - An HTTP mock server for external calls
     /// - A deterministic test clock
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database container fails to start, connection fails,
+    /// or transaction creation fails.
     pub async fn new() -> Result<Self> {
         // Initialize tracing once per process
         // Default to error-level logging to keep test output clean
@@ -160,6 +165,11 @@ impl TestEnv {
     /// This consumes the TestEnv since the transaction can't be used after
     /// commit. Useful for tests that need to verify behavior with multiple
     /// database connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if transaction commit fails or creating new transaction
+    /// fails.
     pub async fn commit(&mut self) -> Result<()> {
         if let Some(tx) = self.tx.take() {
             tx.commit().await.context("failed to commit transaction")?;
@@ -192,11 +202,19 @@ impl TestEnv {
     }
 
     /// Create a test tenant with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database insert fails.
     pub async fn create_tenant(&mut self, name: &str) -> Result<TenantId> {
         self.create_tenant_with_plan(name, "enterprise").await
     }
 
     /// Create a test tenant with specific plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database insert fails.
     pub async fn create_tenant_with_plan(&mut self, name: &str, plan: &str) -> Result<TenantId> {
         let tenant_id = Uuid::new_v4();
 
@@ -216,11 +234,19 @@ impl TestEnv {
     }
 
     /// Create a test endpoint with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database insert fails.
     pub async fn create_endpoint(&mut self, tenant_id: TenantId, url: &str) -> Result<EndpointId> {
         self.create_endpoint_with_config(tenant_id, url, "test-endpoint", 10, 30).await
     }
 
     /// Create a test endpoint with full configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database insert fails.
     pub async fn create_endpoint_with_config(
         &mut self,
         tenant_id: TenantId,
@@ -253,6 +279,10 @@ impl TestEnv {
     ///
     /// Creates a standard tenant and endpoint for tests that don't
     /// need specific configurations.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database inserts fail.
     pub async fn seed_test_data(&mut self) -> Result<(TenantId, EndpointId)> {
         let tenant_id = self.create_tenant("test-tenant").await?;
         let endpoint_id = self.create_endpoint(tenant_id, "https://example.com/webhook").await?;
@@ -263,6 +293,10 @@ impl TestEnv {
     ///
     /// Handles idempotency by returning existing event ID if duplicate
     /// source_event_id.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if header serialization or database insert fails.
     pub async fn ingest_webhook(&mut self, webhook: &TestWebhook) -> Result<EventId> {
         let event_id = Uuid::new_v4();
         let body_bytes = webhook.body.clone();
@@ -295,6 +329,10 @@ impl TestEnv {
     }
 
     /// Finds the current status of a webhook event from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails or event not found.
     pub async fn find_webhook_status(&mut self, event_id: EventId) -> Result<String> {
         let status: (String,) = sqlx::query_as("SELECT status FROM webhook_events WHERE id = $1")
             .bind(event_id.0)
@@ -306,6 +344,10 @@ impl TestEnv {
 
     /// Counts the number of delivery attempts for a webhook event in the
     /// database.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn count_delivery_attempts(&mut self, event_id: EventId) -> Result<i64> {
         let count: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1")
@@ -319,6 +361,10 @@ impl TestEnv {
     /// Simulates a single run of the delivery worker pool.
     ///
     /// Finds pending webhooks ready for delivery and processes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database queries or HTTP mock recording fails.
     pub async fn run_delivery_cycle(&mut self) -> Result<()> {
         // Find webhooks ready for delivery
         let ready_webhooks: Vec<ReadyWebhook> = sqlx::query_as(
@@ -549,6 +595,10 @@ impl TestEnv {
     }
 
     /// Count rows in a table by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails or column extraction fails.
     pub async fn count_by_id(&mut self, table: &str, id_column: &str, id: Uuid) -> Result<i64> {
         let query = format!("SELECT COUNT(*) as count FROM {} WHERE {} = $1", table, id_column);
 
@@ -563,12 +613,20 @@ impl TestEnv {
     }
 
     /// Check if database connection is healthy.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns error - connection failures return false.
     pub async fn database_health_check(&mut self) -> Result<bool> {
         let result = sqlx::query("SELECT 1 as health").fetch_one(&mut **self.db()).await;
         Ok(result.is_ok())
     }
 
     /// List all tables in the database schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn list_tables(&mut self) -> Result<Vec<String>> {
         let tables: Vec<String> = sqlx::query_scalar(
             "SELECT table_name FROM information_schema.tables
@@ -589,6 +647,10 @@ impl TestEnv {
     }
 
     /// Count attestation leaves for a specific event.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn count_attestation_leaves_for_event(&mut self, event_id: EventId) -> Result<i64> {
         tracing::debug!(
             event_id = %event_id.0,
@@ -648,6 +710,10 @@ impl TestEnv {
     }
 
     /// Count total attestation leaves across all events.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn count_total_attestation_leaves(&mut self) -> Result<i64> {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves").fetch_one(self.pool()).await?;
@@ -656,6 +722,10 @@ impl TestEnv {
     }
 
     /// Count total signed tree heads.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn count_signed_tree_heads(&mut self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_tree_heads")
             .fetch_one(self.pool())
@@ -665,6 +735,10 @@ impl TestEnv {
     }
 
     /// Fetch the latest signed tree head.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database query fails.
     pub async fn fetch_latest_signed_tree_head(&mut self) -> Result<Option<SignedTreeHeadInfo>> {
         let result = sqlx::query(
             "SELECT tree_size, root_hash, timestamp_ms, signature, batch_size
@@ -925,6 +999,10 @@ impl ScenarioBuilder {
     }
 
     /// Execute the scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any step in the scenario fails to execute.
     pub async fn run(self, env: &mut TestEnv) -> Result<()> {
         tracing::info!("running scenario: {}", self.name);
 

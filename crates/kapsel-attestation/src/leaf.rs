@@ -53,16 +53,8 @@ pub struct LeafData {
 impl LeafData {
     /// Create new leaf data for a delivery attempt.
     ///
-    /// # Arguments
-    /// * `delivery_attempt_id` - Unique delivery attempt identifier
-    /// * `event_id` - Source webhook event identifier
-    /// * `endpoint_url` - Target endpoint URL
-    /// * `payload_hash` - SHA256 hash of webhook payload
-    /// * `attempt_number` - Attempt number (must be positive)
-    /// * `response_status` - HTTP response status (None for network errors)
-    /// * `attempted_at` - Timestamp of delivery attempt
-    ///
     /// # Errors
+    ///
     /// Returns `AttestationError::InvalidTreeSize` if attempt_number is not
     /// positive.
     pub fn new(
@@ -102,9 +94,6 @@ impl LeafData {
     ///                    payload_hash || attempt_number ||
     ///                    response_status || attempted_at_ms)
     /// ```
-    ///
-    /// # Returns
-    /// 32-byte SHA256 hash suitable for Merkle tree construction.
     pub fn compute_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
 
@@ -173,7 +162,7 @@ impl LeafData {
 
     /// Returns a display representation for debugging.
     ///
-    /// Returns a human-readable string suitable for logging and debugging
+    /// Produces a human-readable string suitable for logging and debugging
     /// that includes key identifiers without sensitive data.
     pub fn display_summary(&self) -> String {
         format!(

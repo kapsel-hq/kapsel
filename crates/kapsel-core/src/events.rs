@@ -153,9 +153,6 @@ pub trait EventHandler: Send + Sync + std::fmt::Debug {
     /// This method should not block delivery processing. If event
     /// handling fails, it should log the error but not propagate
     /// it back to the delivery system.
-    ///
-    /// # Arguments
-    /// * `event` - The delivery event to handle
     async fn handle_event(&self, event: DeliveryEvent);
 }
 
@@ -195,9 +192,6 @@ impl MulticastEventHandler {
     }
 
     /// Adds a subscriber to receive delivery events.
-    ///
-    /// # Arguments
-    /// * `handler` - Event handler to receive delivery events
     pub fn add_subscriber(&mut self, handler: Arc<dyn EventHandler>) {
         self.handlers.push(handler);
     }

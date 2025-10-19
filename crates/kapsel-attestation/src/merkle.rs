@@ -93,10 +93,6 @@ impl MerkleService {
     ///
     /// Initializes with an empty tree and pending queue. The service will
     /// load existing tree state from the database on first use.
-    ///
-    /// # Arguments
-    /// * `db` - Database connection pool
-    /// * `signing` - Ed25519 signing service for tree heads
     pub fn new(db: PgPool, signing: SigningService) -> Self {
         Self { db, signing, tree: MerkleTree::new(), pending: VecDeque::new() }
     }
@@ -106,8 +102,10 @@ impl MerkleService {
     /// Leaves are queued in memory until `try_commit_pending` is called.
     /// This allows for efficient batch processing while maintaining ordering.
     ///
-    /// # Arguments
-    /// * `leaf` - Delivery attempt leaf data to add
+    /// # Errors
+    ///
+    /// Returns `AttestationError::InvalidTreeSize` if attempt_number is not
+    /// positive.
     pub async fn add_leaf(&mut self, leaf: LeafData) -> Result<()> {
         if leaf.attempt_number <= 0 {
             return Err(AttestationError::InvalidTreeSize {
@@ -120,6 +118,10 @@ impl MerkleService {
     }
 
     /// Returns the number of pending leaves awaiting commit.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible but returns Result for API consistency.
     pub async fn pending_count(&self) -> Result<usize> {
         Ok(self.pending.len())
     }
@@ -133,11 +135,8 @@ impl MerkleService {
     /// 4. Persists everything to database in a transaction
     /// 5. Clears pending queue on success
     ///
-    /// # Returns
-    /// `SignedTreeHead` representing the new tree state, or error if batch
-    /// processing fails.
-    ///
     /// # Errors
+    ///
     /// Returns `AttestationError::BatchCommitFailed` if database transaction
     /// fails or tree operations are invalid.
     pub async fn try_commit_pending(&mut self) -> Result<SignedTreeHead> {
@@ -275,14 +274,8 @@ pub struct SignedTreeHead {
 impl SignedTreeHead {
     /// Create a signed tree head from components.
     ///
-    /// # Arguments
-    /// * `tree_size` - Number of leaves in tree
-    /// * `root_hash` - Merkle tree root hash
-    /// * `timestamp_ms` - Signing timestamp in milliseconds
-    /// * `signature` - Ed25519 signature bytes
-    /// * `key_id` - Signing key identifier
-    ///
     /// # Errors
+    ///
     /// Returns `AttestationError::InvalidSignature` if signature is not
     /// exactly 64 bytes.
     pub fn new(
@@ -306,11 +299,9 @@ impl SignedTreeHead {
 
     /// Verify the tree head signature using the provided signing service.
     ///
-    /// # Arguments
-    /// * `signing_service` - Service with public key for verification
+    /// # Errors
     ///
-    /// # Returns
-    /// `true` if signature is valid, `false` otherwise.
+    /// Returns `AttestationError` if signature verification fails.
     pub fn verify_signature(&self, signing_service: &SigningService) -> Result<bool> {
         if signing_service.key_id() != self.key_id {
             return Ok(false);

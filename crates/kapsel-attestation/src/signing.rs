@@ -35,10 +35,8 @@ impl SigningService {
 
     /// Create signing service from existing key bytes.
     ///
-    /// # Arguments
-    /// * `private_key_bytes` - Ed25519 private key (32 bytes)
-    ///
     /// # Errors
+    ///
     /// Returns `AttestationError::InvalidKeyFormat` if key bytes are invalid.
     pub fn try_from_bytes(private_key_bytes: &[u8; 32]) -> Result<Self, AttestationError> {
         let signing_key = SigningKey::from_bytes(private_key_bytes);
@@ -53,13 +51,9 @@ impl SigningService {
     /// Creates a deterministic Ed25519 signature over the concatenated tree
     /// state: tree_size || root_hash || timestamp_ms
     ///
-    /// # Arguments
-    /// * `root_hash` - Merkle tree root hash (32 bytes)
-    /// * `tree_size` - Number of leaves in the tree
-    /// * `timestamp_ms` - Unix timestamp in milliseconds
+    /// # Errors
     ///
-    /// # Returns
-    /// Ed25519 signature bytes (64 bytes)
+    /// Returns `AttestationError` if signature generation fails.
     pub fn sign_tree_head(
         &self,
         root_hash: &[u8; 32],
@@ -73,16 +67,8 @@ impl SigningService {
 
     /// Verify a tree head signature.
     ///
-    /// # Arguments
-    /// * `root_hash` - Expected Merkle tree root hash (32 bytes)
-    /// * `tree_size` - Expected tree size
-    /// * `timestamp_ms` - Expected timestamp
-    /// * `signature_bytes` - Signature to verify (64 bytes)
-    ///
-    /// # Returns
-    /// `true` if signature is valid, `false` otherwise
-    ///
     /// # Errors
+    ///
     /// Returns `AttestationError::InvalidSignature` if signature format is
     /// invalid.
     pub fn verify_tree_head(
@@ -122,9 +108,6 @@ impl SigningService {
     /// This method allows setting the key ID to the UUID returned by the
     /// database when inserting into the attestation_keys table, since the
     /// database generates its own primary key.
-    ///
-    /// # Arguments
-    /// * `key_id` - Database-generated UUID for this key
     pub fn with_key_id(mut self, key_id: uuid::Uuid) -> Self {
         self.key_id = key_id;
         self
@@ -133,11 +116,6 @@ impl SigningService {
     /// Sign leaf data for Merkle tree inclusion.
     ///
     /// Creates a signature over delivery attempt data for audit trail purposes.
-    ///
-    /// # Arguments
-    /// * `leaf_hash` - RFC 6962 leaf hash (32 bytes)
-    /// * `delivery_attempt_id` - Unique delivery attempt identifier
-    /// * `event_id` - Source webhook event identifier
     pub fn sign_leaf(
         &self,
         leaf_hash: &[u8; 32],
