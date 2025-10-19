@@ -15,9 +15,15 @@
 </p>
 
 > [!WARNING]
-> Kapsel is in early development phase.
+> Kapsel is in a pre-release, alpha stage.
 >
 > The API is unstable, features are incomplete, and breaking changes should be expected.
+
+## The Problem
+
+Webhooks fail. When they do, they fail silently.
+
+Network timeouts, server errors, and rate limits lead to lost events, out-of-sync data, and a complete lack of a verifiable audit trail. You're left with no record and, worse, no proof of delivery.
 
 ## The Hook
 
@@ -31,30 +37,25 @@ Kapsel is a webhook reliability service for building guaranteed at-least-once de
 ## Development
 
 ```bash
+# Clone this repository
 git clone https://github.com/kapsel-hq/kapsel
 cd kapsel
 
-# Development
-cargo make build
-cargo make tdd
+# Start the test database in Docker
+docker-compose up -d postgres-test
 
-# Testing
-cargo make test
-
-# Run all checks
-cargo make check
-
-# Database
+# Set up the database schema
 cargo make db-setup
-cargo make db-reset
+
+# Run the development server
+cargo make dev
+
+# Run the test suite
+cargo make test
 ```
 
-Read `Makefile.toml` for all avaliable `cargo-make` tasks.
+Read [`Makefile.toml`](Makefile.toml) for all avaliable [`cargo-make`](https://github.com/sagiegurari/cargo-make) tasks.
 
 ## License
 
-Licensed under the Apache License, Version 2.0.
-
----
-
-See [`docs/`](docs/) for detailed design, development guide, and testing philosophy.
+Licensed under the [`Apache License, Version 2.0`](LICENSE)
