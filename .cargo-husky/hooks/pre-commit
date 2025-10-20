@@ -1,6 +1,13 @@
 #!/usr/bin/env sh
 set -e
 
+# Disable pre-commit checks if inside a interactive rebase
+ if [ -d "$(git rev-parse --git-path rebase-merge)" ] || \
+    [ -d "$(git rev-parse --git-path rebase-apply)" ] || \
+    [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+    exit 0
+fi
+
 echo "Running pre-commit checks..."
 
 # Check formatting
@@ -25,3 +32,4 @@ cargo test --lib --workspace || {
 }
 
 echo "SUCCESS: All pre-commit checks passed!"
+
