@@ -11,24 +11,16 @@ keywords = ["webhook", "reliability", "domain", "error", "types"]
 categories = ["web-programming", "network-programming", "data-structures"]
 
 [dependencies]
-# Serialization
 serde = { workspace = true }
 bytes = { workspace = true }
-
-# Data types
 uuid = { workspace = true }
 chrono = { workspace = true }
-
-# Async
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
-
-# Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-
-# External error types
+tracing = { workspace = true }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
 

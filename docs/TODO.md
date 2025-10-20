@@ -34,10 +34,10 @@
 - `migrations/001_initial_schema.sql`
 - `crates/kapsel-core/src/tenant/repository.rs`
 
-- [ ] Remove `api_key` and `api_key_hash` columns from `tenants` table
-- [ ] Use `api_keys` table as single source of truth
-- [ ] Update repository methods to join with `api_keys` table
-- [ ] Ensure keys are only shown once at generation, never stored raw
+- [x] Remove `api_key` and `api_key_hash` columns from `tenants` table
+- [x] Use `api_keys` table as single source of truth
+- [x] Update repository methods to join with `api_keys` table
+- [x] Ensure keys are only shown once at generation, never stored raw
 
 **Estimate:** 0.5 days
 
@@ -50,11 +50,11 @@
 - `crates/kapsel-core/src/events/handler.rs`
 - `crates/kapsel-delivery/src/worker.rs`
 
-- [ ] Spawn each `handle_event` call as detached task in `MulticastEventHandler`
+- [x] Spawn each `handle_event` call as detached task in `MulticastEventHandler`
 - [ ] Add timeout for subscriber execution (30s default)
 - [ ] Log subscriber failures without affecting delivery
-- [ ] Test: Panicking subscriber doesn't crash worker
-- [ ] Test: Slow subscriber doesn't block delivery
+- [x] Test: Panicking subscriber doesn't crash worker
+- [x] Test: Slow subscriber doesn't block delivery
 
 **Estimate:** 0.5 days
 
