@@ -20,11 +20,10 @@ async fn delivery_engine_processes_pending_events() {
     let endpoint_id = Uuid::new_v4();
     let event_id = Uuid::new_v4();
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
-        .bind("free")
-        .bind("test-key")
+        .bind("enterprise")
         .execute(env.pool())
         .await
         .unwrap();

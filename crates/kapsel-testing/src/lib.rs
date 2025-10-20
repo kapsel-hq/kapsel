@@ -219,13 +219,12 @@ impl TestEnv {
         let tenant_id = Uuid::new_v4();
 
         sqlx::query(
-            "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, NOW(), NOW())",
+            "INSERT INTO tenants (id, name, plan, created_at, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())",
         )
         .bind(tenant_id)
         .bind(name)
         .bind(plan)
-        .bind(format!("test-key-{}", tenant_id.simple()))
         .execute(&mut **self.db())
         .await
         .context("failed to create test tenant")?;

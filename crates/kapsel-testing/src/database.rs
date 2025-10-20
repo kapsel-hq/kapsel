@@ -319,13 +319,12 @@ mod tests {
         // Insert in first transaction
         let tenant_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, NOW(), NOW())",
+            "INSERT INTO tenants (id, name, plan, created_at, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())",
         )
         .bind(tenant_id)
         .bind("isolated-tenant")
         .bind("enterprise")
-        .bind(format!("isolation-test-key-{}", tenant_id))
         .execute(&mut *tx1)
         .await
         .unwrap();
@@ -350,13 +349,12 @@ mod tests {
             let mut tx = db.begin_transaction().await.unwrap();
 
             sqlx::query(
-                "INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, NOW(), NOW())",
+                "INSERT INTO tenants (id, name, plan, created_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())",
             )
             .bind(tenant_id)
             .bind("committed-tenant")
             .bind("enterprise")
-            .bind(format!("commit-test-key-{}", tenant_id))
             .execute(&mut *tx)
             .await
             .unwrap();

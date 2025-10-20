@@ -126,11 +126,10 @@ mod tests {
         let api_key = "test-key-abc123";
         let key_hash = sha256::digest(api_key.as_bytes());
 
-        sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
             .bind(tenant_id)
             .bind("test-tenant")
             .bind("free")
-            .bind(api_key)
             .execute(env.pool())
             .await
             .expect("insert tenant");

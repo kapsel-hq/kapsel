@@ -28,11 +28,10 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     let key_hash = sha256::digest(api_key.as_bytes());
 
     // Insert tenant
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -192,11 +191,10 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
     let api_key = "test-key-nonexistent-endpoint";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -243,11 +241,10 @@ async fn ingest_webhook_enforces_payload_size_limit() {
     let api_key = "test-key-size-limit";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -308,11 +305,10 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let api_key = "test-key-idempotency";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -421,11 +417,10 @@ async fn ingest_webhook_handles_different_content_types() {
     let api_key = "test-key-content-types";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -522,11 +517,10 @@ async fn ingest_webhook_without_idempotency_key() {
     let api_key = "test-key-no-idempotency";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");

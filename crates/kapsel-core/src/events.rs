@@ -211,16 +211,23 @@ impl Default for MulticastEventHandler {
 #[async_trait::async_trait]
 impl EventHandler for MulticastEventHandler {
     async fn handle_event(&self, event: DeliveryEvent) {
-        let futures = self.handlers.iter().map(|handler| {
+        // Spawn each handler in a detached task for fault isolation.
+        // This ensures that a panicking or deadlocking subscriber
+        // cannot crash the delivery worker.
+        for handler in &self.handlers {
+            let handler = handler.clone();
             let event = event.clone();
-            async move {
-                handler.handle_event(event).await;
-            }
-        });
 
-        // We don't propagate errors since event handling should not
-        // interfere with delivery processing
-        futures::future::join_all(futures).await;
+            // Detached task: fire-and-forget execution
+            tokio::spawn(async move {
+                // Execute handler in isolation. If it panics, only this
+                // task dies, not the delivery worker.
+                handler.handle_event(event).await;
+            });
+        }
+
+        // Return immediately without waiting for handlers.
+        // Delivery processing continues regardless of subscriber outcomes.
     }
 }
 
@@ -274,6 +281,9 @@ mod tests {
         let event = create_test_delivery_succeeded_event();
         multicast.handle_event(event).await;
 
+        // Give spawned tasks time to execute
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         assert_eq!(counter1.load(Ordering::SeqCst), 1);
         assert_eq!(counter2.load(Ordering::SeqCst), 1);
     }
@@ -285,6 +295,84 @@ mod tests {
 
         // Should not panic with no subscribers
         multicast.handle_event(event).await;
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_does_not_crash_delivery() {
+        let mut multicast = MulticastEventHandler::new();
+
+        // Add a handler that panics
+        #[derive(Debug)]
+        struct PanickingHandler;
+
+        #[async_trait::async_trait]
+        impl EventHandler for PanickingHandler {
+            async fn handle_event(&self, _event: DeliveryEvent) {
+                panic!("Simulated subscriber failure!");
+            }
+        }
+
+        // Add a normal handler to verify it still works
+        let (normal_handler, counter) = TestEventHandler::new();
+
+        multicast.add_subscriber(Arc::new(PanickingHandler));
+        multicast.add_subscriber(Arc::new(normal_handler));
+
+        let event = create_test_delivery_succeeded_event();
+
+        // This should not panic despite the panicking handler
+        multicast.handle_event(event).await;
+
+        // Give spawned tasks time to execute
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Verify the normal handler still executed
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "Normal handler should execute despite panicking handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_handler_does_not_block_delivery() {
+        let mut multicast = MulticastEventHandler::new();
+
+        // Add a slow handler
+        #[derive(Debug)]
+        struct SlowHandler;
+
+        #[async_trait::async_trait]
+        impl EventHandler for SlowHandler {
+            async fn handle_event(&self, _event: DeliveryEvent) {
+                // Simulate slow processing
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+        }
+
+        // Add a fast handler
+        let (fast_handler, counter) = TestEventHandler::new();
+
+        multicast.add_subscriber(Arc::new(SlowHandler));
+        multicast.add_subscriber(Arc::new(fast_handler));
+
+        let event = create_test_delivery_succeeded_event();
+
+        let start = tokio::time::Instant::now();
+        multicast.handle_event(event).await;
+        let elapsed = start.elapsed();
+
+        // Should return immediately, not wait for slow handler
+        assert!(
+            elapsed < tokio::time::Duration::from_millis(100),
+            "MulticastEventHandler should not wait for slow handlers"
+        );
+
+        // Give fast handler time to execute
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify the fast handler executed
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "Fast handler should execute immediately");
     }
 
     fn create_test_delivery_succeeded_event() -> DeliveryEvent {

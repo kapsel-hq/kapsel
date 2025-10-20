@@ -31,11 +31,10 @@ async fn authenticate_request_succeeds_with_valid_key() {
     let api_key = "test-key-valid-123";
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -148,11 +147,10 @@ async fn authenticate_request_fails_with_revoked_key() {
     let key_hash = sha256::digest(api_key.as_bytes());
 
     // Insert tenant and revoked API key
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -192,11 +190,10 @@ async fn authenticate_request_fails_with_expired_key() {
     let key_hash = sha256::digest(api_key.as_bytes());
 
     // Insert tenant and expired API key
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");
@@ -239,11 +236,10 @@ async fn authenticate_request_updates_last_used_timestamp() {
     let key_hash = sha256::digest(api_key.as_bytes());
 
     // Insert tenant and API key
-    sqlx::query("INSERT INTO tenants (id, name, plan, api_key) VALUES ($1, $2, $3, $4)")
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("test-tenant")
         .bind("enterprise")
-        .bind(api_key)
         .execute(env.pool())
         .await
         .expect("insert tenant");

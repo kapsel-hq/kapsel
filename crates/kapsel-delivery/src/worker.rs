@@ -1147,11 +1147,10 @@ mod tests {
 
         // Insert tenant
         let tenant_name = format!("test-tenant-{}", tenant_id.simple());
-        sqlx::query("INSERT INTO tenants (id, name, plan, api_key, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW())")
+        sqlx::query("INSERT INTO tenants (id, name, plan, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())")
             .bind(tenant_id)
             .bind(tenant_name)
             .bind("free")
-            .bind("test-api-key")
             .execute(env.pool())
             .await
             .expect("failed to insert test tenant");

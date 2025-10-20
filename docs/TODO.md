@@ -11,6 +11,10 @@
 
 **Critical Gaps:**
 
+- **SECURITY:** Raw API keys stored in `tenants` table
+- **ROBUSTNESS:** Event handler failures can crash delivery workers
+- **SAFETY:** `unsafe` block in test harness for lifetime transmutation
+- **CONFIG:** Environment variables defined but not parsed (using defaults)
 - Circuit breaker recovery uses `force_circuit_state` in tests instead of real timeouts
 - Attestation API missing (crypto complete, no HTTP routes)
 - Multi-tenant HTTP isolation not validated end-to-end
@@ -19,7 +23,91 @@
 
 ---
 
-## Priority 1: Circuit Breaker Recovery
+## Priority 0: Security & Robustness [CRITICAL]
+
+### API Key Storage Fix
+
+**Why:** Raw `api_key` column in `tenants` table is a security vulnerability. If database is compromised, raw keys are exposed.
+
+**Files:**
+
+- `migrations/001_initial_schema.sql`
+- `crates/kapsel-core/src/tenant/repository.rs`
+
+- [ ] Remove `api_key` and `api_key_hash` columns from `tenants` table
+- [ ] Use `api_keys` table as single source of truth
+- [ ] Update repository methods to join with `api_keys` table
+- [ ] Ensure keys are only shown once at generation, never stored raw
+
+**Estimate:** 0.5 days
+
+### Event Handler Isolation
+
+**Why:** Subscriber panic crashes delivery worker, violating fault isolation. Secondary system failures (attestation) should never affect primary system (delivery).
+
+**Files:**
+
+- `crates/kapsel-core/src/events/handler.rs`
+- `crates/kapsel-delivery/src/worker.rs`
+
+- [ ] Spawn each `handle_event` call as detached task in `MulticastEventHandler`
+- [ ] Add timeout for subscriber execution (30s default)
+- [ ] Log subscriber failures without affecting delivery
+- [ ] Test: Panicking subscriber doesn't crash worker
+- [ ] Test: Slow subscriber doesn't block delivery
+
+**Estimate:** 0.5 days
+
+---
+
+## Priority 1: Safety & Configuration
+
+### Eliminate `unsafe` in Test Harness
+
+**Why:** `unsafe` block transmutes lifetime to `'static`, breaking Rust safety guarantees. Symptom of ergonomic challenge in `TestEnv` design.
+
+**Files:**
+
+- `crates/kapsel-testing/src/database.rs`
+- `crates/kapsel-testing/src/env.rs`
+
+- [ ] Refactor to closure-based transaction management:
+  ```rust
+  pub async fn transaction<F, Fut, T>(&self, f: F) -> Result<T>
+  where
+      F: FnOnce(&mut sqlx::Transaction<'_, Postgres>) -> Fut,
+      Fut: std::future::Future<Output = Result<T>>,
+  ```
+- [ ] Update all tests to use new pattern
+- [ ] Remove `unsafe` block and `TODO` comment
+- [ ] Verify no performance regression
+
+**Estimate:** 1-2 days
+
+### Full Configuration Implementation
+
+**Why:** `.env.example` defines many variables but `Config::from_env()` ignores most. Production deployment would be misconfigured by default.
+
+**Files:**
+
+- `crates/kapsel-api/src/config.rs`
+- `src/main.rs`
+
+- [ ] Parse all variables from `.env.example`:
+  - Worker pool size, channel capacity
+  - Retry policies (max attempts, backoff parameters)
+  - Circuit breaker thresholds and timeouts
+  - Database connection pool settings
+  - Attestation batch sizes
+- [ ] Use `config-rs` or `figment` for type-safe parsing
+- [ ] Add validation for required vs optional
+- [ ] Test: All documented env vars are respected
+
+**Estimate:** 1 day
+
+---
+
+## Priority 2: Circuit Breaker Recovery
 
 **Why:** Recovery path advertised but never tested with real timeouts.
 
@@ -51,7 +139,7 @@
 
 ---
 
-## Priority 2: Attestation API
+## Priority 3: Attestation API
 
 **Why:** Core value proposition. Backend crypto done, missing HTTP layer.
 
@@ -60,66 +148,69 @@
 - `crates/kapsel-api/src/routes/attestation.rs`
 - `crates/kapsel-api/tests/attestation_api_test.rs`
 
-- [ ] `GET /attestation/sth`
-
-  ```rust
-  pub async fn latest_sth(
-      State(merkle_service): State<Arc<RwLock<MerkleService>>>
-  ) -> Result<Json<SignedTreeHead>, ApiError> {
-      let service = merkle_service.read().await;
-      let sth = service.latest_sth().await?;
-      Ok(Json(sth.ok_or(ApiError::NotFound)?))
-  }
-  ```
-
-- [ ] `GET /attestation/proof/{leaf_hash}`
-  - Generate inclusion proof for delivery attempt
-  - Support `?tree_size=N` for historical proofs
-  - Return proof with sibling hashes and metadata
-
-- [ ] `GET /attestation/download-proof/{delivery_attempt_id}`
-  - Complete verification package: leaf data + proof + STH
-  - Include verification instructions for CLI
-
-- [ ] Integration tests
-  - `sth_endpoint_returns_valid_signed_tree_head()`
-  - `proof_endpoint_generates_verifiable_inclusion_proof()`
-  - End-to-end proof verification using rs-merkle
-
+- [ ] `GET /attestation/sth` - Latest signed tree head
+- [ ] `GET /attestation/proof/{leaf_hash}` - Inclusion proof
+- [ ] `GET /attestation/download-proof/{delivery_attempt_id}` - Complete verification package
+- [ ] Integration tests with end-to-end proof verification
 - [ ] Update `server.rs` router (public endpoints, no auth)
 
 **Estimate:** 3-4 days
 
 ---
 
-## Priority 3: Multi-Tenant Security
+## Priority 4: Multi-Tenant Security
 
 **Why:** Database isolation exists but HTTP boundary not validated.
 
 **File:** `tests/tenant_isolation_test.rs`
 
 - [ ] `tenant_a_cannot_access_tenant_b_events_via_http()`
-  - Start real Axum server with `TestEnv::with_server()`
-  - Create tenants with separate API keys
-  - Ingest webhook for Tenant B, get `event_id`
-  - HTTP GET `/v1/events/{event_id}` with Tenant A's key
-  - Assert: HTTP 404 (not 403), no data leakage
-
 - [ ] `tenant_a_cannot_access_tenant_b_endpoints()`
-  - Create endpoint for Tenant B
-  - Access with Tenant A's credentials
-  - Verify 404 with no metadata exposure
-
 - [ ] `database_queries_enforce_tenant_id_filtering()`
-  - Audit all SELECT queries include `WHERE tenant_id = $1`
-  - Use SQLx compile-time verification
-  - Document whitelisted system queries
+- [ ] Audit all SELECT queries for tenant_id filtering
 
 **Estimate:** 1-2 days
 
 ---
 
-## Priority 4: Rate Limiting
+## Priority 5: Testing Refinements
+
+### TestEnv Worker Simulation
+
+**Why:** `run_delivery_cycle` commits mid-test, breaking transaction isolation. Makes state harder to reason about.
+
+**Files:**
+
+- `crates/kapsel-testing/src/delivery.rs`
+- Tests using `run_delivery_cycle`
+
+- [ ] Worker should use own connection from pool, not test transaction
+- [ ] Remove `is_custom_runtime()` checks
+- [ ] Test assertions on separate connection
+- [ ] Document transaction boundaries clearly
+
+**Estimate:** 1 day
+
+### Promote Unit Tests
+
+**Why:** Current tests heavily favor integration style. Pure logic should have pure unit tests.
+
+**Files:**
+
+- All `src/` files with testable pure functions
+- `docs/TESTING_STRATEGY.md`
+
+- [ ] Extract pure logic from I/O-heavy functions
+- [ ] Add inline `#[cfg(test)] mod tests` blocks
+- [ ] No `TestEnv`, no `#[tokio::test]`, no I/O in unit tests
+- [ ] Update TESTING_STRATEGY.md with clear boundaries
+- [ ] Example: Request building logic in `client.rs`
+
+**Estimate:** Ongoing
+
+---
+
+## Priority 6: Rate Limiting
 
 **Why:** Zero protection against abuse.
 
@@ -130,14 +221,14 @@
 
 - [ ] Add `governor = "0.6"`, `tower-governor = "0.1"`
 - [ ] Token bucket middleware per tenant_id
-  - In-memory storage (Redis later)
-  - HTTP 429 with `Retry-After` header
-- [ ] Tests: 101 req/sec (limit 100) → 101st gets 429
+- [ ] HTTP 429 with `Retry-After` header
 - [ ] Multi-tenant isolation testing
+
+**Estimate:** 1-2 days
 
 ---
 
-## Priority 5: Prometheus Metrics
+## Priority 7: Prometheus Metrics
 
 **Why:** Zero observability in production.
 
@@ -151,6 +242,8 @@
   - `circuit_breaker_state{endpoint}` (gauge)
 - [ ] `/metrics` endpoint
 - [ ] Test metrics incremented correctly
+
+**Estimate:** 2 days
 
 ---
 
@@ -183,9 +276,9 @@
 
 ## Total Estimate
 
-- **Week 1:** Circuit recovery + Attestation API
-- **Week 2:** Tenant security + Rate limiting + Metrics
-- **Week 3:** Management APIs
-- **Week 4:** Client verification tools
+- **Week 1:** Security fixes + Configuration + Circuit recovery
+- **Week 2:** Attestation API + Tenant security
+- **Week 3:** Testing refinements + Rate limiting + Metrics
+- **Week 4:** Management APIs
 
 This depends on the number of Redbulls consumed.
