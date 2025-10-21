@@ -202,6 +202,7 @@ pub struct DeliveryWorker {
 
 impl DeliveryWorker {
     /// Creates a new delivery worker with the given configuration.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         pool: PgPool,
@@ -1228,7 +1229,7 @@ mod tests {
         (tenant_id, endpoint_id, event_id)
     }
 
-    async fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
+    fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
         DeliveryWorker {
             id: 0,
             pool: pool.clone(),
@@ -1244,7 +1245,7 @@ mod tests {
         }
     }
 
-    async fn create_test_worker_with_config_and_pool(
+    fn create_test_worker_with_config_and_pool(
         pool: &PgPool,
         config: DeliveryConfig,
     ) -> DeliveryWorker {

@@ -125,7 +125,6 @@ impl WorkerPool {
     /// # Errors
     ///
     /// Returns error if shutdown timeout is exceeded or workers fail to join.
-    #[allow(dead_code)]
     pub async fn shutdown_graceful(mut self, timeout: Duration) -> Result<()> {
         info!(
             worker_count = self.worker_handles.len(),

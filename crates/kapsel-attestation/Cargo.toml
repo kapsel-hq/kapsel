@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
-rand = "0.6"  # Must match ed25519-dalek's rand_core 0.6 dependency
+rand = "0.8"  # Compatible with ed25519-dalek's rand_core 0.6 dependency
 rs_merkle = "1.5"
 sha2 = { workspace = true }
 kapsel-core = { path = "../kapsel-core" }

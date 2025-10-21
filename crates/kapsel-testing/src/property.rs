@@ -11,9 +11,9 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::Result;
 use bytes::Bytes;
 use kapsel_core::{EndpointId, TenantId};
-use proptest::prelude::*;
+use proptest::prelude::{any, prop, prop_oneof, Strategy};
 
-use crate::{FailureKind, ScenarioBuilder, TestEnv};
+use crate::{fixtures::WebhookBuilder, FailureKind, TestEnv};
 
 /// System actions that can be performed during property-based testing.
 ///
@@ -72,29 +72,36 @@ impl SystemAction {
     /// continue to hold after the action is performed.
     pub async fn execute(&self, state: &mut PropertyTestState) -> Result<()> {
         match self {
-            SystemAction::IngestWebhook { tenant_name, endpoint_name, payload, content_type } => {
+            Self::IngestWebhook { tenant_name, endpoint_name, payload, content_type } => {
                 state
                     .execute_ingest_webhook(tenant_name, endpoint_name, payload, content_type)
                     .await
             },
 
-            SystemAction::AdvanceTime { duration } => state.execute_advance_time(*duration).await,
+            Self::AdvanceTime { duration } => {
+                state.execute_advance_time(*duration);
+                Ok(())
+            },
 
-            SystemAction::RunDeliveryCycle => state.execute_delivery_cycle().await,
+            Self::RunDeliveryCycle => state.execute_delivery_cycle().await,
 
-            SystemAction::InjectNetworkFailure { failure_kind } => {
+            Self::InjectNetworkFailure { failure_kind } => {
                 state.execute_inject_failure(failure_kind.clone()).await
             },
 
-            SystemAction::InjectSuccess => state.execute_inject_success().await,
+            Self::InjectSuccess => state.execute_inject_success().await,
 
-            SystemAction::TriggerCircuitBreaker { endpoint_name } => {
-                state.execute_trigger_circuit_breaker(endpoint_name).await
+            Self::TriggerCircuitBreaker { endpoint_name } => {
+                state.execute_trigger_circuit_breaker(endpoint_name);
+                Ok(())
             },
 
-            SystemAction::RunAttestationCommitment => state.execute_attestation_commitment().await,
+            Self::RunAttestationCommitment => state.execute_attestation_commitment().await,
 
-            SystemAction::WaitBrief => state.execute_wait_brief().await,
+            Self::WaitBrief => {
+                state.execute_wait_brief();
+                Ok(())
+            },
         }
     }
 
@@ -104,11 +111,8 @@ impl SystemAction {
     /// circuit breaker when no endpoints exist).
     pub fn is_valid_in_state(&self, state: &PropertyTestState) -> bool {
         match self {
-            SystemAction::TriggerCircuitBreaker { endpoint_name } => {
-                state.endpoints.contains_key(endpoint_name)
-            },
-
-            SystemAction::IngestWebhook { endpoint_name, .. } => {
+            Self::TriggerCircuitBreaker { endpoint_name }
+            | Self::IngestWebhook { endpoint_name, .. } => {
                 state.endpoints.contains_key(endpoint_name)
             },
 
@@ -160,7 +164,7 @@ fn ingest_webhook_strategy() -> impl Strategy<Value = SystemAction> {
                 tenant_name,
                 endpoint_name,
                 payload,
-                content_type: content_type.to_string(),
+                content_type,
             }
         })
 }
@@ -169,11 +173,11 @@ fn ingest_webhook_strategy() -> impl Strategy<Value = SystemAction> {
 fn advance_time_strategy() -> impl Strategy<Value = SystemAction> {
     prop_oneof![
         // Short durations (common)
-        3 => (1u64..10).prop_map(|secs| Duration::from_secs(secs)),
+        3 => (1u64..10).prop_map(Duration::from_secs),
         // Medium durations (moderate)
-        2 => (10u64..300).prop_map(|secs| Duration::from_secs(secs)),
+        2 => (10u64..300).prop_map(Duration::from_secs),
         // Long durations (rare, for timeout testing)
-        1 => (300u64..3600).prop_map(|secs| Duration::from_secs(secs)),
+        1 => (300u64..3600).prop_map(Duration::from_secs),
     ]
     .prop_map(|duration| SystemAction::AdvanceTime { duration })
 }
@@ -204,8 +208,6 @@ fn circuit_breaker_strategy() -> impl Strategy<Value = SystemAction> {
 pub struct PropertyTestState {
     /// Test environment for database and HTTP operations
     pub env: TestEnv,
-    /// Scenario builder for invariant validation
-    pub scenario: ScenarioBuilder,
     /// Map of tenant names to their IDs
     pub tenants: HashMap<String, TenantId>,
     /// Map of endpoint names to their IDs
@@ -220,13 +222,11 @@ pub struct PropertyTestState {
 
 impl PropertyTestState {
     /// Create a new property test state with isolated test environment.
-    pub async fn new(test_name: &str) -> Result<Self> {
+    pub async fn new(_test_name: &str) -> Result<Self> {
         let env = TestEnv::new_isolated().await?;
-        let scenario = ScenarioBuilder::new(test_name);
 
         Ok(Self {
             env,
-            scenario,
             tenants: HashMap::new(),
             endpoints: HashMap::new(),
             total_actions: 0,
@@ -255,7 +255,7 @@ impl PropertyTestState {
                 .env
                 .create_endpoint_with_config(
                     self.tenants[tenant_name],
-                    &format!("http://example.com/{}", endpoint_name),
+                    &format!("http://example.com/{endpoint_name}"),
                     endpoint_name,
                     10,
                     30,
@@ -265,7 +265,6 @@ impl PropertyTestState {
         }
 
         // Ingest the webhook
-        use crate::fixtures::WebhookBuilder;
         let webhook = WebhookBuilder::new()
             .tenant(self.tenants[tenant_name].0)
             .endpoint(self.endpoints[endpoint_name].0)
@@ -280,10 +279,9 @@ impl PropertyTestState {
     }
 
     /// Execute time advancement.
-    async fn execute_advance_time(&mut self, duration: Duration) -> Result<()> {
+    fn execute_advance_time(&mut self, duration: Duration) {
         self.env.advance_time(duration);
         self.total_actions += 1;
-        Ok(())
     }
 
     /// Execute delivery cycle.
@@ -337,14 +335,13 @@ impl PropertyTestState {
     }
 
     /// Execute circuit breaker trigger.
-    async fn execute_trigger_circuit_breaker(&mut self, endpoint_name: &str) -> Result<()> {
+    fn execute_trigger_circuit_breaker(&mut self, endpoint_name: &str) {
         if let Some(&_endpoint_id) = self.endpoints.get(endpoint_name) {
             // Skip circuit breaker trigger for now as MockServer methods aren't available
             self.env.advance_time(Duration::from_secs(1));
         }
 
         self.total_actions += 1;
-        Ok(())
     }
 
     /// Execute attestation commitment.
@@ -359,10 +356,9 @@ impl PropertyTestState {
     }
 
     /// Execute brief wait.
-    async fn execute_wait_brief(&mut self) -> Result<()> {
+    fn execute_wait_brief(&mut self) {
         self.env.advance_time(Duration::from_millis(100));
         self.total_actions += 1;
-        Ok(())
     }
 
     /// Validate all system invariants hold in current state.
@@ -380,10 +376,10 @@ impl PropertyTestState {
         self.check_state_machine_integrity().await?;
 
         // Check tenant isolation - no cross-tenant data leakage
-        self.check_tenant_isolation().await?;
+        self.check_tenant_isolation();
 
         // Check attestation consistency if enabled
-        self.check_attestation_consistency().await?;
+        self.check_attestation_consistency();
 
         Ok(())
     }
@@ -398,11 +394,7 @@ impl PropertyTestState {
         // All events must be accounted for
         if total_events != terminal_events + processing_events + pending_events {
             anyhow::bail!(
-                "Data loss detected: {} total events != {} terminal + {} processing + {} pending",
-                total_events,
-                terminal_events,
-                processing_events,
-                pending_events
+                "Data loss detected: {total_events} total events != {terminal_events} terminal + {processing_events} processing + {pending_events} pending"
             );
         }
 
@@ -438,7 +430,7 @@ impl PropertyTestState {
                     // Valid states
                 },
                 invalid => {
-                    anyhow::bail!("Invalid event state: {}", invalid);
+                    anyhow::bail!("Invalid event state: {invalid}");
                 },
             }
 
@@ -460,17 +452,17 @@ impl PropertyTestState {
     }
 
     /// Verify tenant isolation is maintained.
-    async fn check_tenant_isolation(&self) -> Result<()> {
+    #[allow(clippy::unused_self)]
+    fn check_tenant_isolation(&self) {
         // For now, this is a placeholder
         // Real implementation would verify no cross-tenant data access
-        Ok(())
     }
 
     /// Verify attestation system consistency.
-    async fn check_attestation_consistency(&self) -> Result<()> {
+    #[allow(clippy::unused_self)]
+    fn check_attestation_consistency(&self) {
         // Placeholder for attestation-specific invariants
         // Would verify Merkle tree consistency, etc.
-        Ok(())
     }
 }
 
@@ -496,12 +488,7 @@ pub async fn run_stateful_property_test(test_name: &str, actions: Vec<SystemActi
 
         // Validate all invariants still hold
         if let Err(e) = state.validate_invariants().await {
-            anyhow::bail!(
-                "Invariant violation after action {} ({}): {:#}",
-                i,
-                format!("{:?}", action),
-                e
-            );
+            anyhow::bail!("Invariant violation after action {i} ({action:?}): {e}");
         }
     }
 
@@ -510,7 +497,7 @@ pub async fn run_stateful_property_test(test_name: &str, actions: Vec<SystemActi
 
 #[cfg(test)]
 mod tests {
-    use proptest::proptest;
+    use proptest::{prelude::ProptestConfig, proptest};
 
     use super::*;
 

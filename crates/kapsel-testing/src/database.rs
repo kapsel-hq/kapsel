@@ -60,7 +60,7 @@ impl SharedDatabase {
             container.get_host_port_ipv4(5432).await.context("failed to get container port")?;
 
         let connection_string =
-            format!("postgres://postgres:postgres@127.0.0.1:{}/postgres?sslmode=disable", port);
+            format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres?sslmode=disable");
 
         debug!(port, "connecting to PostgreSQL container");
 
@@ -81,10 +81,11 @@ impl SharedDatabase {
     ///
     /// Returns error if connection fails after maximum retry attempts.
     async fn create_connection_pool(connection_string: &str) -> Result<PgPool> {
-        // Retry connection with backoff - container needs time to start
-        let mut retries = 0;
         const MAX_RETRIES: u32 = 30;
         const RETRY_DELAY_MS: u64 = 100;
+
+        // Retry connection with backoff - container needs time to start
+        let mut retries = 0;
 
         loop {
             match sqlx::postgres::PgPoolOptions::new()
@@ -106,9 +107,7 @@ impl SharedDatabase {
                 Err(e) => {
                     if retries >= MAX_RETRIES {
                         return Err(anyhow::anyhow!(
-                            "failed to connect to PostgreSQL after {} retries: {}",
-                            MAX_RETRIES,
-                            e
+                            "failed to connect to PostgreSQL after {MAX_RETRIES} retries: {e}"
                         ));
                     }
                 },
@@ -146,8 +145,10 @@ impl SharedDatabase {
     ///
     /// Returns error if migration loading or execution fails.
     async fn run_migrations(pool: &PgPool) -> Result<()> {
-        let workspace_root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .context("failed to find workspace root directory")?;
         let migrations_path = workspace_root.join("migrations");
 
         debug!(?migrations_path, "running migrations");
@@ -235,12 +236,12 @@ impl TestDatabase {
     /// # Errors
     ///
     /// Returns error if database connection fails.
-    pub async fn create_isolated_pool(&self) -> Result<PgPool> {
-        Ok(self.shared_db.pool.clone())
+    pub fn create_isolated_pool(&self) -> PgPool {
+        self.shared_db.pool.clone()
     }
 
     /// Schema name for the test database (always 'public').
-    pub fn schema_name(&self) -> &str {
+    pub fn schema_name() -> &'static str {
         "public"
     }
 

@@ -26,7 +26,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .respond_with(503, "Service Unavailable")
         .respond_with(503, "Service Unavailable")
         .respond_with(503, "Service Unavailable")
-        .respond_with_json(200, json!({"status": "processed", "id": "dest_123"}))
+        .respond_with_json(200, &json!({"status": "processed", "id": "dest_123"}))
         .build()
         .await;
 
@@ -35,7 +35,7 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("payment_123_idempotent")
-        .json_body(json!({
+        .json_body(&json!({
             "id": "evt_stripe_123",
             "type": "payment.completed",
             "data": {
@@ -103,7 +103,7 @@ async fn verify_idempotency_scenario(
         .tenant(original.tenant_id)
         .endpoint(original.endpoint_id)
         .source_event(original.source_event_id.clone()) // Same source_event_id = idempotent
-        .json_body(json!({"different": "payload"}))
+        .json_body(&json!({"different": "payload"}))
         .build();
 
     let duplicate_id = env.ingest_webhook(&duplicate).await?;
@@ -183,7 +183,7 @@ async fn create_webhook_batch(
             .tenant(tenant_id)
             .endpoint(endpoint_id)
             .source_event(format!("batch_event_{}", i))
-            .json_body(json!({"batch_id": i}))
+            .json_body(&json!({"batch_id": i}))
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;

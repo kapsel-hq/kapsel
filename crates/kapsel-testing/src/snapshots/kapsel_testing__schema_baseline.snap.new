@@ -1,6 +1,6 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-assertion_line: 1563
+assertion_line: 1637
 expression: snapshot
 ---
 Database Schema Snapshot

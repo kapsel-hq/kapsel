@@ -96,10 +96,10 @@ async fn merkle_service_adds_leaf_to_pending_queue() {
     .unwrap();
 
     // Add leaf to pending queue
-    service.add_leaf(leaf).await.unwrap();
+    service.add_leaf(leaf).unwrap();
 
     // Verify pending count
-    assert_eq!(service.pending_count().await.unwrap(), 1);
+    assert_eq!(service.pending_count(), 1);
 }
 
 #[tokio::test]
@@ -143,7 +143,7 @@ async fn merkle_service_commits_batch_atomically() {
     .unwrap();
 
     // Add leaf and commit
-    service.add_leaf(leaf).await.unwrap();
+    service.add_leaf(leaf).unwrap();
     let signed_head = service.try_commit_pending().await.unwrap();
 
     // Verify signed tree head
@@ -165,7 +165,7 @@ async fn merkle_service_commits_batch_atomically() {
     assert_eq!(tree_head_count, 1);
 
     // Verify pending queue is cleared
-    assert_eq!(service.pending_count().await.unwrap(), 0);
+    assert_eq!(service.pending_count(), 0);
 }
 
 #[tokio::test]
@@ -225,9 +225,9 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     .unwrap();
 
     // Add both leaves
-    service.add_leaf(leaf1).await.unwrap();
-    service.add_leaf(leaf2).await.unwrap();
-    assert_eq!(service.pending_count().await.unwrap(), 2);
+    service.add_leaf(leaf1).unwrap();
+    service.add_leaf(leaf2).unwrap();
+    assert_eq!(service.pending_count(), 2);
 
     // Commit batch
     let signed_head = service.try_commit_pending().await.unwrap();
@@ -312,7 +312,7 @@ async fn merkle_service_stores_batch_metadata() {
     )
     .unwrap();
 
-    service.add_leaf(leaf).await.unwrap();
+    service.add_leaf(leaf).unwrap();
     let signed_head = service.try_commit_pending().await.unwrap();
 
     // Verify signed tree head contains expected batch metadata
@@ -420,7 +420,7 @@ async fn merkle_service_preserves_leaf_ordering() {
         )
         .unwrap();
 
-        service.add_leaf(leaf).await.unwrap();
+        service.add_leaf(leaf).unwrap();
     }
 
     // Commit batch

@@ -83,10 +83,10 @@ async fn handles_corrupted_event_data_gracefully() {
 
     // Verify service is still operational
     let service = merkle_service.read().await;
-    let count = service.pending_count().await;
+    let _count = service.pending_count();
     // We don't assert the exact count since the corrupted event might
     // or might not be processed, but the service should still respond
-    assert!(count.is_ok(), "Service should still be operational after handling corrupted data");
+    // Service should still be operational
 }
 
 /// Test behavior when signing service fails.
@@ -111,7 +111,7 @@ async fn handles_signing_service_failures() {
 
     // Verify events were queued
     let service = merkle_service.read().await;
-    assert_eq!(service.pending_count().await.expect("should get count"), 3);
+    assert_eq!(service.pending_count(), 3);
 
     // Try to commit without proper database setup (will cause signing to fail)
     // The service should handle this gracefully
@@ -124,11 +124,11 @@ async fn handles_signing_service_failures() {
     match result {
         Ok(_) => {
             // Signing worked, pending should be cleared
-            assert_eq!(service.pending_count().await.expect("should get count"), 0);
+            assert_eq!(service.pending_count(), 0);
         },
         Err(_) => {
             // Signing failed, pending should still be there for retry
-            assert_eq!(service.pending_count().await.expect("should get count"), 3);
+            assert_eq!(service.pending_count(), 3);
         },
     }
 }
@@ -152,7 +152,7 @@ async fn handles_database_connection_issues() {
 
     // Verify it was processed
     let service = merkle_service.read().await;
-    let initial_count = service.pending_count().await.expect("should get count");
+    let initial_count = service.pending_count();
     assert_eq!(initial_count, 1);
     drop(service);
 
@@ -165,8 +165,8 @@ async fn handles_database_connection_issues() {
 
     // Service should still be responsive
     let service = merkle_service.read().await;
-    let final_count = service.pending_count().await;
-    assert!(final_count.is_ok(), "Service should remain operational despite potential DB issues");
+    let _final_count = service.pending_count();
+    // Service should remain operational despite potential DB issues
 }
 
 // Helper function for creating test events

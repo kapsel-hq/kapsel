@@ -31,7 +31,7 @@ impl TestClock {
     /// Creates a new test clock starting at current time.
     pub fn new() -> Self {
         let now = SystemTime::now();
-        let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
+        let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or_default();
 
         Self {
             monotonic_ns: Arc::new(AtomicU64::new(0)),
@@ -42,7 +42,7 @@ impl TestClock {
 
     /// Creates a test clock starting at a specific time.
     pub fn with_start_time(start: SystemTime) -> Self {
-        let since_epoch = start.duration_since(UNIX_EPOCH).unwrap();
+        let since_epoch = start.duration_since(UNIX_EPOCH).unwrap_or_default();
 
         Self {
             monotonic_ns: Arc::new(AtomicU64::new(0)),
@@ -66,13 +66,16 @@ impl TestClock {
     /// Advances both clocks by the specified duration.
     pub fn advance(&self, duration: Duration) {
         // Update monotonic time and system time
-        self.monotonic_ns.fetch_add(duration.as_nanos() as u64, Ordering::AcqRel);
+        self.monotonic_ns.fetch_add(
+            u64::try_from(duration.as_nanos().min(u128::from(u64::MAX))).unwrap_or(0),
+            Ordering::AcqRel,
+        );
         self.system_secs.fetch_add(duration.as_secs(), Ordering::AcqRel);
     }
 
     /// Jumps the clock to a specific system time.
     pub fn jump_to(&self, time: SystemTime) {
-        let target_secs = time.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let target_secs = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let current_secs = self.system_secs.load(Ordering::Acquire);
 
         if target_secs > current_secs {
@@ -140,7 +143,7 @@ impl<C: Clock> Timer<C> {
 pub mod backoff {
     use std::cmp::min;
 
-    use super::*;
+    use super::{Duration, Rng};
 
     /// Calculates exponential backoff with jitter.
     ///
@@ -158,10 +161,24 @@ pub mod backoff {
         let capped_delay = min(base_delay, max);
 
         // Add jitter: ±jitter_factor of base delay
-        let jitter_range = (capped_delay.as_millis() as f32 * jitter_factor) as u64;
+        let delay_ms =
+            u64::try_from(capped_delay.as_millis().min(u128::from(u64::MAX))).unwrap_or(0);
+        let jitter_range = if delay_ms == 0 {
+            0
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let jitter_calc = delay_ms as f64 * f64::from(jitter_factor);
+            if jitter_calc.is_finite() && jitter_calc >= 0.0 {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let jitter_u64 = jitter_calc as u64;
+                jitter_u64.min(delay_ms)
+            } else {
+                0
+            }
+        };
         let jitter =
             if jitter_range > 0 { rand::rng().random_range(0..jitter_range * 2) } else { 0 };
-        let jittered_ms = capped_delay.as_millis() as u64 - jitter_range + jitter;
+        let jittered_ms = delay_ms.saturating_sub(jitter_range).saturating_add(jitter);
 
         Duration::from_millis(jittered_ms)
     }

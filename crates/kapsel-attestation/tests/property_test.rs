@@ -33,8 +33,7 @@ proptest! {
     ) {
         let service = SigningService::ephemeral();
 
-        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms)
-            .expect("signing should succeed");
+        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
         let is_valid = service.verify_tree_head(&root_hash, tree_size, timestamp_ms, &signature)
             .expect("verification should succeed");
 
@@ -49,8 +48,7 @@ proptest! {
         timestamp_ms in 1_000_000_000_000i64..9_999_999_999_999i64,
     ) {
         let service = SigningService::ephemeral();
-        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms)
-            .expect("signing should succeed");
+        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
         // Tamper with tree size
         let is_valid = service.verify_tree_head(&root_hash, tree_size.wrapping_add(1), timestamp_ms, &signature)

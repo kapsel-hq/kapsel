@@ -27,7 +27,7 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("test-event-001")
-        .json_body(json!({"event": "test", "data": "successful delivery"}))
+        .json_body(&json!({"event": "test", "data": "successful delivery"}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;
@@ -64,7 +64,7 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("test-event-002")
-        .json_body(json!({"event": "test", "data": "will fail"}))
+        .json_body(&json!({"event": "test", "data": "will fail"}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;
@@ -112,7 +112,7 @@ async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("test-event-003")
-        .json_body(json!({"event": "test", "data": "no attestation"}))
+        .json_body(&json!({"event": "test", "data": "no attestation"}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;
@@ -145,14 +145,14 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event(source_id)
-        .json_body(json!({"event": "original"}))
+        .json_body(&json!({"event": "original"}))
         .build();
 
     let duplicate = WebhookBuilder::new()
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event(source_id) // Same source ID
-        .json_body(json!({"event": "duplicate"}))
+        .json_body(&json!({"event": "duplicate"}))
         .build();
 
     let original_event_id = env.ingest_webhook(&original).await?;
@@ -190,7 +190,7 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
             .source_event(format!("concurrent-{}", i))
-            .json_body(json!({"batch": i, "data": "concurrent test"}))
+            .json_body(&json!({"batch": i, "data": "concurrent test"}))
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -229,7 +229,7 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
             .source_event(format!("batch-commitment-{}", i))
-            .json_body(json!({"batch_item": i}))
+            .json_body(&json!({"batch_item": i}))
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;

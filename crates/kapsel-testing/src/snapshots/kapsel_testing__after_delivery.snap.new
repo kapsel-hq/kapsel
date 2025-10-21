@@ -1,6 +1,6 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-assertion_line: 1555
+assertion_line: 1629
 expression: snapshot
 ---
 Events Table Snapshot

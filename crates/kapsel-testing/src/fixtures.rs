@@ -58,43 +58,50 @@ impl WebhookBuilder {
     }
 
     /// Sets the tenant ID for this webhook.
+    #[must_use]
     pub fn tenant(mut self, id: Uuid) -> Self {
         self.tenant_id = Some(id);
         self
     }
 
     /// Sets the endpoint ID for this webhook.
+    #[must_use]
     pub fn endpoint(mut self, id: Uuid) -> Self {
         self.endpoint_id = Some(id);
         self
     }
 
     /// Sets the source event ID for idempotency tracking.
+    #[must_use]
     pub fn source_event(mut self, id: impl Into<String>) -> Self {
         self.source_event_id = Some(id.into());
         self
     }
 
     /// Sets the idempotency strategy (e.g., "source_event_id").
+    #[must_use]
     pub fn strategy(mut self, strategy: impl Into<String>) -> Self {
         self.idempotency_strategy = Some(strategy.into());
         self
     }
 
     /// Adds an HTTP header to the webhook request.
+    #[must_use]
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(key.into(), value.into());
         self
     }
 
     /// Sets the webhook payload body as raw bytes.
+    #[must_use]
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.body = Some(body.into());
         self
     }
 
     /// Sets the webhook payload as JSON, automatically setting Content-Type.
-    pub fn json_body(mut self, value: Value) -> Self {
+    #[must_use]
+    pub fn json_body(mut self, value: &Value) -> Self {
         self.body = Some(Bytes::from(value.to_string()));
         self.content_type = Some("application/json".to_string());
         self.headers.insert("Content-Type".to_string(), "application/json".to_string());
@@ -102,6 +109,7 @@ impl WebhookBuilder {
     }
 
     /// Sets the Content-Type header for the webhook payload.
+    #[must_use]
     pub fn content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type = Some(content_type.into());
         self
@@ -186,43 +194,50 @@ impl EndpointBuilder {
         }
     }
 
-    /// Sets the tenant ID that owns this endpoint.
+    /// Sets the tenant ID for this endpoint.
+    #[must_use]
     pub fn tenant(mut self, id: Uuid) -> Self {
         self.tenant_id = Some(id);
         self
     }
 
     /// Sets a human-readable name for this endpoint.
+    #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
     /// Sets the target URL for webhook delivery.
+    #[must_use]
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
     }
 
     /// Sets the secret key used for HMAC signature generation.
+    #[must_use]
     pub fn signing_secret(mut self, secret: impl Into<String>) -> Self {
         self.signing_secret = Some(secret.into());
         self
     }
 
     /// Sets the HTTP header name for the HMAC signature.
+    #[must_use]
     pub fn signature_header(mut self, header: impl Into<String>) -> Self {
         self.signature_header = Some(header.into());
         self
     }
 
     /// Sets the maximum number of delivery attempts.
+    #[must_use]
     pub fn max_retries(mut self, retries: u32) -> Self {
         self.max_retries = Some(retries);
         self
     }
 
     /// Sets the HTTP request timeout in seconds.
+    #[must_use]
     pub fn timeout(mut self, seconds: u32) -> Self {
         self.timeout_seconds = Some(seconds);
         self
@@ -272,7 +287,9 @@ pub struct TestEndpoint {
 
 /// Factory functions for common test scenarios.
 pub mod scenarios {
-    use super::*;
+    use super::{
+        json, Bytes, EndpointBuilder, TestEndpoint, TestWebhook, Utc, Uuid, WebhookBuilder,
+    };
 
     /// Creates a webhook that will trigger idempotency checks.
     pub fn duplicate_webhook() -> (TestWebhook, TestWebhook) {
@@ -312,17 +329,18 @@ pub mod scenarios {
     /// Creates a Stripe-style webhook.
     pub fn stripe_webhook() -> TestWebhook {
         WebhookBuilder::new()
-            .json_body(json!({
+            .json_body(&json!({
                 "id": "evt_1234567890",
                 "object": "event",
                 "api_version": "2023-10-16",
-                "created": 1234567890,
+                "created": 1_234_567_890,
                 "data": {
                     "object": {
                         "id": "ch_1234567890",
                         "object": "charge",
                         "amount": 2000,
-                        "currency": "usd"
+                        "currency": "usd",
+                        "status": "succeeded"
                     }
                 },
                 "type": "charge.succeeded"
@@ -336,7 +354,7 @@ pub mod scenarios {
     /// Creates a GitHub webhook.
     pub fn github_webhook() -> TestWebhook {
         WebhookBuilder::new()
-            .json_body(json!({
+            .json_body(&json!({
                 "action": "opened",
                 "pull_request": {
                     "id": 1,
@@ -348,7 +366,7 @@ pub mod scenarios {
                 },
                 "repository": {
                     "name": "test-repo",
-                    "full_name": "org/test-repo"
+                    "full_name": "testuser/test-repo"
                 }
             }))
             .header("X-GitHub-Event", "pull_request")
@@ -367,8 +385,8 @@ pub mod scenarios {
                 WebhookBuilder::with_defaults()
                     .tenant(tenant_id)
                     .endpoint(endpoint_id)
-                    .source_event(format!("batch_evt_{}", i))
-                    .json_body(json!({
+                    .source_event(format!("batch_evt_{i}"))
+                    .json_body(&json!({
                         "batch_index": i,
                         "timestamp": Utc::now().to_rfc3339(),
                         "data": format!("test_data_{}", i)
@@ -408,7 +426,7 @@ mod tests {
     fn webhook_builder_customization() {
         let webhook = WebhookBuilder::new()
             .source_event("custom_event")
-            .json_body(json!({"custom": "data"}))
+            .json_body(&json!({"custom": "data"}))
             .build();
 
         assert_eq!(webhook.source_event_id, "custom_event");

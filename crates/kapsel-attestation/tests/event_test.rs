@@ -42,11 +42,7 @@ async fn successful_delivery_events_create_attestation_leaves() {
 
     // Verify attestation leaf was created
     let service = merkle_service.read().await;
-    assert_eq!(
-        service.pending_count().await.expect("failed to get pending count"),
-        1,
-        "Success event should create one attestation leaf"
-    );
+    assert_eq!(service.pending_count(), 1, "Success event should create one attestation leaf");
 }
 
 /// Test that failed delivery events do not create attestation leaves.
@@ -73,11 +69,7 @@ async fn failed_delivery_events_do_not_create_attestation_leaves() {
 
     // Verify no attestation leaf was created for failure
     let service = merkle_service.read().await;
-    assert_eq!(
-        service.pending_count().await.expect("failed to get pending count"),
-        0,
-        "Failure events should not create attestation leaves"
-    );
+    assert_eq!(service.pending_count(), 0, "Failure events should not create attestation leaves");
 }
 
 /// Test multicast dispatch to multiple attestation services.
@@ -120,12 +112,12 @@ async fn multicast_event_handling_with_multiple_attestation_services() {
         let service2 = merkle_service2.read().await;
 
         assert_eq!(
-            service1.pending_count().await.expect("failed to get pending count for service1"),
+            service1.pending_count(),
             1,
             "First attestation service should have one pending leaf"
         );
         assert_eq!(
-            service2.pending_count().await.expect("failed to get pending count for service2"),
+            service2.pending_count(),
             1,
             "Second attestation service should have one pending leaf"
         );
@@ -164,7 +156,7 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
     // Verify all events created attestation leaves
     let service = merkle_service.read().await;
     assert_eq!(
-        service.pending_count().await.expect("failed to get pending count"),
+        service.pending_count(),
         event_count,
         "All success events should create attestation leaves"
     );
@@ -209,11 +201,7 @@ async fn mixed_success_failure_events_create_correct_attestations() {
 
     // Verify only success events created attestation leaves
     let service = merkle_service.read().await;
-    assert_eq!(
-        service.pending_count().await.expect("failed to get pending count"),
-        3,
-        "Only success events should create attestation leaves"
-    );
+    assert_eq!(service.pending_count(), 3, "Only success events should create attestation leaves");
 
     // Verify event history captured all events
     let history = tester.event_history().await;
@@ -250,11 +238,7 @@ async fn event_data_integrity_preserved_through_attestation() {
 
     // Verify data was processed
     let service = merkle_service.read().await;
-    assert_eq!(
-        service.pending_count().await.expect("failed to get pending count"),
-        1,
-        "Event should be processed"
-    );
+    assert_eq!(service.pending_count(), 1, "Event should be processed");
 
     // Verify event was recorded in history with correct data
     let history = tester.event_history().await;

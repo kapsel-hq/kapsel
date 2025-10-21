@@ -4,7 +4,6 @@
 //! and property-based testing utilities. Ensures reproducible test execution
 //! with proper resource cleanup and invariant checking
 
-#![warn(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod database;
@@ -74,7 +73,7 @@ impl WebhookEventData {
     /// Number of delivery attempts made (failure_count + 1 for initial
     /// attempt).
     pub fn attempt_count(&self) -> u32 {
-        (self.failure_count + 1) as u32
+        u32::try_from(self.failure_count + 1).unwrap_or(1)
     }
 }
 
@@ -89,8 +88,27 @@ type InvariantCheckFn = Box<
 /// Type alias for assertion functions to reduce complexity
 type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 
-/// Type alias for a webhook ready for delivery to reduce complexity
-type ReadyWebhook = (EventId, Uuid, String, Vec<u8>, i32, String, i32);
+/// Webhook ready for delivery with all required fields
+#[derive(Debug)]
+#[allow(dead_code)]
+struct ReadyWebhook {
+    event_id: EventId,
+    endpoint_id: Uuid,
+    url: String,
+    body: Vec<u8>,
+    failure_count: i32,
+    endpoint_name: String,
+    max_retries: i32,
+}
+
+/// Result of attempting webhook delivery
+#[derive(Debug)]
+struct DeliveryResult {
+    status_code: Option<i32>,
+    response_body: Option<String>,
+    duration_ms: i32,
+    error_type: Option<String>,
+}
 
 /// Test environment with transaction-based database isolation.
 ///
@@ -103,7 +121,7 @@ pub struct TestEnv {
     /// Deterministic clock for time-based testing
     pub clock: time::TestClock,
     /// Database handle for this test environment
-    _database: TestDatabase,
+    database: TestDatabase,
     /// Shared database instance (Arc ensures proper cleanup)
     shared_db: std::sync::Arc<SharedDatabase>,
     /// Optional attestation service for testing delivery capture
@@ -136,7 +154,7 @@ impl TestEnv {
 
         // Use shared database for standard test runtime
         let shared_db = database::create_shared_database().await?;
-        let db = TestDatabase::new().await?;
+        let database = TestDatabase::new().await?;
 
         // Create HTTP mock server
         let http_mock = http::MockServer::start().await;
@@ -144,7 +162,7 @@ impl TestEnv {
         // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { http_mock, clock, _database: db, shared_db, attestation_service: None })
+        Ok(Self { http_mock, clock, database, shared_db, attestation_service: None })
     }
 
     /// Create a new isolated test environment with its own database instance.
@@ -161,8 +179,8 @@ impl TestEnv {
         let _ = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).try_init();
 
         // Create completely isolated database for this runtime
-        let db = TestDatabase::new_isolated().await?;
-        let shared_db = std::sync::Arc::clone(db.shared_database());
+        let database = TestDatabase::new_isolated().await?;
+        let shared_db = std::sync::Arc::clone(database.shared_database());
 
         // Create HTTP mock server
         let http_mock = http::MockServer::start().await;
@@ -170,7 +188,7 @@ impl TestEnv {
         // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { http_mock, clock, _database: db, shared_db, attestation_service: None })
+        Ok(Self { http_mock, clock, database, shared_db, attestation_service: None })
     }
 
     /// Returns direct access to the database connection pool.
@@ -178,7 +196,7 @@ impl TestEnv {
     /// Use this for setup operations that need to persist across method calls.
     /// For transaction isolation, create transactions manually as needed.
     pub fn pool(&self) -> &PgPool {
-        self._database.shared_database().pool()
+        self.database.shared_database().pool()
     }
 
     /// Create a new connection pool for components that manage their own
@@ -353,13 +371,14 @@ impl TestEnv {
         output.push_str("====================\n\n");
 
         for (i, event) in events.iter().enumerate() {
-            output.push_str(&format!("Event {}:\n", i + 1));
-            output.push_str(&format!("  source_event_id: {}\n", event.source_event_id));
-            output.push_str(&format!("  status: {}\n", event.status));
-            output.push_str(&format!("  failure_count: {}\n", event.failure_count));
-            output.push_str(&format!("  attempt_count: {}\n", event.attempt_count()));
-            output.push_str(&format!("  payload_size: {}\n", event.payload_size));
-            output.push_str(&format!("  content_type: {}\n", event.content_type));
+            use std::fmt::Write;
+            let _ = writeln!(output, "Event {}:", i + 1);
+            let _ = writeln!(output, "  source_event_id: {}", event.source_event_id);
+            let _ = writeln!(output, "  status: {}", event.status);
+            let _ = writeln!(output, "  failure_count: {}", event.failure_count);
+            let _ = writeln!(output, "  attempt_count: {}", event.attempt_count());
+            let _ = writeln!(output, "  payload_size: {}", event.payload_size);
+            let _ = writeln!(output, "  content_type: {}", event.content_type);
 
             // Redact dynamic fields for stable snapshots
             output.push_str("  id: [UUID]\n");
@@ -412,12 +431,12 @@ impl TestEnv {
         output.push_str("=========================\n\n");
 
         for (i, attempt) in attempts.iter().enumerate() {
-            output.push_str(&format!("Attempt {}:\n", i + 1));
-            output.push_str(&format!("  attempt_number: {}\n", attempt.attempt_number));
-            output.push_str("  request_url: [URL]\n");
-            output.push_str(&format!("  response_status: {:?}\n", attempt.response_status));
-            output.push_str(&format!("  duration_ms: {}\n", attempt.duration_ms));
-            output.push_str(&format!("  error_type: {:?}\n", attempt.error_type));
+            use std::fmt::Write;
+            let _ = writeln!(output, "Attempt {}:", i + 1);
+            let _ = writeln!(output, "  attempt_number: {}", attempt.attempt_number);
+            let _ = writeln!(output, "  response_status: {:?}", attempt.response_status);
+            let _ = writeln!(output, "  duration_ms: {}", attempt.duration_ms);
+            let _ = writeln!(output, "  error_type: {:?}", attempt.error_type);
             output.push('\n');
         }
 
@@ -433,6 +452,7 @@ impl TestEnv {
     /// This captures table structure, indexes, and constraints to catch
     /// unintended schema changes in pull requests.
     pub async fn snapshot_database_schema(&self) -> Result<String> {
+        use std::fmt::Write;
         // Query information_schema for deterministic schema representation
         let tables = sqlx::query(
             "SELECT table_name, column_name, data_type, is_nullable, column_default
@@ -471,18 +491,19 @@ impl TestEnv {
                 if !current_table.is_empty() {
                     output.push('\n');
                 }
-                current_table = table_name.clone();
-                output.push_str(&format!("Table: {}\n", current_table));
-                output.push_str(&format!("{}\n", "-".repeat(current_table.len() + 7)));
+                current_table.clone_from(&table_name);
+                let _ = writeln!(output, "Table: {current_table}");
+                let _ = writeln!(output, "{}", "-".repeat(current_table.len() + 7));
             }
 
-            output.push_str(&format!(
-                "  {}: {} {} {}\n",
+            let _ = writeln!(
+                output,
+                "  {}: {} {} {}",
                 column_name,
                 data_type,
                 if is_nullable == "YES" { "NULL" } else { "NOT NULL" },
                 column_default.as_deref().unwrap_or("")
-            ));
+            );
         }
 
         output.push_str("\nIndexes:\n");
@@ -491,7 +512,7 @@ impl TestEnv {
             let tablename: String = index.get("tablename");
             let indexname: String = index.get("indexname");
             let indexdef: String = index.get("indexdef");
-            output.push_str(&format!("{}.{}: {}\n", tablename, indexname, indexdef));
+            let _ = writeln!(output, "{tablename}.{indexname}: {indexdef}");
         }
 
         Ok(output)
@@ -501,21 +522,22 @@ impl TestEnv {
     ///
     /// Useful for snapshotting lookup tables, configuration, etc.
     pub async fn snapshot_table(&self, table_name: &str, order_by: &str) -> Result<String> {
-        let query = format!("SELECT * FROM {} ORDER BY {}", table_name, order_by);
+        use std::fmt::Write;
+        let query = format!("SELECT * FROM {table_name} ORDER BY {order_by}");
 
         let rows = sqlx::query(&query)
             .fetch_all(self.pool())
             .await
-            .context(format!("failed to snapshot table {}", table_name))?;
+            .context(format!("failed to snapshot table {table_name}"))?;
 
         let mut output = String::new();
-        output.push_str(&format!("Table Snapshot: {}\n", table_name));
-        output.push_str(&format!("{}\n\n", "=".repeat(table_name.len() + 16)));
+        let _ = writeln!(output, "Table Snapshot: {table_name}");
+        let _ = writeln!(output, "{}\n", "=".repeat(table_name.len() + 16));
 
         if rows.is_empty() {
             output.push_str("No rows found.\n");
         } else {
-            output.push_str(&format!("Row count: {}\n", rows.len()));
+            let _ = writeln!(output, "Row count: {}", rows.len());
             output.push_str("(Use specific snapshot methods for detailed row inspection)\n");
         }
 
@@ -533,7 +555,7 @@ impl TestEnv {
     pub async fn ingest_webhook(&self, webhook: &TestWebhook) -> Result<EventId> {
         let event_id = Uuid::new_v4();
         let body_bytes = webhook.body.clone();
-        let payload_size = (body_bytes.len() as i32).max(1); // Ensure minimum size of 1
+        let payload_size = i32::try_from(body_bytes.len()).unwrap_or(i32::MAX).max(1); // Ensure minimum size of 1
 
         let result: (Uuid,) = sqlx::query_as(
             "INSERT INTO webhook_events
@@ -601,9 +623,26 @@ impl TestEnv {
     ///
     /// Returns error if database queries or HTTP mock recording fails.
     pub async fn run_delivery_cycle(&self) -> Result<()> {
-        // Find webhooks ready for delivery (use pool directly for persistent
-        // operations)
-        let ready_webhooks: Vec<ReadyWebhook> = sqlx::query_as(
+        let ready_webhooks = self.fetch_ready_webhooks().await?;
+        let webhook_count = ready_webhooks.len();
+
+        for webhook in ready_webhooks {
+            if webhook.failure_count > webhook.max_retries {
+                self.mark_webhook_failed(webhook.event_id).await?;
+                continue;
+            }
+
+            let delivery_result = self.attempt_webhook_delivery(&webhook).await?;
+            self.process_delivery_result(webhook, delivery_result).await?;
+        }
+
+        tracing::debug!("Processed {webhook_count} webhooks in delivery cycle");
+        tokio::task::yield_now().await;
+        Ok(())
+    }
+
+    async fn fetch_ready_webhooks(&self) -> Result<Vec<ReadyWebhook>> {
+        let rows = sqlx::query(
             "SELECT we.id, e.id as endpoint_id, e.url, we.body, we.failure_count, e.name, e.max_retries
              FROM webhook_events we
              JOIN endpoints e ON we.endpoint_id = e.id
@@ -616,203 +655,216 @@ impl TestEnv {
         .await
         .context("failed to fetch ready webhooks")?;
 
-        let webhook_count = ready_webhooks.len();
-        for (event_id, _endpoint_id, url, body, failure_count, _endpoint_name, max_retries) in
-            ready_webhooks
-        {
-            // Check if webhook has exceeded maximum retry attempts
-            // max_retries is the number of retry attempts after initial attempt
-            if failure_count > max_retries {
-                // Mark as failed - no more retries
-                sqlx::query(
-                    "UPDATE webhook_events
-                     SET status = 'failed', last_attempt_at = $1
-                     WHERE id = $2",
-                )
-                .bind(chrono::DateTime::<Utc>::from(self.now_system()))
-                .bind(event_id.0)
-                .execute(self.pool())
-                .await
-                .context("failed to mark webhook as failed")?;
-                continue;
-            }
-            // Make HTTP request to the mock server
-            let client = reqwest::Client::new();
-            let response_result = client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .header("X-Kapsel-Event-Id", event_id.0.to_string())
-                .body(body.clone())
-                .send()
-                .await;
+        let webhooks = rows
+            .into_iter()
+            .map(|row| ReadyWebhook {
+                event_id: EventId(row.get("id")),
+                endpoint_id: row.get("endpoint_id"),
+                url: row.get("url"),
+                body: row.get("body"),
+                failure_count: row.get("failure_count"),
+                endpoint_name: row.get("name"),
+                max_retries: row.get("max_retries"),
+            })
+            .collect();
 
-            let (status_code, response_body, duration_ms, error_type) = match response_result {
-                Ok(response) => {
-                    let status = response.status().as_u16() as i32;
-                    let body = response.text().await.unwrap_or_default();
-                    let error_type = if status >= 400 { Some("http_error") } else { None };
-                    (Some(status), Some(body), 75i32, error_type)
-                },
-                Err(_) => (None, None, 1000i32, Some("network")),
-            };
+        Ok(webhooks)
+    }
 
-            // Record delivery attempt
-            let attempt_number = failure_count + 1;
-            let attempt_id = Uuid::new_v4();
-            let attempted_at = chrono::DateTime::<Utc>::from(self.now_system());
+    async fn mark_webhook_failed(&self, event_id: EventId) -> Result<()> {
+        sqlx::query(
+            "UPDATE webhook_events
+             SET status = 'failed', last_attempt_at = $1
+             WHERE id = $2",
+        )
+        .bind(chrono::DateTime::<Utc>::from(self.now_system()))
+        .bind(event_id.0)
+        .execute(self.pool())
+        .await
+        .context("failed to mark webhook as failed")?;
+        Ok(())
+    }
 
-            sqlx::query(
-                "INSERT INTO delivery_attempts
-                 (id, event_id, attempt_number, request_url, request_headers,
-                  response_status, response_body, attempted_at, duration_ms, error_type)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-            )
-            .bind(attempt_id)
-            .bind(event_id.0)
-            .bind(attempt_number)
-            .bind(&url)
-            .bind(serde_json::json!({"X-Kapsel-Event-Id": event_id.0.to_string()}))
-            .bind(status_code)
-            .bind(response_body)
-            .bind(attempted_at)
-            .bind(duration_ms)
-            .bind(error_type)
-            .execute(self.pool())
-            .await
-            .context("failed to record delivery attempt")?;
+    async fn attempt_webhook_delivery(&self, webhook: &ReadyWebhook) -> Result<DeliveryResult> {
+        let client = reqwest::Client::new();
+        let response_result = client
+            .post(&webhook.url)
+            .header("Content-Type", "application/json")
+            .header("X-Kapsel-Event-Id", webhook.event_id.0.to_string())
+            .body(webhook.body.clone())
+            .send()
+            .await;
 
-            // No commit needed - using pool directly for persistent operations
+        let (status_code, response_body, duration_ms, error_type) = match response_result {
+            Ok(response) => {
+                let status = i32::from(response.status().as_u16());
+                let body = response.text().await.unwrap_or_default();
+                let error_type = if status >= 400 { Some("http_error") } else { None };
+                (Some(status), Some(body), 75i32, error_type)
+            },
+            Err(_) => (None, None, 1000i32, Some("network")),
+        };
 
-            // Update webhook status based on response
-            let (new_status, next_retry_at) = match status_code {
-                Some(200..=299) => ("delivered".to_string(), None),
-                _ => {
-                    let backoff_delay =
-                        time::backoff::deterministic_webhook_backoff(failure_count as u32);
-                    let current_time = chrono::DateTime::<Utc>::from(self.now_system());
-                    let next_retry =
-                        Some(current_time + chrono::Duration::from_std(backoff_delay)?);
-                    ("pending".to_string(), next_retry)
-                },
-            };
+        Ok(DeliveryResult {
+            status_code,
+            response_body,
+            duration_ms,
+            error_type: error_type.map(String::from),
+        })
+    }
 
-            if new_status == "delivered" {
-                sqlx::query(
-                    "UPDATE webhook_events
-                     SET status = $1, delivered_at = $2, failure_count = $3, last_attempt_at = $4
-                     WHERE id = $5",
-                )
-                .bind(new_status)
-                .bind(attempted_at)
-                .bind(failure_count)
-                .bind(attempted_at)
-                .bind(event_id.0)
-                .execute(self.pool())
-                .await
-                .context("failed to update event status after delivery")?;
+    async fn process_delivery_result(
+        &self,
+        webhook: ReadyWebhook,
+        result: DeliveryResult,
+    ) -> Result<()> {
+        let attempt_number = webhook.failure_count + 1;
+        let attempt_id = self.record_delivery_attempt(&webhook, &result, attempt_number).await?;
 
-                // Emit attestation event if attestation is enabled
-                if self.attestation_service.is_some() {
-                    // Get tenant_id from webhook_events table
-                    let (tenant_id, payload_size): (uuid::Uuid, i32) = sqlx::query_as(
-                        "SELECT tenant_id, payload_size FROM webhook_events WHERE id = $1",
-                    )
-                    .bind(event_id.0)
-                    .fetch_one(self.pool())
-                    .await
-                    .context("failed to fetch webhook event for attestation")?;
-
-                    // Compute payload hash
-                    let payload_hash = {
-                        use sha2::{Digest, Sha256};
-                        let mut hasher = Sha256::new();
-                        hasher.update(&body);
-                        hasher.finalize().into()
-                    };
-
-                    // Create and emit delivery success event
-                    let success_event = kapsel_core::DeliverySucceededEvent {
-                        delivery_attempt_id: attempt_id,
-                        event_id: kapsel_core::models::EventId(event_id.0),
-                        tenant_id: kapsel_core::models::TenantId(tenant_id),
-                        endpoint_url: url.clone(),
-                        response_status: status_code.unwrap_or(200) as u16,
-                        attempt_number: attempt_number as u32,
-                        delivered_at: attempted_at,
-                        payload_hash,
-                        payload_size,
-                    };
-
-                    tracing::debug!(
-                        event_id = %event_id.0,
-                        delivery_attempt_id = %attempt_id,
-                        tenant_id = %tenant_id,
-                        attempt_number = attempt_number,
-                        "created attestation success event for delivery"
-                    );
-
-                    // Get reference to the service
-                    if let Some(ref merkle_service_wrapped) = self.attestation_service {
-                        use kapsel_attestation::AttestationEventSubscriber;
-                        use kapsel_core::EventHandler;
-
-                        // Check pending count before processing
-                        let pending_before = {
-                            let service_read = merkle_service_wrapped.read().await;
-                            service_read.pending_count().await.unwrap_or(0)
-                        };
-
-                        let event_id = success_event.event_id;
-
-                        tracing::debug!(
-                            event_id = %event_id,
-                            pending_before = pending_before,
-                            "processing attestation event for successful delivery"
-                        );
-
-                        let attestation_subscriber =
-                            AttestationEventSubscriber::new(merkle_service_wrapped.clone());
-
-                        attestation_subscriber
-                            .handle_event(kapsel_core::DeliveryEvent::Succeeded(success_event))
-                            .await;
-
-                        // Check pending count after processing
-                        let pending_after = {
-                            let service_read = merkle_service_wrapped.read().await;
-                            service_read.pending_count().await.unwrap_or(0)
-                        };
-
-                        tracing::debug!(
-                            event_id = %event_id,
-                            pending_before = pending_before,
-                            pending_after = pending_after,
-                            "attestation event processing completed"
-                        );
-
-                        // Drop attestation_subscriber to release Arc reference
-                        drop(attestation_subscriber);
-                    }
-                }
-            } else {
-                sqlx::query(
-                    "UPDATE webhook_events
-                     SET status = $1, failure_count = $2, last_attempt_at = $3, next_retry_at = $4
-                     WHERE id = $5",
-                )
-                .bind(new_status)
-                .bind(attempt_number)
-                .bind(attempted_at)
-                .bind(next_retry_at)
-                .bind(event_id.0)
-                .execute(self.pool())
-                .await
-                .context("failed to update event status after failure")?;
-            }
+        if let Some(200..=299) = result.status_code {
+            self.handle_successful_delivery(webhook, attempt_id, attempt_number).await?;
+        } else {
+            self.handle_failed_delivery(webhook, attempt_number).await?;
         }
 
-        tracing::debug!("Processed {} webhooks in delivery cycle", webhook_count);
-        tokio::task::yield_now().await;
+        Ok(())
+    }
+
+    async fn record_delivery_attempt(
+        &self,
+        webhook: &ReadyWebhook,
+        result: &DeliveryResult,
+        attempt_number: i32,
+    ) -> Result<Uuid> {
+        let attempt_id = Uuid::new_v4();
+        let attempted_at = chrono::DateTime::<Utc>::from(self.now_system());
+
+        sqlx::query(
+            "INSERT INTO delivery_attempts
+             (id, event_id, attempt_number, request_url, request_headers,
+              response_status, response_body, attempted_at, duration_ms, error_type)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(attempt_id)
+        .bind(webhook.event_id.0)
+        .bind(attempt_number)
+        .bind(&webhook.url)
+        .bind(serde_json::json!({"X-Kapsel-Event-Id": webhook.event_id.0.to_string()}))
+        .bind(result.status_code)
+        .bind(&result.response_body)
+        .bind(attempted_at)
+        .bind(result.duration_ms)
+        .bind(&result.error_type)
+        .execute(self.pool())
+        .await
+        .context("failed to record delivery attempt")?;
+
+        Ok(attempt_id)
+    }
+
+    async fn handle_successful_delivery(
+        &self,
+        webhook: ReadyWebhook,
+        attempt_id: Uuid,
+        attempt_number: i32,
+    ) -> Result<()> {
+        let attempted_at = chrono::DateTime::<Utc>::from(self.now_system());
+
+        sqlx::query(
+            "UPDATE webhook_events
+             SET status = $1, delivered_at = $2, failure_count = $3, last_attempt_at = $4
+             WHERE id = $5",
+        )
+        .bind("delivered")
+        .bind(attempted_at)
+        .bind(webhook.failure_count)
+        .bind(attempted_at)
+        .bind(webhook.event_id.0)
+        .execute(self.pool())
+        .await
+        .context("failed to update event status after delivery")?;
+
+        if self.attestation_service.is_some() {
+            self.emit_attestation_event(webhook, attempt_id, attempt_number, attempted_at).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_failed_delivery(
+        &self,
+        webhook: ReadyWebhook,
+        attempt_number: i32,
+    ) -> Result<()> {
+        let backoff_delay = time::backoff::deterministic_webhook_backoff(
+            u32::try_from(webhook.failure_count).unwrap_or(0),
+        );
+        let current_time = chrono::DateTime::<Utc>::from(self.now_system());
+        let next_retry = Some(current_time + chrono::Duration::from_std(backoff_delay)?);
+        let attempted_at = chrono::DateTime::<Utc>::from(self.now_system());
+
+        sqlx::query(
+            "UPDATE webhook_events
+             SET status = $1, failure_count = $2, last_attempt_at = $3, next_retry_at = $4
+             WHERE id = $5",
+        )
+        .bind("pending")
+        .bind(attempt_number)
+        .bind(attempted_at)
+        .bind(next_retry)
+        .bind(webhook.event_id.0)
+        .execute(self.pool())
+        .await
+        .context("failed to update event status after failure")?;
+
+        Ok(())
+    }
+
+    async fn emit_attestation_event(
+        &self,
+        webhook: ReadyWebhook,
+        attempt_id: Uuid,
+        attempt_number: i32,
+        attempted_at: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        let (tenant_id, payload_size): (uuid::Uuid, i32) =
+            sqlx::query_as("SELECT tenant_id, payload_size FROM webhook_events WHERE id = $1")
+                .bind(webhook.event_id.0)
+                .fetch_one(self.pool())
+                .await
+                .context("failed to fetch webhook event for attestation")?;
+
+        let payload_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&webhook.body);
+            hasher.finalize().into()
+        };
+
+        let success_event = kapsel_core::DeliverySucceededEvent {
+            delivery_attempt_id: attempt_id,
+            event_id: kapsel_core::models::EventId(webhook.event_id.0),
+            tenant_id: kapsel_core::models::TenantId(tenant_id),
+            endpoint_url: webhook.url,
+            response_status: 200, // We know it's successful here
+            attempt_number: u32::try_from(attempt_number).unwrap_or(0),
+            delivered_at: attempted_at,
+            payload_hash,
+            payload_size,
+        };
+
+        if let Some(ref merkle_service_wrapped) = self.attestation_service {
+            use kapsel_attestation::AttestationEventSubscriber;
+            use kapsel_core::EventHandler;
+
+            let attestation_subscriber =
+                AttestationEventSubscriber::new(merkle_service_wrapped.clone());
+
+            attestation_subscriber
+                .handle_event(kapsel_core::DeliveryEvent::Succeeded(success_event))
+                .await;
+        }
+
         Ok(())
     }
 
@@ -822,7 +874,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails or ID not found.
     pub async fn count_by_id(&self, table: &str, column: &str, id: Uuid) -> Result<i64> {
-        let query = format!("SELECT COUNT(*) FROM {} WHERE {} = $1", table, column);
+        let query = format!("SELECT COUNT(*) FROM {table} WHERE {column} = $1");
 
         let row = sqlx::query(&query)
             .bind(id)
@@ -986,7 +1038,7 @@ impl TestEnv {
 
     /// Fetch attestation leaf for a specific event.
     pub async fn fetch_attestation_leaf_for_event(
-        &mut self,
+        &self,
         event_id: EventId,
     ) -> Result<Option<AttestationLeafInfo>> {
         let result = sqlx::query(
@@ -1013,7 +1065,7 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    pub async fn count_total_attestation_leaves(&mut self) -> Result<i64> {
+    pub async fn count_total_attestation_leaves(&self) -> Result<i64> {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves").fetch_one(self.pool()).await?;
 
@@ -1025,7 +1077,7 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    pub async fn count_signed_tree_heads(&mut self) -> Result<i64> {
+    pub async fn count_signed_tree_heads(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_tree_heads")
             .fetch_one(self.pool())
             .await?;
@@ -1038,7 +1090,7 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database query fails.
-    pub async fn fetch_latest_signed_tree_head(&mut self) -> Result<Option<SignedTreeHeadInfo>> {
+    pub async fn fetch_latest_signed_tree_head(&self) -> Result<Option<SignedTreeHeadInfo>> {
         let result = sqlx::query(
             "SELECT tree_size, root_hash, timestamp_ms, signature, batch_size
              FROM signed_tree_heads
@@ -1061,7 +1113,7 @@ impl TestEnv {
     pub async fn run_attestation_commitment(&self) -> Result<()> {
         if let Some(ref attestation_service) = self.attestation_service {
             // Check pending count before attempting commit
-            let pending_count = attestation_service.read().await.pending_count().await.unwrap_or(0);
+            let pending_count = attestation_service.read().await.pending_count();
             tracing::debug!(
                 pending_count = pending_count,
                 "attempting attestation batch commitment"
@@ -1078,7 +1130,7 @@ impl TestEnv {
                     // No pending leaves to commit - this is fine
                     Ok(())
                 },
-                Err(e) => Err(anyhow::anyhow!("Attestation commitment failed: {}", e)),
+                Err(e) => Err(anyhow::anyhow!("Attestation commitment failed: {e}")),
             }
         } else {
             // No attestation service configured - skip
@@ -1219,58 +1271,67 @@ impl ScenarioBuilder {
     }
 
     /// Add a webhook ingestion step.
+    #[must_use]
     pub fn ingest(mut self, webhook: TestWebhook) -> Self {
         self.steps.push(Step::IngestWebhook(webhook));
         self
     }
 
     /// Run a delivery cycle to process pending webhooks.
+    #[must_use]
     pub fn run_delivery_cycle(mut self) -> Self {
         self.steps.push(Step::RunDeliveryCycle);
         self
     }
 
     /// Advance test time.
+    #[must_use]
     pub fn advance_time(mut self, duration: Duration) -> Self {
         self.steps.push(Step::AdvanceTime(duration));
         self
     }
 
     /// Inject an HTTP failure response.
+    #[must_use]
     pub fn inject_http_failure(mut self, status: u16) -> Self {
         let response = http::MockResponse::ServerError {
             status,
-            body: format!("HTTP {} Error", status).into_bytes(),
+            body: format!("HTTP {status} Error").into_bytes(),
         };
         self.steps.push(Step::InjectHttpFailure(response));
         self
     }
 
     /// Inject an HTTP success response.
+    #[must_use]
     pub fn inject_http_success(mut self) -> Self {
         self.steps.push(Step::InjectHttpSuccess);
         self
     }
 
     /// Run attestation commitment step.
+    #[must_use]
     pub fn run_attestation_commitment(mut self) -> Self {
         self.steps.push(Step::RunAttestationCommitment);
         self
     }
 
     /// Expect a webhook to have a specific status.
+    #[must_use]
     pub fn expect_status(mut self, event_id: EventId, expected_status: impl Into<String>) -> Self {
         self.steps.push(Step::ExpectStatus(event_id, expected_status.into()));
         self
     }
 
     /// Expect a specific number of delivery attempts.
-    pub fn expect_delivery_attempts(mut self, event_id: EventId, expected_count: i64) -> Self {
-        self.steps.push(Step::ExpectDeliveryAttempts(event_id, expected_count));
+    #[must_use]
+    pub fn expect_delivery_attempts(mut self, event_id: EventId, expected: i32) -> Self {
+        self.steps.push(Step::ExpectDeliveryAttempts(event_id, expected.into()));
         self
     }
 
     /// Add a custom assertion.
+    #[must_use]
     pub fn assert_state<F>(mut self, assertion: F) -> Self
     where
         F: Fn(&mut TestEnv) -> Result<()> + 'static,
@@ -1284,6 +1345,7 @@ impl ScenarioBuilder {
     /// Invariant checks are executed after every scenario step to ensure
     /// system correctness properties hold throughout the entire scenario.
     /// This catches violations immediately when they occur.
+    #[must_use]
     pub fn check_invariant<F>(mut self, check: F) -> Self
     where
         F: for<'a> Fn(
@@ -1297,6 +1359,7 @@ impl ScenarioBuilder {
     }
 
     /// Add common invariant: no events are lost during processing.
+    #[must_use]
     pub fn check_no_data_loss(self) -> Self {
         self.check_invariant(|env| {
             Box::pin(async move {
@@ -1308,11 +1371,7 @@ impl ScenarioBuilder {
 
                 anyhow::ensure!(
                     total_events == terminal_events + processing_events + pending_events,
-                    "Data loss detected: {} total, {} terminal, {} processing, {} pending",
-                    total_events,
-                    terminal_events,
-                    processing_events,
-                    pending_events
+                    "Data loss detected: {total_events} total, {terminal_events} terminal, {processing_events} processing, {pending_events} pending"
                 );
                 Ok(())
             })
@@ -1320,6 +1379,7 @@ impl ScenarioBuilder {
     }
 
     /// Add common invariant: retry attempts never exceed configured maximum.
+    #[must_use]
     pub fn check_retry_bounds(self, max_retries: u32) -> Self {
         self.check_invariant(move |env| {
             Box::pin(async move {
@@ -1339,6 +1399,7 @@ impl ScenarioBuilder {
     }
 
     /// Add common invariant: events maintain proper state transitions.
+    #[must_use]
     pub fn check_state_machine_integrity(self) -> Self {
         self.check_invariant(|env| {
             Box::pin(async move {
@@ -1370,18 +1431,21 @@ impl ScenarioBuilder {
     }
 
     /// Expect a specific number of attestation leaves for an event.
+    #[must_use]
     pub fn expect_attestation_leaf_count(mut self, event_id: EventId, expected_count: i64) -> Self {
         self.steps.push(Step::ExpectAttestationLeafCount(event_id, expected_count));
         self
     }
 
     /// Expect an attestation leaf to exist for an event.
+    #[must_use]
     pub fn expect_attestation_leaf_exists(mut self, event_id: EventId) -> Self {
         self.steps.push(Step::ExpectAttestationLeafExists(event_id));
         self
     }
 
     /// Expect attestation leaf to have specific attempt number.
+    #[must_use]
     pub fn expect_attestation_leaf_attempt_number(
         mut self,
         event_id: EventId,
@@ -1392,24 +1456,28 @@ impl ScenarioBuilder {
     }
 
     /// Expect two event IDs to be identical (idempotency check).
+    #[must_use]
     pub fn expect_idempotent_event_ids(mut self, event_id1: EventId, event_id2: EventId) -> Self {
         self.steps.push(Step::ExpectIdempotentEventIds(event_id1, event_id2));
         self
     }
 
     /// Expect concurrent attestation integrity for multiple events.
+    #[must_use]
     pub fn expect_concurrent_attestation_integrity(mut self, event_ids: Vec<EventId>) -> Self {
         self.steps.push(Step::ExpectConcurrentAttestationIntegrity(event_ids));
         self
     }
 
     /// Expect all events in the list to be delivered.
+    #[must_use]
     pub fn expect_all_events_delivered(mut self, event_ids: Vec<EventId>) -> Self {
         self.steps.push(Step::ExpectAllEventsDelivered(event_ids));
         self
     }
 
     /// Expect signed tree head to exist with specific size.
+    #[must_use]
     pub fn expect_signed_tree_head_with_size(mut self, expected_size: usize) -> Self {
         self.steps.push(Step::ExpectSignedTreeHeadWithSize(expected_size));
         self
@@ -1420,10 +1488,13 @@ impl ScenarioBuilder {
     /// # Errors
     ///
     /// Returns error if any step in the scenario fails to execute.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::future_not_send)]
     pub async fn run(self, env: &mut TestEnv) -> Result<()> {
         tracing::info!("running scenario: {}", self.name);
 
         // Use a HashMap to store event IDs created during the scenario
+        #[allow(clippy::collection_is_never_read)]
         let mut event_ids: HashMap<String, EventId> = HashMap::new();
 
         for (i, step) in self.steps.into_iter().enumerate() {
@@ -1495,6 +1566,7 @@ impl ScenarioBuilder {
                 Step::ExpectAttestationLeafAttemptNumber(event_id, expected_attempt) => {
                     let leaf =
                         env.fetch_attestation_leaf_for_event(event_id).await?.unwrap_or_else(
+                            #[allow(clippy::panic)]
                             || panic!("Attestation leaf must exist for event {}", event_id.0),
                         );
                     assert_eq!(
@@ -1503,11 +1575,10 @@ impl ScenarioBuilder {
                         event_id.0, expected_attempt, leaf.attempt_number
                     );
                 },
-                Step::ExpectIdempotentEventIds(event_id1, event_id2) => {
+                Step::ExpectIdempotentEventIds(first_event_id, second_event_id) => {
                     assert_eq!(
-                        event_id1, event_id2,
-                        "Event IDs must be identical for idempotency: {} != {}",
-                        event_id1.0, event_id2.0
+                        first_event_id, second_event_id,
+                        "Event IDs must be identical for idempotency: {first_event_id} != {second_event_id}"
                     );
                 },
                 Step::ExpectConcurrentAttestationIntegrity(event_ids) => {
@@ -1525,7 +1596,7 @@ impl ScenarioBuilder {
                     let total_leaves = env.count_total_attestation_leaves().await?;
                     assert_eq!(
                         total_leaves,
-                        event_ids.len() as i64,
+                        i64::try_from(event_ids.len()).unwrap_or(0),
                         "Total attestation leaves must match delivered events"
                     );
                 },
@@ -1542,11 +1613,14 @@ impl ScenarioBuilder {
                     let latest_sth = env.fetch_latest_signed_tree_head().await?;
                     assert!(latest_sth.is_some(), "Latest STH must exist after commitment");
 
+                    #[allow(clippy::unwrap_used)]
                     let sth = latest_sth.unwrap();
                     assert_eq!(
-                        sth.tree_size as usize, expected_size,
+                        usize::try_from(sth.tree_size).unwrap_or(0),
+                        expected_size,
                         "Tree size must match expected: expected {}, got {}",
-                        expected_size, sth.tree_size
+                        expected_size,
+                        sth.tree_size
                     );
                     assert!(!sth.signature.is_empty(), "STH must be cryptographically signed");
                 },
@@ -1586,6 +1660,7 @@ impl ScenarioBuilder {
     ///
     /// Creates an insta snapshot that will catch changes to event processing
     /// behavior across system boundaries.
+    #[must_use]
     pub fn snapshot_events_table(mut self, snapshot_name: impl Into<String>) -> Self {
         self.steps.push(Step::SnapshotEventsTable(snapshot_name.into()));
         self
@@ -1594,6 +1669,7 @@ impl ScenarioBuilder {
     /// Capture a snapshot of delivery attempts for debugging.
     ///
     /// Useful for verifying retry behavior and delivery attempt patterns.
+    #[must_use]
     pub fn snapshot_delivery_attempts(mut self, snapshot_name: impl Into<String>) -> Self {
         self.steps.push(Step::SnapshotDeliveryAttempts(snapshot_name.into()));
         self
@@ -1602,6 +1678,7 @@ impl ScenarioBuilder {
     /// Capture database schema snapshot to detect schema evolution issues.
     ///
     /// Critical for catching unintended schema changes in pull requests.
+    #[must_use]
     pub fn snapshot_database_schema(mut self, snapshot_name: impl Into<String>) -> Self {
         self.steps.push(Step::SnapshotDatabaseSchema(snapshot_name.into()));
         self
@@ -1610,6 +1687,7 @@ impl ScenarioBuilder {
     /// Capture snapshot of any database table.
     ///
     /// Generic method for snapshotting lookup tables, configuration, etc.
+    #[must_use]
     pub fn snapshot_table(
         mut self,
         snapshot_name: impl Into<String>,
@@ -1631,6 +1709,8 @@ pub mod assertions {
     use serde_json::Value;
 
     /// Assert that JSON payloads match.
+    #[allow(clippy::expect_used)]
+    #[allow(clippy::unwrap_used)]
     pub fn assert_json_matches(actual: &Bytes, expected: &Value) {
         let actual_json: Value =
             serde_json::from_slice(actual).expect("failed to parse actual JSON");

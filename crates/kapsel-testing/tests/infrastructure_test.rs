@@ -55,7 +55,7 @@ async fn test_infrastructure_components_work() {
 async fn fixture_builders_create_valid_test_data() {
     // Test WebhookBuilder
     let webhook = WebhookBuilder::with_defaults()
-        .json_body(json!({
+        .json_body(&json!({
             "event": "payment.completed",
             "data": {
                 "payment_id": "pay_123",

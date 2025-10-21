@@ -168,7 +168,7 @@ impl CompletionTracker {
     /// Returns immediately if the required count is already reached.
     /// Times out after `DEFAULT_EVENT_TIMEOUT` to prevent test hangs.
     pub async fn wait_for_completions(&self, count: usize) {
-        self.wait_for_completions_with_timeout(count, DEFAULT_EVENT_TIMEOUT).await
+        self.wait_for_completions_with_timeout(count, DEFAULT_EVENT_TIMEOUT).await;
     }
 
     /// Wait for handler completions with custom timeout.
@@ -180,14 +180,13 @@ impl CompletionTracker {
         })
         .await;
 
-        if result.is_err() {
-            panic!(
-                "Event handlers did not complete in time. Expected: {}, Actual: {}, Timeout: {:?}",
-                count,
-                self.completed_count(),
-                timeout
-            );
-        }
+        assert!(
+            result.is_ok(),
+            "Event handlers did not complete in time. Expected: {}, Actual: {}, Timeout: {:?}",
+            count,
+            self.completed_count(),
+            timeout
+        );
     }
 
     /// Wait for a single handler to complete.
@@ -341,13 +340,12 @@ impl EventHandlerTester {
         })
         .await;
 
-        if result.is_err() {
-            panic!(
-                "Expected {} total completions, got {} after timeout",
-                expected_total,
-                self.total_completions()
-            );
-        }
+        assert!(
+            result.is_ok(),
+            "Expected {} total completions, got {} after timeout",
+            expected_total,
+            self.total_completions()
+        );
     }
 
     /// Get total completion count across all subscribers.

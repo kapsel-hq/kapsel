@@ -77,7 +77,7 @@ async fn http_mock_server_responds() {
 async fn webhook_fixture_builder_creates_valid_data() {
     // Arrange & Act
     let webhook = WebhookBuilder::with_defaults()
-        .json_body(serde_json::json!({
+        .json_body(&serde_json::json!({
             "event": "test.created",
             "data": {
                 "id": "123",

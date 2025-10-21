@@ -50,7 +50,7 @@ async fn complete_attestation_workflow() {
     assert!(signed_tree_head.timestamp_ms > 0);
 
     // Verify no pending leaves remain
-    assert_eq!(service.pending_count().await.expect("should get pending count"), 0);
+    assert_eq!(service.pending_count(), 0);
 }
 
 /// Test incremental batch processing workflow.
@@ -126,7 +126,7 @@ async fn mixed_success_failure_workflow() {
 
     // Only success events should be pending
     let service = merkle_service_shared.read().await;
-    assert_eq!(service.pending_count().await.expect("should get pending count"), 4);
+    assert_eq!(service.pending_count(), 4);
     drop(service);
 
     // Commit should only include successful deliveries
@@ -166,7 +166,7 @@ async fn empty_batch_commit_workflow() {
     }
 
     // Service should remain operational
-    assert_eq!(service.pending_count().await.expect("should get pending count"), 0);
+    assert_eq!(service.pending_count(), 0);
 }
 
 /// Test large batch processing workflow.
@@ -194,7 +194,7 @@ async fn large_batch_processing_workflow() {
 
     // Verify all events are pending
     let service = merkle_service_shared.read().await;
-    assert_eq!(service.pending_count().await.expect("should get pending count"), BATCH_SIZE);
+    assert_eq!(service.pending_count(), BATCH_SIZE);
     drop(service);
 
     // Commit large batch
@@ -203,7 +203,7 @@ async fn large_batch_processing_workflow() {
 
     assert_eq!(tree_head.tree_size, BATCH_SIZE as u64);
     assert!(!tree_head.signature.is_empty());
-    assert_eq!(service.pending_count().await.expect("should get pending count"), 0);
+    assert_eq!(service.pending_count(), 0);
 }
 
 /// Helper function to store ephemeral signing key in database.

@@ -106,8 +106,7 @@ impl Invariants {
                             state = CircuitState::Open;
                             ensure!(
                                 event.circuit_state == CircuitState::Open,
-                                "Circuit should be open after {} failures",
-                                consecutive_failures
+                                "Circuit should be open after {consecutive_failures} failures"
                             );
                         }
                     }
@@ -130,24 +129,24 @@ impl Invariants {
 
     /// Multi-tenancy isolation: No data leakage between tenants.
     pub fn tenant_isolation(
-        tenant_a_data: &[WebhookEvent],
-        tenant_b_data: &[WebhookEvent],
-        tenant_a_id: Uuid,
-        tenant_b_id: Uuid,
+        first_tenant_data: &[WebhookEvent],
+        second_tenant_data: &[WebhookEvent],
+        first_tenant_id: Uuid,
+        second_tenant_id: Uuid,
     ) -> Result<()> {
         // No events from A in B's data
-        for event in tenant_b_data {
+        for event in second_tenant_data {
             ensure!(
-                event.tenant_id != tenant_a_id,
+                event.tenant_id != first_tenant_id,
                 "Tenant A event {} found in Tenant B data",
                 event.id
             );
         }
 
         // No events from B in A's data
-        for event in tenant_a_data {
+        for event in first_tenant_data {
             ensure!(
-                event.tenant_id != tenant_b_id,
+                event.tenant_id != second_tenant_id,
                 "Tenant B event {} found in Tenant A data",
                 event.id
             );
@@ -179,8 +178,7 @@ impl Invariants {
                 {
                     ensure!(
                         window[0].delivered_at <= window[1].delivered_at,
-                        "Delivery order violation for endpoint {}",
-                        endpoint_id
+                        "Delivery order violation for endpoint {endpoint_id}"
                     );
                 }
             }
@@ -190,24 +188,19 @@ impl Invariants {
     }
 
     /// No lost events: Every ingested event exists in exactly one state.
-    pub fn no_lost_events(
-        ingested: &HashSet<Uuid>,
-        current_state: &HashMap<Uuid, WebhookEvent>,
+    pub fn no_lost_events<S: ::std::hash::BuildHasher, T: ::std::hash::BuildHasher>(
+        ingested: &HashSet<Uuid, S>,
+        current_state: &HashMap<Uuid, WebhookEvent, T>,
     ) -> Result<()> {
         for event_id in ingested {
             ensure!(
                 current_state.contains_key(event_id),
-                "Event {} was ingested but not found in system",
-                event_id
+                "Event {event_id} was ingested but not found in current state"
             );
         }
 
         for event_id in current_state.keys() {
-            ensure!(
-                ingested.contains(event_id),
-                "Event {} exists but was never ingested",
-                event_id
-            );
+            ensure!(ingested.contains(event_id), "Event {event_id} exists but was never ingested");
         }
 
         Ok(())
@@ -220,8 +213,7 @@ impl Invariants {
             EventStatus::Received => 1,
             EventStatus::Pending => 2,
             EventStatus::Delivering => 2 + event.attempt_count as usize,
-            EventStatus::Delivered => 3 + event.attempt_count as usize,
-            EventStatus::Failed => 3 + event.attempt_count as usize,
+            EventStatus::Delivered | EventStatus::Failed => 3 + event.attempt_count as usize,
         };
 
         ensure!(
@@ -308,7 +300,7 @@ impl WebhookEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Processing status of a webhook event in the delivery pipeline.
 ///
 /// Events transition through these states as they are processed, with
@@ -352,7 +344,7 @@ pub struct DeliveryAttempt {
     pub response_status: Option<u16>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// State of a circuit breaker protecting an endpoint.
 ///
 /// Circuit breakers prevent cascading failures by temporarily stopping
@@ -446,7 +438,10 @@ pub struct CircuitBreakerScenario {
 
 /// Assertion helpers for common invariant checks.
 pub mod assertions {
-    use super::*;
+    use super::{
+        AuditEntry, Context, DeliveryAttempt, Duration, HashMap, HashSet, Invariants,
+        RequestRecord, Result, Uuid, WebhookEvent, WebhookResponse,
+    };
 
     /// Asserts that all events reach a terminal state.
     pub fn assert_all_terminal(events: &[WebhookEvent]) -> Result<()> {
@@ -491,9 +486,9 @@ pub mod assertions {
     }
 
     /// Asserts no events are lost.
-    pub fn assert_no_lost_events(
-        ingested: &HashSet<Uuid>,
-        current: &HashMap<Uuid, WebhookEvent>,
+    pub fn assert_no_lost_events<S: ::std::hash::BuildHasher, T: ::std::hash::BuildHasher>(
+        ingested: &HashSet<Uuid, S>,
+        current: &HashMap<Uuid, WebhookEvent, T>,
     ) -> Result<()> {
         Invariants::no_lost_events(ingested, current).context("No lost events invariant violated")
     }
@@ -571,11 +566,13 @@ pub mod strategies {
     use proptest::{
         collection::{hash_map, vec},
         option,
-        prelude::*,
+        prelude::{any, prop_oneof, Just, Strategy},
         string::string_regex,
     };
 
-    use super::*;
+    use super::{
+        CircuitBreakerScenario, Duration, EventStatus, HashMap, RetryScenario, Uuid, WebhookEvent,
+    };
 
     /// Strategy for generating valid webhook events.
     pub fn webhook_event_strategy() -> impl Strategy<Value = WebhookEvent> {
@@ -631,6 +628,7 @@ pub mod strategies {
     }
 
     /// Strategy for event IDs.
+    #[allow(clippy::unwrap_used)]
     pub fn event_id_strategy() -> impl Strategy<Value = String> {
         string_regex("evt_[a-z0-9]{16}").unwrap()
     }
@@ -656,6 +654,7 @@ pub mod strategies {
     }
 
     /// Strategy for HTTP headers.
+    #[allow(clippy::unwrap_used)]
     pub fn headers_strategy() -> impl Strategy<Value = HashMap<String, String>> {
         hash_map(
             string_regex("[A-Za-z][A-Za-z0-9-]*").unwrap(),
@@ -665,6 +664,7 @@ pub mod strategies {
     }
 
     /// Strategy for webhook body.
+    #[allow(clippy::unwrap_used)]
     pub fn body_strategy() -> impl Strategy<Value = Bytes> {
         prop_oneof![
             // JSON payload

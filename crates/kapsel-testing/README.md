@@ -40,7 +40,7 @@ async fn test_webhook_delivery() {
         .respond_with(503, "Service Unavailable")
         .respond_with(503, "Service Unavailable")
         .respond_with(503, "Service Unavailable")
-        .respond_with_json(200, json!({"status": "ok"}))
+        .respond_with_json(200, &json!({"status": "ok"}))
         .build()
         .await;
 }
@@ -53,7 +53,7 @@ use kapsel_testing::fixtures::{WebhookBuilder, scenarios};
 
 // Build custom webhook
 let webhook = WebhookBuilder::with_defaults()
-    .json_body(json!({"event": "payment.completed"}))
+    .json_body(&json!({"event": "payment.completed"}))
     .header("X-Stripe-Signature", "sig_123")
     .build();
 
@@ -193,6 +193,7 @@ cargo bench --package kapsel_testing
 ```
 
 Key metrics tracked:
+
 - Ingestion latency p99 < 50ms
 - Delivery throughput > 1000/sec
 - Database query p99 < 5ms
@@ -346,6 +347,7 @@ docker ps | grep kapsel-postgres-test
 ### Slow Tests
 
 PostgreSQL tests should complete in ~300-400ms. If slower:
+
 - Check Docker resources
 - Increase Docker memory allocation
 - Use transaction-based tests for faster cleanup
@@ -353,6 +355,7 @@ PostgreSQL tests should complete in ~300-400ms. If slower:
 ### Flaky Tests
 
 All tests must be deterministic. If experiencing flakes:
+
 - Use `TestClock` instead of real time
 - Mock all external dependencies
 - Set deterministic seed: `TEST_SEED=12345`

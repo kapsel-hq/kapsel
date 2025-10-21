@@ -545,14 +545,14 @@ fn property_webhook_delivery_retry_scenarios() {
                 for _ in 0..num_failures {
                     mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
                 }
-                mock_sequence.respond_with_json(200, json!({"status": "success"})).build().await;
+                mock_sequence.respond_with_json(200, &json!({"status": "success"})).build().await;
 
                 // Create webhook with random payload data
                 let webhook = WebhookBuilder::new()
                     .tenant(tenant_id.0)
                     .endpoint(endpoint_id.0)
                     .source_event(format!("prop_test_{:?}", webhook_data))
-                    .json_body(json!({"data": format!("{:?}", webhook_data), "test": "property"}))
+                    .json_body(&json!({"data": format!("{webhook_data:?}"), "test": "property"}))
                     .build();
 
                 let event_id = env.ingest_webhook(&webhook).await.unwrap();
@@ -565,7 +565,7 @@ fn property_webhook_delivery_retry_scenarios() {
                     let backoff_duration = deterministic_webhook_backoff(i);
                     scenario = scenario
                         .run_delivery_cycle()
-                        .expect_delivery_attempts(event_id, (i + 1) as i64)
+                        .expect_delivery_attempts(event_id, (i + 1) as i32)
                         .expect_status(event_id, "pending")
                         .advance_time(backoff_duration);
                 }
@@ -573,7 +573,7 @@ fn property_webhook_delivery_retry_scenarios() {
                 // Final successful attempt
                 scenario = scenario
                     .run_delivery_cycle()
-                    .expect_delivery_attempts(event_id, (num_failures + 1) as i64)
+                    .expect_delivery_attempts(event_id, (num_failures + 1) as i32)
                     .expect_status(event_id, "delivered");
 
                 // Execute the scenario
@@ -623,14 +623,14 @@ fn property_idempotency_under_duress() {
                 for _ in 0..initial_failures {
                     mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
                 }
-                mock_sequence.respond_with_json(200, json!({"status": "ok"})).build().await;
+                mock_sequence.respond_with_json(200, &json!({"status": "ok"})).build().await;
 
                 let source_event_id = format!("idempotent_event_{}", uuid::Uuid::new_v4());
                 let webhook = WebhookBuilder::new()
                     .tenant(tenant_id.0)
                     .endpoint(endpoint_id.0)
                     .source_event(&source_event_id)
-                    .json_body(json!({"test": "idempotency"}))
+                    .json_body(&json!({"test": "idempotency"}))
                     .build();
 
                 // Initial ingestion
@@ -654,7 +654,7 @@ fn property_idempotency_under_duress() {
                         .tenant(tenant_id.0)
                         .endpoint(endpoint_id.0)
                         .source_event(&source_event_id)
-                        .json_body(json!({"test": "idempotency", "duplicate": i}))
+                        .json_body(&json!({"test": "idempotency", "duplicate": i}))
                         .build();
 
                     let result = env.ingest_webhook(&webhook_dup).await;
@@ -727,7 +727,7 @@ fn property_circuit_breaker_resilience() {
                         match response {
                             Ok(()) => {
                                 mock_sequence =
-                                    mock_sequence.respond_with_json(200, json!({"ok": true}))
+                                    mock_sequence.respond_with_json(200, &json!({"ok": true}))
                             },
                             Err(code) => mock_sequence = mock_sequence.respond_with(*code, "Error"),
                         }
@@ -743,7 +743,7 @@ fn property_circuit_breaker_resilience() {
                             .tenant(tenant_id.0)
                             .endpoint(endpoint_id.0)
                             .source_event(format!("circuit_test_{}", i))
-                            .json_body(json!({"seq": i}))
+                            .json_body(&json!({"seq": i}))
                             .build();
 
                         let event_id = env.ingest_webhook(&webhook).await.unwrap();
@@ -840,9 +840,9 @@ fn property_fifo_processing_order() {
                             // Fail initially but succeed on retry
                             mock_sequence = mock_sequence
                                 .respond_with(503, "Temporary failure")
-                                .respond_with_json(200, json!({"ok": true}));
+                                .respond_with_json(200, &json!({"ok": true}));
                         } else {
-                            mock_sequence = mock_sequence.respond_with_json(200, json!({"ok": true}));
+                            mock_sequence = mock_sequence.respond_with_json(200, &json!({"ok": true}));
                         }
                     }
                     mock_sequence.build().await;
@@ -854,7 +854,7 @@ fn property_fifo_processing_order() {
                             .tenant(tenant_id.0)
                             .endpoint(endpoint_id.0)
                             .source_event(format!("ordered_event_{:03}", i))
-                            .json_body(json!({"sequence": i}))
+                            .json_body(&json!({"sequence": i}))
                             .build();
 
                         let event_id = env.ingest_webhook(&webhook).await.unwrap();

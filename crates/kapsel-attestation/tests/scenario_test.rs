@@ -85,8 +85,7 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
     // Verify attestation leaf was created through event integration
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending attestation count");
+        let pending_count = service.pending_count();
         assert_eq!(pending_count, 1, "Successful delivery should create one attestation leaf");
     }
 }
@@ -164,8 +163,7 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
     // Verify all attestation leaves were created
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending attestation count");
+        let pending_count = service.pending_count();
         assert_eq!(pending_count, 3, "Each successful delivery should create one attestation leaf");
     }
 }
@@ -249,8 +247,7 @@ async fn failed_delivery_does_not_create_attestation_leaf() {
     // Verify no attestation leaf was created for failed delivery
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending attestation count");
+        let pending_count = service.pending_count();
         assert_eq!(pending_count, 0, "Failed delivery should not create attestation leaf");
     }
 }
@@ -287,8 +284,7 @@ async fn direct_success_event_creates_attestation_leaf() {
     // Verify attestation leaf was created
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending attestation count");
+        let pending_count = service.pending_count();
         assert_eq!(pending_count, 1, "Direct success event should create attestation leaf");
     }
 }
@@ -331,8 +327,7 @@ async fn multiple_events_enable_batch_attestation_commitment() {
     // Verify all leaves are pending
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending attestation count");
+        let pending_count = service.pending_count();
         assert_eq!(
             pending_count, event_count,
             "All success events should create attestation leaves"
@@ -354,8 +349,7 @@ async fn multiple_events_enable_batch_attestation_commitment() {
     // Verify no leaves are pending after batch commit
     {
         let service = merkle_service.read().await;
-        let pending_count =
-            service.pending_count().await.expect("failed to get pending count after commit");
+        let pending_count = service.pending_count();
         assert_eq!(pending_count, 0, "No leaves should be pending after batch commit");
     }
 }

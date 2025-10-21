@@ -67,7 +67,7 @@ impl LeafData {
         attempted_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Self> {
         if attempt_number <= 0 {
-            return Err(AttestationError::InvalidTreeSize { tree_size: attempt_number as i64 });
+            return Err(AttestationError::InvalidTreeSize { tree_size: i64::from(attempt_number) });
         }
 
         Ok(Self {
@@ -108,7 +108,7 @@ impl LeafData {
 
         // Endpoint URL with length prefix
         let url_bytes = self.endpoint_url.as_bytes();
-        hasher.update((url_bytes.len() as u32).to_be_bytes());
+        hasher.update(u32::try_from(url_bytes.len()).unwrap_or(u32::MAX).to_be_bytes());
         hasher.update(url_bytes);
 
         // Payload hash (32 bytes)
@@ -118,15 +118,12 @@ impl LeafData {
         hasher.update(self.attempt_number.to_be_bytes());
 
         // Response status (2 bytes for status, 1 byte for presence flag)
-        match self.response_status {
-            Some(status) => {
-                hasher.update([1u8]); // Present flag
-                hasher.update(status.to_be_bytes());
-            },
-            None => {
-                hasher.update([0u8]); // Absent flag
-                hasher.update([0u8, 0u8]); // Padding for alignment
-            },
+        if let Some(status) = self.response_status {
+            hasher.update([1u8]); // Present flag
+            hasher.update(status.to_be_bytes());
+        } else {
+            hasher.update([0u8]); // Absent flag
+            hasher.update([0u8, 0u8]); // Padding for alignment
         }
 
         // Timestamp as milliseconds since Unix epoch (8 bytes)
@@ -149,7 +146,7 @@ impl LeafData {
     ///
     /// Returns `true` if response status indicates success (2xx range).
     pub fn is_successful(&self) -> bool {
-        self.response_status.map(|status| (200..300).contains(&status)).unwrap_or(false)
+        self.response_status.is_some_and(|status| (200..300).contains(&status))
     }
 
     /// Check if the delivery attempt had a network error.

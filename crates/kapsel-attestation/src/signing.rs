@@ -34,35 +34,27 @@ impl SigningService {
     }
 
     /// Create signing service from existing key bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AttestationError::InvalidKeyFormat` if key bytes are invalid.
-    pub fn try_from_bytes(private_key_bytes: &[u8; 32]) -> Result<Self, AttestationError> {
+    pub fn try_from_bytes(private_key_bytes: &[u8; 32]) -> Self {
         let signing_key = SigningKey::from_bytes(private_key_bytes);
         let verifying_key = signing_key.verifying_key();
         let key_id = Self::compute_key_id(&verifying_key);
 
-        Ok(Self { signing_key, verifying_key, key_id })
+        Self { signing_key, verifying_key, key_id }
     }
 
     /// Sign a Merkle tree head following RFC 6962 format.
     ///
     /// Creates a deterministic Ed25519 signature over the concatenated tree
     /// state: tree_size || root_hash || timestamp_ms
-    ///
-    /// # Errors
-    ///
-    /// Returns `AttestationError` if signature generation fails.
     pub fn sign_tree_head(
         &self,
         root_hash: &[u8; 32],
         tree_size: i64,
         timestamp_ms: i64,
-    ) -> Result<Vec<u8>, AttestationError> {
-        let message = self.encode_tree_head(root_hash, tree_size, timestamp_ms);
+    ) -> Vec<u8> {
+        let message = Self::encode_tree_head(root_hash, tree_size, timestamp_ms);
         let signature = self.signing_key.sign(&message);
-        Ok(signature.to_bytes().to_vec())
+        signature.to_bytes().to_vec()
     }
 
     /// Verify a tree head signature.
@@ -81,7 +73,7 @@ impl SigningService {
         let signature = Signature::from_slice(signature_bytes)
             .map_err(|_| AttestationError::InvalidSignature)?;
 
-        let message = self.encode_tree_head(root_hash, tree_size, timestamp_ms);
+        let message = Self::encode_tree_head(root_hash, tree_size, timestamp_ms);
 
         match self.verifying_key.verify(&message, &signature) {
             Ok(()) => Ok(true),
@@ -108,6 +100,7 @@ impl SigningService {
     /// This method allows setting the key ID to the UUID returned by the
     /// database when inserting into the attestation_keys table, since the
     /// database generates its own primary key.
+    #[must_use]
     pub fn with_key_id(mut self, key_id: uuid::Uuid) -> Self {
         self.key_id = key_id;
         self
@@ -122,7 +115,7 @@ impl SigningService {
         delivery_attempt_id: uuid::Uuid,
         event_id: uuid::Uuid,
     ) -> Vec<u8> {
-        let message = self.encode_leaf_payload(leaf_hash, delivery_attempt_id, event_id);
+        let message = Self::encode_leaf_payload(leaf_hash, delivery_attempt_id, event_id);
         let signature = self.signing_key.sign(&message);
         signature.to_bytes().to_vec()
     }
@@ -132,7 +125,7 @@ impl SigningService {
     /// Creates the canonical byte representation following RFC 6962:
     /// tree_size (8 bytes, big-endian) || root_hash (32 bytes) || timestamp_ms
     /// (8 bytes, big-endian)
-    fn encode_tree_head(&self, root_hash: &[u8; 32], tree_size: i64, timestamp_ms: i64) -> Vec<u8> {
+    fn encode_tree_head(root_hash: &[u8; 32], tree_size: i64, timestamp_ms: i64) -> Vec<u8> {
         let mut message = Vec::with_capacity(8 + 32 + 8);
         message.extend_from_slice(&tree_size.to_be_bytes());
         message.extend_from_slice(root_hash);
@@ -146,7 +139,6 @@ impl SigningService {
     /// leaf_hash (32 bytes) || delivery_attempt_id (16 bytes) || event_id (16
     /// bytes)
     fn encode_leaf_payload(
-        &self,
         leaf_hash: &[u8; 32],
         delivery_attempt_id: uuid::Uuid,
         event_id: uuid::Uuid,
@@ -190,8 +182,8 @@ mod tests {
         let tree_size = 100i64;
         let timestamp_ms = 1234567890000i64;
 
-        let sig1 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms).unwrap();
-        let sig2 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms).unwrap();
+        let sig1 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
+        let sig2 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
         assert_eq!(sig1, sig2, "Signatures must be deterministic");
         assert_eq!(sig1.len(), 64, "Ed25519 signature is 64 bytes");
@@ -204,7 +196,7 @@ mod tests {
         let tree_size = 42i64;
         let timestamp_ms = 9876543210000i64;
 
-        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms).unwrap();
+        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
         let is_valid =
             service.verify_tree_head(&root_hash, tree_size, timestamp_ms, &signature).unwrap();
 
@@ -218,7 +210,7 @@ mod tests {
         let tree_size = 100i64;
         let timestamp_ms = 1111111111111i64;
 
-        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms).unwrap();
+        let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
         // Tamper with root hash
         let tampered_root = [3u8; 32];
@@ -231,8 +223,8 @@ mod tests {
     #[test]
     fn key_id_is_deterministic() {
         let key_bytes = [1u8; 32];
-        let service1 = SigningService::try_from_bytes(&key_bytes).unwrap();
-        let service2 = SigningService::try_from_bytes(&key_bytes).unwrap();
+        let service1 = SigningService::try_from_bytes(&key_bytes);
+        let service2 = SigningService::try_from_bytes(&key_bytes);
 
         assert_eq!(service1.key_id(), service2.key_id(), "Key ID must be deterministic");
         assert!(!service1.key_id().is_nil(), "Key ID must not be nil");

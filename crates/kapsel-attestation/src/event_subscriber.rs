@@ -9,7 +9,7 @@ use kapsel_core::{DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, Ev
 use tokio::sync::RwLock;
 use tracing::{debug, error};
 
-use crate::{LeafData, MerkleService, Result};
+use crate::{AttestationError, LeafData, MerkleService, Result};
 
 /// Attestation event subscriber that converts delivery events into merkle
 /// leaves.
@@ -31,7 +31,7 @@ impl AttestationEventSubscriber {
 
     /// Handles a successful delivery event by creating an attestation leaf.
     async fn handle_delivery_success(&self, event: DeliverySucceededEvent) {
-        let leaf_data = match self.create_leaf_data_from_success(&event) {
+        let leaf_data = match Self::create_leaf_data_from_success(&event) {
             Ok(leaf) => leaf,
             Err(e) => {
                 error!(
@@ -45,7 +45,7 @@ impl AttestationEventSubscriber {
         };
 
         let mut service = self.merkle_service.write().await;
-        if let Err(e) = service.add_leaf(leaf_data).await {
+        if let Err(e) = service.add_leaf(leaf_data) {
             error!(
                 event_id = %event.event_id,
                 delivery_attempt_id = %event.delivery_attempt_id,
@@ -68,7 +68,7 @@ impl AttestationEventSubscriber {
     /// Failed deliveries do not generate attestation leaves since we only
     /// attest to successful deliveries. However, we log the failure for
     /// operational visibility.
-    async fn handle_delivery_failure(&self, event: DeliveryFailedEvent) {
+    fn handle_delivery_failure(event: &DeliveryFailedEvent) {
         debug!(
             event_id = %event.event_id,
             delivery_attempt_id = %event.delivery_attempt_id,
@@ -81,13 +81,15 @@ impl AttestationEventSubscriber {
     }
 
     /// Creates attestation leaf data from a successful delivery event.
-    fn create_leaf_data_from_success(&self, event: &DeliverySucceededEvent) -> Result<LeafData> {
+    fn create_leaf_data_from_success(event: &DeliverySucceededEvent) -> Result<LeafData> {
         LeafData::new(
             event.delivery_attempt_id,
             event.event_id.0,
             event.endpoint_url.clone(),
             event.payload_hash,
-            event.attempt_number as i32,
+            i32::try_from(event.attempt_number).map_err(|_| AttestationError::InvalidTreeSize {
+                tree_size: i64::from(event.attempt_number),
+            })?,
             Some(event.response_status),
             event.delivered_at,
         )
@@ -102,7 +104,7 @@ impl EventHandler for AttestationEventSubscriber {
                 self.handle_delivery_success(success_event).await;
             },
             DeliveryEvent::Failed(failure_event) => {
-                self.handle_delivery_failure(failure_event).await;
+                Self::handle_delivery_failure(&failure_event);
             },
             DeliveryEvent::AttemptStarted(_) => {
                 // We don't create attestation leaves for delivery attempts,
@@ -141,7 +143,7 @@ mod tests {
 
         // Verify attestation leaf was created
         let service = merkle_service.read().await;
-        assert_eq!(service.pending_count().await.expect("failed to get pending count"), 1);
+        assert_eq!(service.pending_count(), 1);
     }
 
     #[tokio::test]
@@ -157,7 +159,7 @@ mod tests {
 
         // Verify no attestation leaf was created for failure
         let service = merkle_service.read().await;
-        assert_eq!(service.pending_count().await.expect("failed to get pending count"), 0);
+        assert_eq!(service.pending_count(), 0);
     }
 
     #[tokio::test]
@@ -176,7 +178,7 @@ mod tests {
 
         // Verify all attestation leaves were created
         let service = merkle_service.read().await;
-        assert_eq!(service.pending_count().await.expect("failed to get pending count"), 3);
+        assert_eq!(service.pending_count(), 3);
     }
 
     fn create_test_delivery_success_event() -> DeliverySucceededEvent {

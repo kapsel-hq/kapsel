@@ -7,7 +7,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http::{HeaderMap, StatusCode};
-use serde_json::Value;
 use tokio::sync::RwLock;
 use wiremock::{
     matchers::{header, method, path},
@@ -140,12 +139,14 @@ impl MockEndpoint {
     }
 
     /// Adds an expected header to the mock.
+    #[must_use]
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.expected_headers.insert(key.into(), value.into());
         self
     }
 
     /// Configures the response body.
+    #[must_use]
     pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
         if let MockResponse::Success { status, .. } = self.response {
             self.response = MockResponse::Success { status, body: body.into() };
@@ -154,6 +155,7 @@ impl MockEndpoint {
     }
 
     /// Configures a retry-after header for rate limiting scenarios.
+    #[must_use]
     pub fn with_retry_after(mut self, duration: Duration) -> Self {
         if let MockResponse::Failure { status, .. } = self.response {
             self.response = MockResponse::Failure { status, retry_after: Some(duration) };
@@ -222,12 +224,15 @@ impl ScenarioBuilder {
     }
 
     /// Adds a successful response after optional delay.
+    #[must_use]
     pub fn respond_ok(mut self, path: impl Into<String>, delay: Option<Duration>) -> Self {
         self.interactions.push(Interaction { endpoint: MockEndpoint::success(path), delay });
         self
     }
 
     /// Adds a failure response.
+    /// Configures an error response for the given path.
+    #[must_use]
     pub fn respond_error(
         mut self,
         path: impl Into<String>,
@@ -240,12 +245,13 @@ impl ScenarioBuilder {
     }
 
     /// Adds a timeout response.
+    #[must_use]
     pub fn respond_timeout(mut self, path: impl Into<String>) -> Self {
         self.interactions.push(Interaction {
             endpoint: MockEndpoint {
                 path: path.into(),
-                expected_headers: HashMap::new(),
                 response: MockResponse::Timeout,
+                expected_headers: HashMap::new(),
             },
             delay: None,
         });
@@ -269,15 +275,18 @@ pub struct MockSequenceBuilder<'a> {
     responses: Vec<(u16, String)>,
 }
 
-impl<'a> MockSequenceBuilder<'a> {
+impl MockSequenceBuilder<'_> {
     /// Adds a response with the given status code and body.
+    #[must_use]
     pub fn respond_with(mut self, status: u16, body: impl Into<String>) -> Self {
         self.responses.push((status, body.into()));
         self
     }
 
     /// Adds a JSON response.
-    pub fn respond_with_json(mut self, status: u16, json: serde_json::Value) -> Self {
+    /// Adds a JSON response with the given status code.
+    #[must_use]
+    pub fn respond_with_json(mut self, status: u16, json: &serde_json::Value) -> Self {
         self.responses.push((status, json.to_string()));
         self
     }
@@ -298,20 +307,29 @@ impl<'a> MockSequenceBuilder<'a> {
 
 /// HTTP assertions for webhook testing.
 pub mod assertions {
-    use super::*;
+    use serde_json::Value;
+
+    use super::{Duration, RecordedRequest};
 
     /// Asserts that a request contains the expected header.
+    #[allow(clippy::panic)]
+    #[allow(clippy::expect_used)]
     pub fn assert_header_present(request: &RecordedRequest, key: &str, value: &str) {
         let header_value =
-            request.headers.get(key).unwrap_or_else(|| panic!("Header '{}' not present", key));
+            request.headers.get(key).unwrap_or_else(|| panic!("Header '{key}' not present"));
 
-        assert_eq!(header_value.to_str().unwrap(), value, "Header '{}' has unexpected value", key);
+        assert_eq!(
+            header_value.to_str().expect("Header value should be valid UTF-8"),
+            value,
+            "Header '{key}' has unexpected value"
+        );
     }
 
     /// Asserts that the request body matches expected JSON.
+    #[allow(clippy::expect_used)]
     pub fn assert_json_body(request: &RecordedRequest, expected: &Value) {
         let actual: Value =
-            serde_json::from_slice(&request.body).expect("Failed to parse request body as JSON");
+            serde_json::from_slice(&request.body).expect("Request body should be valid JSON");
 
         assert_eq!(actual, *expected, "Request body does not match expected JSON");
     }

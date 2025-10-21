@@ -35,7 +35,7 @@ async fn intermittent_endpoint_failures() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("chaos_intermittent_001")
-        .json_body(json!({"event": "payment.failed", "attempts": 0}))
+        .json_body(&json!({"event": "payment.failed", "attempts": 0}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;
@@ -121,7 +121,7 @@ async fn permanent_endpoint_failure() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("chaos_permanent_001")
-        .json_body(json!({"event": "subscription.cancelled", "reason": "payment_failed"}))
+        .json_body(&json!({"event": "subscription.cancelled", "reason": "payment_failed"}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;
@@ -201,7 +201,7 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
             .tenant(tenant_id.0)
             .endpoint(stable_endpoint_id.0)
             .source_event(format!("chaos_batch_{:03}", i))
-            .json_body(json!({"batch_id": i, "event": "user.created"}))
+            .json_body(&json!({"batch_id": i, "event": "user.created"}))
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -277,7 +277,7 @@ async fn idempotency_under_chaos() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("idempotent_chaos_001")
-        .json_body(json!({"amount": 5000, "currency": "usd"}))
+        .json_body(&json!({"amount": 5000, "currency": "usd"}))
         .build();
 
     let original_event_id = env.ingest_webhook(&original_webhook).await?;
@@ -296,7 +296,7 @@ async fn idempotency_under_chaos() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("idempotent_chaos_001") // Same source_event_id
-        .json_body(json!({"amount": 9999, "currency": "eur"})) // Different payload
+        .json_body(&json!({"amount": 9999, "currency": "eur"})) // Different payload
         .build();
 
     let duplicate_event_id = env.ingest_webhook(&duplicate_webhook).await?;
@@ -337,7 +337,7 @@ async fn database_transaction_chaos() -> Result<()> {
         .tenant(tenant_id.0)
         .endpoint(endpoint_id.0)
         .source_event("tx_chaos_001")
-        .json_body(json!({"test": "transaction_chaos"}))
+        .json_body(&json!({"test": "transaction_chaos"}))
         .build();
 
     let event_id = env.ingest_webhook(&webhook).await?;

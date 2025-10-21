@@ -106,10 +106,10 @@ impl MerkleService {
     ///
     /// Returns `AttestationError::InvalidTreeSize` if attempt_number is not
     /// positive.
-    pub async fn add_leaf(&mut self, leaf: LeafData) -> Result<()> {
+    pub fn add_leaf(&mut self, leaf: LeafData) -> Result<()> {
         if leaf.attempt_number <= 0 {
             return Err(AttestationError::InvalidTreeSize {
-                tree_size: leaf.attempt_number as i64,
+                tree_size: i64::from(leaf.attempt_number),
             });
         }
 
@@ -122,8 +122,8 @@ impl MerkleService {
     /// # Errors
     ///
     /// This method is infallible but returns Result for API consistency.
-    pub async fn pending_count(&self) -> Result<usize> {
-        Ok(self.pending.len())
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
     }
 
     /// Commit all pending leaves to the Merkle tree and database.
@@ -164,25 +164,33 @@ impl MerkleService {
             tree_size: self.tree.leaves_len() as u64,
         })?;
 
-        let tree_size = self.tree.leaves_len() as i64;
+        let tree_size = i64::try_from(self.tree.leaves_len())
+            .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?;
         let timestamp_ms = Utc::now().timestamp_millis();
-        let signature =
-            self.signing.sign_tree_head(&root_hash, tree_size, timestamp_ms).map_err(|_| {
-                AttestationError::batch_commit_failed("failed to sign tree head".to_string())
-            })?;
+        let signature = self.signing.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
-        let start_index = tree_size - batch_size as i64;
+        let start_index = tree_size
+            - i64::try_from(batch_size)
+                .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?;
         for (i, leaf) in self.pending.iter().enumerate() {
-            self.insert_leaf(&mut tx, leaf, &leaf_hashes[i], batch_id, start_index + i as i64)
-                .await?;
+            self.insert_leaf(
+                &mut tx,
+                leaf,
+                &leaf_hashes[i],
+                batch_id,
+                start_index
+                    + i64::try_from(i)
+                        .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?,
+            )
+            .await?;
         }
 
         sqlx::query(
-            r#"
+            r"
             INSERT INTO signed_tree_heads
             (tree_size, root_hash, timestamp_ms, signature, key_id, batch_id, batch_size)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#,
+            ",
         )
         .bind(tree_size)
         .bind(&root_hash[..])
@@ -190,7 +198,7 @@ impl MerkleService {
         .bind(&signature)
         .bind(self.signing.key_id())
         .bind(batch_id)
-        .bind(batch_size as i32)
+        .bind(i32::try_from(batch_size).unwrap_or(i32::MAX))
         .execute(&mut *tx)
         .await
         .map_err(|e| AttestationError::Database { source: e })?;
@@ -201,9 +209,9 @@ impl MerkleService {
         self.pending.clear();
 
         Ok(SignedTreeHead {
-            tree_size: tree_size as u64,
+            tree_size: u64::try_from(tree_size).unwrap_or(0),
             root_hash,
-            timestamp_ms: timestamp_ms as u64,
+            timestamp_ms: u64::try_from(timestamp_ms).unwrap_or(0),
             signature,
             key_id: self.signing.key_id(),
         })
@@ -222,7 +230,7 @@ impl MerkleService {
         tree_index: i64,
     ) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO merkle_leaves
             (leaf_hash, delivery_attempt_id, event_id, tenant_id, endpoint_url,
              payload_hash, attempt_number, attempted_at, tree_index, batch_id)
@@ -230,7 +238,7 @@ impl MerkleService {
             FROM delivery_attempts da
             JOIN webhook_events we ON da.event_id = we.id
             WHERE da.id = $2
-            "#,
+            ",
         )
         .bind(&leaf_hash[..])
         .bind(leaf.delivery_attempt_id)
@@ -294,7 +302,8 @@ impl SignedTreeHead {
 
     /// Returns the signing timestamp as a DateTime.
     pub fn timestamp(&self) -> DateTime<Utc> {
-        DateTime::from_timestamp_millis(self.timestamp_ms as i64).unwrap_or_else(Utc::now)
+        DateTime::from_timestamp_millis(i64::try_from(self.timestamp_ms).unwrap_or(0))
+            .unwrap_or_else(Utc::now)
     }
 
     /// Verify the tree head signature using the provided signing service.
@@ -309,8 +318,8 @@ impl SignedTreeHead {
 
         signing_service.verify_tree_head(
             &self.root_hash,
-            self.tree_size as i64,
-            self.timestamp_ms as i64,
+            i64::try_from(self.tree_size).unwrap_or(0),
+            i64::try_from(self.timestamp_ms).unwrap_or(0),
             &self.signature,
         )
     }
@@ -372,11 +381,4 @@ mod tests {
         assert!(!signing.key_id().is_nil());
         assert_eq!(signing.public_key_as_bytes().len(), 32);
     }
-
-    // Property-based tests would go here with proptest integration
-    // Testing invariants like:
-    // - Tree size always increases monotonically
-    // - Root hashes are deterministic for same leaf sets
-    // - Signatures are always 64 bytes
-    // - Batch processing maintains ordering
 }
