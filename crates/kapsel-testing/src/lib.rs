@@ -52,7 +52,8 @@ pub struct TestEnv {
     /// Shared database instance (Arc ensures proper cleanup)
     shared_db: std::sync::Arc<SharedDatabase>,
     /// Optional attestation service for testing delivery capture
-    attestation_service: Option<kapsel_attestation::MerkleService>,
+    attestation_service:
+        Option<std::sync::Arc<tokio::sync::RwLock<kapsel_attestation::MerkleService>>>,
 }
 
 impl TestEnv {
@@ -78,19 +79,9 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
-        // Detect if we're in a custom runtime (property tests with Runtime::new())
-        // If so, create isolated database to avoid runtime conflicts
-        let (shared_db, db) = if Self::is_custom_runtime() {
-            // Create completely isolated database for this runtime
-            let db = TestDatabase::new_isolated().await?;
-            let shared_db = std::sync::Arc::clone(db.shared_database());
-            (shared_db, db)
-        } else {
-            // Use shared database for standard test runtime
-            let db = TestDatabase::new().await?;
-            let shared_db = std::sync::Arc::clone(db.shared_database());
-            (shared_db, db)
-        };
+        // Use shared database for standard test runtime
+        let shared_db = database::create_shared_database().await?;
+        let db = TestDatabase::new().await?;
 
         // Create HTTP mock server
         let http_mock = http::MockServer::start().await;
@@ -101,50 +92,38 @@ impl TestEnv {
         Ok(Self { http_mock, clock, _database: db, shared_db, attestation_service: None })
     }
 
-    /// Execute a closure with a database transaction.
+    /// Create a new isolated test environment with its own database instance.
     ///
-    /// The transaction will automatically rollback when the closure completes,
-    /// ensuring test isolation. This replaces the unsafe lifetime transmutation
-    /// with a safe, ergonomic API.
+    /// Use this for tests that create their own async runtime (like property
+    /// tests) or need complete database isolation. Most tests should use
+    /// `new()` instead.
     ///
     /// # Errors
-    /// Execute operations directly on the pool for persistent test data.
+    ///
+    /// Returns error if test environment setup fails.
+    pub async fn new_isolated() -> Result<Self> {
+        // Initialize tracing for isolated tests
+        let _ = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).try_init();
+
+        // Create completely isolated database for this runtime
+        let db = TestDatabase::new_isolated().await?;
+        let shared_db = std::sync::Arc::clone(db.shared_database());
+
+        // Create HTTP mock server
+        let http_mock = http::MockServer::start().await;
+
+        // Create deterministic clock
+        let clock = time::TestClock::new();
+
+        Ok(Self { http_mock, clock, _database: db, shared_db, attestation_service: None })
+    }
+
+    /// Returns direct access to the database connection pool.
     ///
     /// Use this for setup operations that need to persist across method calls.
     /// For transaction isolation, create transactions manually as needed.
     pub fn pool(&self) -> &PgPool {
         self._database.shared_database().pool()
-    }
-
-    /// Get direct access to the database pool for legacy test compatibility.
-    ///
-    /// Returns the pool reference that tests can use directly for database
-    /// operations. This replaces the old transaction-based API.
-    pub fn db(&self) -> &PgPool {
-        self.pool()
-    }
-
-    /// Commit current test state (no-op for transaction-isolated tests).
-    ///
-    /// This method exists for compatibility with delivery cycle testing
-    /// where persistent state is needed.
-    pub async fn commit(&self) -> Result<()> {
-        // In transaction-isolated mode, this is a no-op since we use
-        // direct pool access for operations that need persistence
-        Ok(())
-    }
-
-    /// Detect if we're running in a test that needs isolated database
-    /// connections.
-    ///
-    /// Property tests create their own Runtime::new() and call block_on(),
-    /// while worker tests use env.commit() which breaks transaction isolation.
-    /// Both require isolated database connections to avoid conflicts.
-    fn is_custom_runtime() -> bool {
-        std::thread::current()
-            .name()
-            .map(|name| name.contains("test") || name.contains("tokio"))
-            .unwrap_or(false)
     }
 
     /// Create a new connection pool for components that manage their own
@@ -371,7 +350,7 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database queries or HTTP mock recording fails.
-    pub async fn run_delivery_cycle(&mut self) -> Result<()> {
+    pub async fn run_delivery_cycle(&self) -> Result<()> {
         // Find webhooks ready for delivery (use pool directly for persistent
         // operations)
         let ready_webhooks: Vec<ReadyWebhook> = sqlx::query_as(
@@ -522,18 +501,10 @@ impl TestEnv {
                         "created attestation success event for delivery"
                     );
 
-                    // Take the service temporarily
-                    let service = self.attestation_service.take().unwrap();
-
-                    // Use the AttestationEventSubscriber pattern in a scope to ensure cleanup
-                    {
-                        use std::sync::Arc;
-
+                    // Get reference to the service
+                    if let Some(ref merkle_service_wrapped) = self.attestation_service {
                         use kapsel_attestation::AttestationEventSubscriber;
                         use kapsel_core::EventHandler;
-                        use tokio::sync::RwLock;
-
-                        let merkle_service_wrapped = Arc::new(RwLock::new(service));
 
                         // Check pending count before processing
                         let pending_before = {
@@ -571,12 +542,6 @@ impl TestEnv {
 
                         // Drop attestation_subscriber to release Arc reference
                         drop(attestation_subscriber);
-
-                        // Put the service back
-                        let service_back = Arc::try_unwrap(merkle_service_wrapped)
-                            .expect("Failed to unwrap Arc - multiple references still exist")
-                            .into_inner();
-                        self.attestation_service = Some(service_back);
                     }
                 }
             } else {
@@ -650,7 +615,7 @@ impl TestEnv {
 
     /// Enable attestation service for testing.
     pub fn enable_attestation(&mut self, service: kapsel_attestation::MerkleService) {
-        self.attestation_service = Some(service);
+        self.attestation_service = Some(std::sync::Arc::new(tokio::sync::RwLock::new(service)));
     }
 
     /// Count attestation leaves for a specific event.
@@ -766,16 +731,16 @@ impl TestEnv {
     }
 
     /// Trigger attestation batch commitment (simulates background worker).
-    pub async fn run_attestation_commitment(&mut self) -> Result<()> {
-        if let Some(ref mut attestation_service) = self.attestation_service {
+    pub async fn run_attestation_commitment(&self) -> Result<()> {
+        if let Some(ref attestation_service) = self.attestation_service {
             // Check pending count before attempting commit
-            let pending_count = attestation_service.pending_count().await.unwrap_or(0);
+            let pending_count = attestation_service.read().await.pending_count().await.unwrap_or(0);
             tracing::debug!(
                 pending_count = pending_count,
                 "attempting attestation batch commitment"
             );
 
-            match attestation_service.try_commit_pending().await {
+            match attestation_service.write().await.try_commit_pending().await {
                 Ok(_sth) => {
                     tracing::debug!("Attestation batch committed successfully");
                     Ok(())

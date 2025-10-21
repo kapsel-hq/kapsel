@@ -531,7 +531,7 @@ fn property_webhook_delivery_retry_scenarios() {
     runner
         .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
-                let mut env = TestEnv::new().await.unwrap();
+                let mut env = TestEnv::new_isolated().await.unwrap();
 
                 let tenant_name = format!("prop-test-tenant-{}", uuid::Uuid::new_v4());
                 let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
@@ -609,7 +609,7 @@ fn property_idempotency_under_duress() {
     runner
         .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
-                let mut env = TestEnv::new().await.unwrap();
+                let mut env = TestEnv::new_isolated().await.unwrap();
 
                 let tenant_name = format!("idempotency-tenant-{}", uuid::Uuid::new_v4());
                 let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
@@ -678,7 +678,7 @@ fn property_idempotency_under_duress() {
                     "SELECT COUNT(*) FROM webhook_events WHERE source_event_id = $1",
                 )
                 .bind(&source_event_id)
-                .fetch_one(env.db())
+                .fetch_one(env.pool())
                 .await
                 .unwrap();
 
@@ -712,7 +712,7 @@ fn property_circuit_breaker_resilience() {
             ),
             |response_sequence| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new().await.unwrap();
+                    let mut env = TestEnv::new_isolated().await.unwrap();
 
                     let tenant_name = format!("circuit-breaker-tenant-{}", uuid::Uuid::new_v4());
                     let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
@@ -760,7 +760,7 @@ fn property_circuit_breaker_resilience() {
                         "SELECT COUNT(*) FROM webhook_events WHERE endpoint_id = $1",
                     )
                     .bind(endpoint_id.0)
-                    .fetch_one(env.db())
+                    .fetch_one(env.pool())
                     .await
                     .unwrap();
 
@@ -770,7 +770,7 @@ fn property_circuit_breaker_resilience() {
                          WHERE we.endpoint_id = $1",
                     )
                     .bind(endpoint_id.0)
-                    .fetch_one(env.db())
+                    .fetch_one(env.pool())
                     .await
                     .unwrap();
 
@@ -792,7 +792,7 @@ fn property_circuit_breaker_resilience() {
                              FROM endpoints WHERE id = $1",
                         )
                         .bind(endpoint_id.0)
-                        .fetch_one(env.db())
+                        .fetch_one(env.pool())
                         .await
                         .unwrap();
 
@@ -824,7 +824,7 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new().await.unwrap();
+                    let mut env = TestEnv::new_isolated().await.unwrap();
 
                     let tenant_name = format!("fifo-tenant-{}", uuid::Uuid::new_v4());
                     let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
@@ -884,7 +884,7 @@ fn property_fifo_processing_order() {
                          ORDER BY da.attempted_at ASC",
                     )
                     .bind(event_ids.iter().map(|id| id.0).collect::<Vec<_>>())
-                    .fetch_all(env.db())
+                    .fetch_all(env.pool())
                     .await
                     .unwrap();
 

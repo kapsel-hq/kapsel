@@ -107,7 +107,7 @@ async fn database_transaction_rollback_works() {
 
     // Act - Test that database operations work
     // For this test, we'll verify that the database pool is accessible
-    let _pool = env.db();
+    let _pool = env.pool();
 
     // The transaction will be dropped and rollback automatically
     // The key test is that our transaction infrastructure works

@@ -22,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// between delivery and attestation systems.
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf_via_events() {
-    let mut env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Setup mock webhook destination
     let mock_server = MockServer::start().await;
@@ -97,7 +97,7 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
 /// leaf, maintaining a 1:1 mapping between deliveries and attestations.
 #[tokio::test]
 async fn multiple_deliveries_create_multiple_attestation_leaves() {
-    let mut env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Setup mock server that accepts all requests
     let mock_server = MockServer::start().await;
@@ -176,7 +176,7 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
 /// ensuring attestations only represent actual successful deliveries.
 #[tokio::test]
 async fn failed_delivery_does_not_create_attestation_leaf() {
-    let mut env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Setup mock server that always returns 500 (failure)
     let mock_server = MockServer::start().await;
