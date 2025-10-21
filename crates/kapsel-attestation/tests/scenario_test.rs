@@ -1,164 +1,120 @@
-//! Integration tests for delivery-to-attestation event flow scenarios.
+//! Scenario tests for complete attestation workflows.
 //!
-//! Tests complete event-driven architecture from delivery success events
-//! through attestation leaf creation and cryptographic audit trail.
+//! Tests multi-step workflows combining delivery success events with
+//! attestation leaf creation through the event-driven architecture.
+//! Validates end-to-end integration scenarios.
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
-use kapsel_core::{
-    models::{EventId, EventStatus, TenantId},
-    EventHandler, IdempotencyStrategy, MulticastEventHandler,
+use kapsel_testing::{
+    events::{test_events, EventHandlerTester},
+    TestEnv,
 };
-use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
-use kapsel_testing::TestEnv;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Complete end-to-end test showing delivery success creating attestation
-/// leaves.
+/// Complete scenario: webhook ingestion → delivery → attestation leaf creation.
 ///
-/// This test proves that the event-driven architecture works correctly:
-/// - Delivery system focuses only on delivery
-/// - Attestation system subscribes to delivery events
-/// - No tight coupling between the systems
-/// - Both systems can be tested and deployed independently
+/// Tests the full pipeline where a successful delivery triggers attestation
+/// leaf creation via the event system, demonstrating the loose coupling
+/// between delivery and attestation systems.
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf_via_events() {
-    // Setup test environment with isolated database
-    let env = TestEnv::new().await.expect("test environment setup should succeed");
+    let mut env = TestEnv::new().await.expect("failed to create test environment");
 
-    // Setup mock HTTP server for webhook destination
+    // Setup mock webhook destination
     let mock_server = MockServer::start().await;
-    let webhook_url = format!("{}/webhook", mock_server.uri());
-
-    // Configure mock to accept webhook delivery
     Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/webhook"))
         .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
         .expect(1)
         .mount(&mock_server)
         .await;
 
-    // Create tenant, endpoint, and webhook event
-    let (tenant_id, _endpoint_id, event_id) = setup_webhook_event(&env, &webhook_url).await;
+    // Create tenant and endpoint
+    let tenant_id = env.create_tenant("Test Tenant").await.expect("failed to create tenant");
+    let endpoint_id = env
+        .create_endpoint_with_config(
+            tenant_id,
+            &mock_server.uri(),
+            "Test Endpoint", // name
+            3,               // max_retries
+            30,              // timeout_seconds
+        )
+        .await
+        .expect("failed to create endpoint");
 
-    // Setup attestation system
+    // Setup attestation infrastructure
     let signing_service = SigningService::ephemeral();
     let key_id = store_signing_key_in_db(&env, &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
     let merkle_service =
         Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Setup event handler for delivery-to-attestation integration
-    let mut event_handler = MulticastEventHandler::new();
-    event_handler.add_subscriber(Arc::new(attestation_subscriber));
+    let mut event_tester = EventHandlerTester::new();
+    event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
 
-    // Create delivery engine with attestation event handler
-    let mut delivery_engine = DeliveryEngine::new(env.pool().clone(), DeliveryConfig::default())
-        .expect("delivery engine creation should succeed");
+    // Ingest webhook
+    let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
+    let event_id = env.ingest_webhook(&webhook).await.expect("failed to ingest webhook");
 
-    // Wire up the event-driven integration
-    // NOTE: This would be part of the actual integration in DeliveryEngine
-    // For now, we'll simulate the event flow manually to prove the concept
+    // Process delivery (should succeed and trigger attestation event)
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
 
-    // Verify initial state - no attestation leaves exist
+    // Verify webhook was delivered successfully
+    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, "delivered");
+
+    // For this test, we need to manually emit the success event since the actual
+    // integration between DeliveryEngine and event handlers isn't implemented yet
+    let success_event = test_events::create_delivery_succeeded_event_custom(
+        &mock_server.uri(),
+        200u16,
+        1u32,
+        [42u8; 32],
+        webhook.body.len() as i32,
+    );
+
+    event_tester.handle_event(success_event).await;
+    event_tester.wait_for_all_completions().await;
+
+    // Verify attestation leaf was created through event integration
     {
         let service = merkle_service.read().await;
-        assert_eq!(
-            service.pending_count().await.expect("should get pending count"),
-            0,
-            "should start with no pending attestation leaves"
-        );
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending attestation count");
+        assert_eq!(pending_count, 1, "Successful delivery should create one attestation leaf");
     }
-
-    // Start delivery processing
-    delivery_engine.start().await.expect("delivery engine should start");
-
-    // Wait for delivery to complete deterministically
-    let final_status = wait_for_delivery_completion(&env, &event_id).await;
-    assert_eq!(final_status, EventStatus::Delivered);
-
-    // Verify webhook was delivered
-    let delivered_event = find_event_by_id(&env, &event_id).await;
-    assert_eq!(delivered_event.status, EventStatus::Delivered);
-    assert!(delivered_event.delivered_at.is_some());
-
-    // Verify mock server received the webhook
-    mock_server.verify().await;
-
-    // For this proof-of-concept test, we'll manually simulate the event emission
-    // In the actual integration, this would happen automatically in the delivery
-    // worker
-    let success_event = kapsel_core::DeliverySucceededEvent {
-        delivery_attempt_id: uuid::Uuid::new_v4(),
-        event_id,
-        tenant_id,
-        endpoint_url: webhook_url,
-        response_status: 200,
-        attempt_number: 1,
-        delivered_at: Utc::now(),
-        payload_hash: compute_payload_hash(b"test payload"),
-        payload_size: delivered_event.payload_size,
-    };
-
-    // Emit the delivery success event (this demonstrates the event-driven
-    // integration)
-    event_handler.handle_event(kapsel_core::DeliveryEvent::Succeeded(success_event)).await;
-
-    // Verify attestation leaf was created
-    {
-        let service = merkle_service.read().await;
-        assert_eq!(
-            service.pending_count().await.expect("should get pending count"),
-            1,
-            "successful delivery should create one attestation leaf"
-        );
-    }
-
-    // Verify we can generate a signed tree head from the attestation data
-    {
-        let mut service = merkle_service.write().await;
-        let signed_tree_head =
-            service.try_commit_pending().await.expect("should be able to commit pending leaves");
-
-        assert_eq!(signed_tree_head.tree_size, 1, "tree should contain one leaf");
-        assert!(!signed_tree_head.signature.is_empty(), "signature should not be empty");
-        assert!(signed_tree_head.timestamp_ms > 0, "timestamp should be set");
-
-        // After commit, no pending leaves should remain
-        assert_eq!(
-            service.pending_count().await.expect("should get pending count"),
-            0,
-            "after commit, no leaves should be pending"
-        );
-    }
-
-    // Cleanup
-    delivery_engine.shutdown().await.expect("delivery engine should shutdown gracefully");
 }
 
-/// Test that shows multiple delivery events creating multiple attestation
-/// leaves.
+/// Scenario: Multiple webhook deliveries create multiple attestation leaves.
 ///
-/// This demonstrates the scalability of the event-driven approach.
+/// Verifies that each successful delivery creates a corresponding attestation
+/// leaf, maintaining a 1:1 mapping between deliveries and attestations.
 #[tokio::test]
 async fn multiple_deliveries_create_multiple_attestation_leaves() {
-    let env = TestEnv::new().await.expect("test environment setup should succeed");
-    let mock_server = MockServer::start().await;
-    let webhook_url = format!("{}/webhook", mock_server.uri());
+    let mut env = TestEnv::new().await.expect("failed to create test environment");
 
-    // Configure mock to accept multiple webhooks
+    // Setup mock server that accepts all requests
+    let mock_server = MockServer::start().await;
     Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/webhook"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
-        .expect(3) // Don't remove this, we want to use real requests
+        .respond_with(ResponseTemplate::new(200))
+        .expect(3) // Expect 3 webhook deliveries
         .mount(&mock_server)
         .await;
 
-    // Setup attestation system
+    // Create test data
+    let tenant_id = env.create_tenant("Test Tenant Multi").await.expect("failed to create tenant");
+    let endpoint_id = env
+        .create_endpoint_with_config(tenant_id, &mock_server.uri(), "Test Endpoint", 3, 30)
+        .await
+        .expect("failed to create endpoint");
+
+    // Setup attestation service
     let signing_service = SigningService::ephemeral();
     let key_id = store_signing_key_in_db(&env, &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
@@ -166,196 +122,247 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
         Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
+    // Setup event handler
+    let mut event_tester = EventHandlerTester::new();
+    event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
     // Create multiple webhook events
     let mut event_ids = Vec::new();
-    for _i in 0..3 {
-        let (tenant_id, _endpoint_id, event_id) = setup_webhook_event(&env, &webhook_url).await;
-        event_ids.push((tenant_id, event_id));
+    for i in 0..3 {
+        let payload = format!(r#"{{"message": "test {}", "id": {}}}"#, i, i);
+        let webhook =
+            test_events::create_test_webhook_with_payload(tenant_id, endpoint_id, &payload);
+        let event_id = env.ingest_webhook(&webhook).await.expect("failed to ingest webhook");
+        event_ids.push(event_id);
     }
 
-    // Setup event handler for delivery-to-attestation integration
-    let mut event_handler = MulticastEventHandler::new();
-    event_handler.add_subscriber(Arc::new(attestation_subscriber));
-
-    // Create delivery engine with attestation event handler
-    let mut delivery_engine = DeliveryEngine::new(env.pool().clone(), DeliveryConfig::default())
-        .expect("delivery engine creation should succeed");
-
-    // Start delivery processing
-    delivery_engine.start().await.expect("delivery engine should start");
-
-    // Wait for deliveries to complete deterministically
-    wait_for_multiple_deliveries_completion(&env, &event_ids).await;
+    // Process all deliveries
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
 
     // Verify all webhooks were delivered
-    for (_tenant_id, event_id) in &event_ids {
-        let delivered_event = find_event_by_id(&env, event_id).await;
-        assert_eq!(delivered_event.status, EventStatus::Delivered);
-        assert!(delivered_event.delivered_at.is_some());
+    for event_id in &event_ids {
+        let status =
+            env.find_webhook_status(*event_id).await.expect("failed to find webhook status");
+        assert_eq!(status, "delivered", "All webhooks should be delivered");
     }
 
-    // Verify mock server received all webhooks
-    mock_server.verify().await;
+    // Manually emit success events for each delivery
+    for (i, _event_id) in event_ids.iter().enumerate() {
+        let success_event = test_events::create_delivery_succeeded_event_custom(
+            &format!("{}?webhook={}", mock_server.uri(), i),
+            200u16,
+            1u32,
+            [i as u8; 32], // Unique hash for each event
+            1024,
+        );
 
-    // For this test, manually emit the delivery success events since the
-    // integration isn't fully wired up in DeliveryEngine yet
-    for (i, (tenant_id, event_id)) in event_ids.iter().enumerate() {
-        let success_event = kapsel_core::DeliverySucceededEvent {
-            delivery_attempt_id: uuid::Uuid::new_v4(),
-            event_id: *event_id,
-            tenant_id: *tenant_id,
-            endpoint_url: webhook_url.clone(),
-            response_status: 200,
-            attempt_number: 1,
-            delivered_at: Utc::now(),
-            payload_hash: compute_payload_hash(&format!("test payload {}", i).into_bytes()),
-            payload_size: 100 + i as i32,
-        };
-
-        event_handler.handle_event(kapsel_core::DeliveryEvent::Succeeded(success_event)).await;
+        event_tester.handle_event(success_event).await;
     }
+
+    event_tester.wait_for_total_completions(3).await;
 
     // Verify all attestation leaves were created
     {
         let service = merkle_service.read().await;
-        assert_eq!(
-            service.pending_count().await.expect("should get pending count"),
-            3,
-            "should have three pending attestation leaves"
-        );
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending attestation count");
+        assert_eq!(pending_count, 3, "Each successful delivery should create one attestation leaf");
     }
-
-    // Generate signed tree head with all leaves
-    {
-        let mut service = merkle_service.write().await;
-        let signed_tree_head = service
-            .try_commit_pending()
-            .await
-            .expect("should be able to commit all pending leaves");
-
-        assert_eq!(signed_tree_head.tree_size, 3, "tree should contain three leaves");
-        assert!(!signed_tree_head.signature.is_empty(), "signature should not be empty");
-    }
-
-    // Cleanup
-    delivery_engine.shutdown().await.expect("delivery engine should shutdown gracefully");
 }
 
-/// Test that demonstrates fault isolation - attestation failures don't affect
-/// delivery.
+/// Scenario: Failed delivery does not create attestation leaf.
 ///
-/// This shows one of the key benefits of the event-driven architecture:
-/// even if attestation processing fails, delivery continues to work.
+/// Verifies that failed deliveries do not trigger attestation creation,
+/// ensuring attestations only represent actual successful deliveries.
 #[tokio::test]
-async fn attestation_failure_does_not_affect_delivery_success() {
-    let env = TestEnv::new().await.expect("test environment setup should succeed");
-    let mock_server = MockServer::start().await;
-    let webhook_url = format!("{}/webhook", mock_server.uri());
+async fn failed_delivery_does_not_create_attestation_leaf() {
+    let mut env = TestEnv::new().await.expect("failed to create test environment");
 
+    // Setup mock server that always returns 500 (failure)
+    let mock_server = MockServer::start().await;
     Mock::given(wiremock::matchers::method("POST"))
-        .and(wiremock::matchers::path("/webhook"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
-        .expect(1)
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+        .expect(3) // Will retry up to max_retries
         .mount(&mock_server)
         .await;
 
-    let (_tenant_id, _endpoint_id, event_id) = setup_webhook_event(&env, &webhook_url).await;
+    // Create test setup
+    let tenant_id =
+        env.create_tenant("Test Tenant Failure").await.expect("failed to create tenant");
+    let endpoint_id = env
+        .create_endpoint_with_config(
+            tenant_id,
+            &mock_server.uri(),
+            "Failing Endpoint",
+            2, // max_retries (will attempt 3 times total)
+            30,
+        )
+        .await
+        .expect("failed to create endpoint");
 
-    // Create delivery engine without any attestation integration
-    let mut delivery_engine = DeliveryEngine::new(env.pool().clone(), DeliveryConfig::default())
-        .expect("delivery engine creation should succeed");
+    // Setup attestation service
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
-    // Start delivery processing
-    delivery_engine.start().await.expect("delivery engine should start");
+    let mut event_tester = EventHandlerTester::new();
+    event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
 
-    // Wait for delivery to complete deterministically
-    let final_status = wait_for_delivery_completion(&env, &event_id).await;
-    assert_eq!(final_status, EventStatus::Delivered);
+    // Ingest webhook
+    let webhook = test_events::create_test_webhook_with_payload(
+        tenant_id,
+        endpoint_id,
+        r#"{"message": "test failure"}"#,
+    );
+    let event_id = env.ingest_webhook(&webhook).await.expect("failed to ingest webhook");
 
-    let delivered_event = find_event_by_id(&env, &event_id).await;
+    // Process delivery through all retry attempts (max_retries=2 means 3 total
+    // attempts + 1 final cycle) Attempt 1: Should fail and remain pending
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, "pending", "First attempt should leave webhook pending");
 
-    // Verify delivery succeeded even without attestation integration
-    assert_eq!(delivered_event.status, EventStatus::Delivered);
-    assert!(delivered_event.delivered_at.is_some());
+    // Advance time and attempt 2: Should fail and remain pending
+    env.clock.advance(std::time::Duration::from_secs(1));
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, "pending", "Second attempt should leave webhook pending");
 
-    mock_server.verify().await;
+    // Advance time and attempt 3 (final retry): Should fail and remain pending
+    env.clock.advance(std::time::Duration::from_secs(2));
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, "pending", "Final retry should leave webhook pending");
 
-    delivery_engine.shutdown().await.expect("delivery engine should shutdown gracefully");
+    // Advance time and final cycle: Should mark as failed
+    env.clock.advance(std::time::Duration::from_secs(4));
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, "failed", "Webhook should be marked as failed after all retries exhausted");
+
+    // Manually emit failure event to test that failures don't create attestations
+    let failure_event = test_events::create_delivery_failed_event();
+    event_tester.handle_event(failure_event).await;
+    event_tester.wait_for_all_completions().await;
+
+    // Verify no attestation leaf was created for failed delivery
+    {
+        let service = merkle_service.read().await;
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending attestation count");
+        assert_eq!(pending_count, 0, "Failed delivery should not create attestation leaf");
+    }
 }
 
-// Helper functions
-
-async fn setup_webhook_event(env: &TestEnv, webhook_url: &str) -> (TenantId, uuid::Uuid, EventId) {
-    // Create tenant
-    let tenant_id = TenantId::new();
-    sqlx::query(
-        "INSERT INTO tenants (id, name, plan, created_at)
-         VALUES ($1, $2, 'enterprise', NOW())",
-    )
-    .bind(tenant_id.0)
-    .bind(format!("Test Tenant {}", uuid::Uuid::new_v4()))
-    .execute(env.pool())
-    .await
-    .expect("should insert tenant");
-
-    // Create endpoint
-    let endpoint_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, created_at)
-         VALUES ($1, $2, 'Test Endpoint', $3, NOW())",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id.0)
-    .bind(webhook_url)
-    .execute(env.pool())
-    .await
-    .expect("should insert endpoint");
-
-    // Create webhook event
-    let event_id = EventId::new();
-    sqlx::query(
-        r#"
-        INSERT INTO webhook_events (
-            id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-            status, headers, body, content_type, payload_size, received_at
-        ) VALUES ($1, $2, $3, 'test-source-event', $4, 'pending',
-                  '{}', 'test payload', 'application/json', 12, NOW())
-        "#,
-    )
-    .bind(event_id)
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .bind(IdempotencyStrategy::SourceId)
-    .execute(env.pool())
-    .await
-    .expect("should insert webhook event");
-
-    (tenant_id, endpoint_id, event_id)
-}
-
-async fn find_event_by_id(env: &TestEnv, event_id: &EventId) -> kapsel_core::WebhookEvent {
-    sqlx::query_as::<_, kapsel_core::WebhookEvent>(
-        r#"
-        SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-               status, failure_count, last_attempt_at, next_retry_at,
-               headers, body, content_type, received_at, delivered_at, failed_at,
-               payload_size, signature_valid, signature_error
-        FROM webhook_events
-        WHERE id = $1
-        "#,
-    )
-    .bind(event_id.0)
-    .fetch_one(env.pool())
-    .await
-    .expect("should fetch event")
-}
-
-/// Helper function to store ephemeral signing key in database.
+/// Scenario: Direct event emission for attestation testing.
 ///
-/// This is needed for integration tests because the database schema has a
-/// foreign key constraint requiring keys to be in attestation_keys table.
-async fn store_signing_key_in_db(env: &TestEnv, signing_service: &SigningService) -> uuid::Uuid {
-    let key_id = uuid::Uuid::new_v4();
+/// Tests attestation creation by directly emitting delivery success events,
+/// bypassing the full delivery pipeline for focused testing.
+#[tokio::test]
+async fn direct_success_event_creates_attestation_leaf() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
+
+    // Setup attestation service
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut event_tester = EventHandlerTester::new();
+    event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Create and emit delivery success event directly
+    let success_event = test_events::create_delivery_succeeded_event_custom(
+        "https://test.example.com/webhook",
+        200u16,
+        1u32,
+        [42u8; 32],
+        1024,
+    );
+
+    event_tester.handle_event(success_event).await;
+    event_tester.wait_for_all_completions().await;
+
+    // Verify attestation leaf was created
+    {
+        let service = merkle_service.read().await;
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending attestation count");
+        assert_eq!(pending_count, 1, "Direct success event should create attestation leaf");
+    }
+}
+
+/// Scenario: Attestation batch processing after multiple events.
+///
+/// Tests that multiple attestation leaves can be committed as a batch,
+/// demonstrating the batching behavior of the merkle service.
+#[tokio::test]
+async fn multiple_events_enable_batch_attestation_commitment() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
+
+    // Setup attestation service
+    let signing_service = SigningService::ephemeral();
+    let key_id = store_signing_key_in_db(&env, &signing_service).await;
+    let signing_service = signing_service.with_key_id(key_id);
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut event_tester = EventHandlerTester::new();
+    event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Create multiple delivery success events
+    let event_count = 5;
+    for i in 0..event_count {
+        let success_event = test_events::create_delivery_succeeded_event_custom(
+            &format!("https://test{}.example.com/webhook", i),
+            200u16,
+            1u32,
+            [i as u8; 32], // Unique hash for each event
+            1024,
+        );
+
+        event_tester.handle_event(success_event).await;
+    }
+
+    event_tester.wait_for_total_completions(event_count).await;
+
+    // Verify all leaves are pending
+    {
+        let service = merkle_service.read().await;
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending attestation count");
+        assert_eq!(
+            pending_count, event_count,
+            "All success events should create attestation leaves"
+        );
+    }
+
+    // Commit batch of attestation leaves
+    {
+        let mut service = merkle_service.write().await;
+        let signed_tree_head =
+            service.try_commit_pending().await.expect("failed to commit attestation batch");
+
+        assert_eq!(
+            signed_tree_head.tree_size, event_count as u64,
+            "All pending leaves should be committed in batch"
+        );
+    }
+
+    // Verify no leaves are pending after batch commit
+    {
+        let service = merkle_service.read().await;
+        let pending_count =
+            service.pending_count().await.expect("failed to get pending count after commit");
+        assert_eq!(pending_count, 0, "No leaves should be pending after batch commit");
+    }
+}
+
+/// Helper function to store signing key in database for testing.
+async fn store_signing_key_in_db(env: &TestEnv, signing_service: &SigningService) -> Uuid {
+    let key_id = Uuid::new_v4();
     let public_key_bytes = signing_service.public_key_as_bytes();
 
     sqlx::query(
@@ -371,79 +378,4 @@ async fn store_signing_key_in_db(env: &TestEnv, signing_service: &SigningService
     .expect("should store signing key in database");
 
     key_id
-}
-
-fn compute_payload_hash(payload: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    hasher.finalize().into()
-}
-
-/// Deterministically wait for a single delivery to complete.
-///
-/// Polls the database at regular intervals until the event reaches a terminal
-/// state. Returns the final status of the event.
-async fn wait_for_delivery_completion(env: &TestEnv, event_id: &EventId) -> EventStatus {
-    const MAX_ATTEMPTS: u32 = 200; // 10 seconds at 50ms intervals
-    const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(50);
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        let event = find_event_by_id(env, event_id).await;
-
-        // Check if event has reached a terminal state
-        match event.status {
-            EventStatus::Delivered | EventStatus::Failed | EventStatus::DeadLetter => {
-                return event.status;
-            },
-            EventStatus::Pending | EventStatus::Delivering | EventStatus::Received => {
-                // Continue polling
-                tokio::time::sleep(POLL_INTERVAL).await;
-            },
-        }
-
-        if attempt == MAX_ATTEMPTS {
-            panic!(
-                "Event {} did not complete after {} attempts. Final status: {:?}",
-                event_id.0, MAX_ATTEMPTS, event.status
-            );
-        }
-    }
-
-    unreachable!()
-}
-
-/// Deterministically wait for multiple deliveries to complete.
-///
-/// Polls the database until all events reach the Delivered state.
-async fn wait_for_multiple_deliveries_completion(env: &TestEnv, event_ids: &[(TenantId, EventId)]) {
-    const MAX_ATTEMPTS: u32 = 200; // 10 seconds at 50ms intervals
-    const POLL_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_millis(50);
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        let mut all_delivered = true;
-
-        for (_tenant_id, event_id) in event_ids {
-            let event = find_event_by_id(env, event_id).await;
-            if event.status != EventStatus::Delivered {
-                all_delivered = false;
-                break;
-            }
-        }
-
-        if all_delivered {
-            return;
-        }
-
-        if attempt == MAX_ATTEMPTS {
-            // Print final status for debugging
-            for (_tenant_id, event_id) in event_ids {
-                let event = find_event_by_id(env, event_id).await;
-                eprintln!("Event {} final status: {:?}", event_id.0, event.status);
-            }
-            panic!("Not all events completed after {} attempts", MAX_ATTEMPTS);
-        }
-
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
 }

@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod database;
+pub mod events;
 pub mod fixtures;
 pub mod http;
 pub mod invariants;

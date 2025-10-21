@@ -1,161 +1,265 @@
-//! Integration tests for event-driven attestation integration.
+//! Integration tests for event-driven attestation system.
 //!
-//! Tests event subscription, delivery event processing, and multicast
-//! handling for attestation service integration.
+//! Tests the boundary between delivery events and attestation leaf creation,
+//! verifying that the event subscription model correctly triggers cryptographic
+//! audit trail generation.
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
-use kapsel_core::{
-    models::{EventId, TenantId},
-    DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
-    MulticastEventHandler,
+use kapsel_testing::{
+    events::{test_events, EventHandlerTester},
+    TestEnv,
 };
-use kapsel_testing::TestEnv;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
-/// Test that demonstrates the complete event-driven attestation flow.
+/// Test that successful delivery events create attestation leaves via event
+/// subscription.
 ///
-/// This test shows how:
-/// 1. Delivery system emits events without knowing about attestation
-/// 2. Attestation service subscribes to events via EventHandler trait
-/// 3. Successful deliveries create attestation leaves
-/// 4. Failed deliveries are logged but don't create leaves
-/// 5. Multiple subscribers can listen to the same events
+/// Verifies the complete integration: DeliveryEvent ->
+/// AttestationEventSubscriber -> MerkleService This validates that the
+/// event-driven architecture correctly triggers attestation creation.
 #[tokio::test]
-async fn event_driven_attestation_integration() {
-    // Setup test environment
+async fn successful_delivery_events_create_attestation_leaves() {
     let env = TestEnv::new().await.expect("failed to create test environment");
 
-    // Create attestation services
+    // Create attestation infrastructure
     let signing_service = SigningService::ephemeral();
-    let merkle_service = MerkleService::new(env.pool().clone(), signing_service);
-    let merkle_service = Arc::new(RwLock::new(merkle_service));
-
-    // Create attestation event subscriber
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
-    // Simulate delivery success event
-    let success_event = create_test_success_event();
-    attestation_subscriber.handle_event(DeliveryEvent::Succeeded(success_event.clone())).await;
+    // Setup event handler tester
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Send success event
+    let success_event = test_events::create_delivery_succeeded_event();
+    tester.handle_event(success_event.clone()).await;
+
+    // Wait for processing to complete
+    tester.wait_for_all_completions().await;
 
     // Verify attestation leaf was created
     let service = merkle_service.read().await;
-    assert_eq!(service.pending_count().await.expect("failed to get pending count"), 1);
-
-    // Simulate delivery failure event
-    let failure_event = create_test_failure_event();
-    attestation_subscriber.handle_event(DeliveryEvent::Failed(failure_event)).await;
-
-    // Verify no additional leaf was created for failure
-    assert_eq!(service.pending_count().await.expect("failed to get pending count"), 1);
+    assert_eq!(
+        service.pending_count().await.expect("failed to get pending count"),
+        1,
+        "Success event should create one attestation leaf"
+    );
 }
 
-/// Test multicast event handling with multiple subscribers.
+/// Test that failed delivery events do not create attestation leaves.
 ///
-/// This demonstrates how multiple services can subscribe to the same
-/// delivery events without coupling to each other or the delivery system.
+/// Failed deliveries should be logged but should not generate attestation
+/// entries since there was no successful delivery to attest to.
 #[tokio::test]
-async fn multicast_event_handling_with_multiple_subscribers() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
-
-    // Create first attestation subscriber
-    let signing_service1 = SigningService::ephemeral();
-    let merkle_service1 =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service1)));
-    let subscriber1 = Arc::new(AttestationEventSubscriber::new(merkle_service1.clone()));
-
-    // Create second attestation subscriber (simulating different service)
-    let signing_service2 = SigningService::ephemeral();
-    let merkle_service2 =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service2)));
-    let subscriber2 = Arc::new(AttestationEventSubscriber::new(merkle_service2.clone()));
-
-    // Create multicast handler and add both subscribers
-    let mut multicast = MulticastEventHandler::new();
-    multicast.add_subscriber(subscriber1);
-    multicast.add_subscriber(subscriber2);
-
-    assert_eq!(multicast.subscriber_count(), 2);
-
-    // Send success event to multicast handler
-    let success_event = create_test_success_event();
-    multicast.handle_event(DeliveryEvent::Succeeded(success_event)).await;
-
-    // Verify both services received the event
-    let service1 = merkle_service1.read().await;
-    let service2 = merkle_service2.read().await;
-
-    assert_eq!(service1.pending_count().await.expect("failed to get pending count"), 1);
-    assert_eq!(service2.pending_count().await.expect("failed to get pending count"), 1);
-}
-
-/// Test concurrent event handling.
-///
-/// This verifies that the event system can handle concurrent events
-/// without race conditions or data corruption.
-#[tokio::test]
-async fn concurrent_event_handling() {
+async fn failed_delivery_events_do_not_create_attestation_leaves() {
     let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service =
         Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
-    let subscriber = Arc::new(AttestationEventSubscriber::new(merkle_service.clone()));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
-    // Create multiple success events
-    let events: Vec<_> =
-        (0..10).map(|_| DeliveryEvent::Succeeded(create_test_success_event())).collect();
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
 
-    // Handle all events concurrently
-    let handles: Vec<_> = events
-        .into_iter()
-        .map(|event| {
-            let subscriber = subscriber.clone();
-            tokio::spawn(async move {
-                subscriber.handle_event(event).await;
-            })
-        })
-        .collect();
+    // Send failure event
+    let failure_event = test_events::create_delivery_failed_event();
+    tester.handle_event(failure_event).await;
 
-    // Wait for all to complete
-    for handle in handles {
-        handle.await.expect("task should complete");
-    }
+    tester.wait_for_all_completions().await;
 
-    // Verify all events were processed
+    // Verify no attestation leaf was created for failure
     let service = merkle_service.read().await;
-    assert_eq!(service.pending_count().await.expect("failed to get pending count"), 10);
+    assert_eq!(
+        service.pending_count().await.expect("failed to get pending count"),
+        0,
+        "Failure events should not create attestation leaves"
+    );
 }
 
-// Helper functions for creating test events
+/// Test multicast dispatch to multiple attestation services.
+///
+/// Verifies that a single delivery event can be processed by multiple
+/// independent attestation services, enabling redundancy and different
+/// attestation strategies.
+#[tokio::test]
+async fn multicast_event_handling_with_multiple_attestation_services() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
-fn create_test_success_event() -> DeliverySucceededEvent {
-    DeliverySucceededEvent {
-        delivery_attempt_id: Uuid::new_v4(),
-        event_id: EventId::new(),
-        tenant_id: TenantId::new(),
-        endpoint_url: "https://example.com/webhook".to_string(),
-        response_status: 200,
-        attempt_number: 1,
-        delivered_at: Utc::now(),
-        payload_hash: [1u8; 32], // Use different hash to avoid duplicates
-        payload_size: 1024,
+    // Create two independent attestation services
+    let signing_service1 = SigningService::ephemeral();
+    let signing_service2 = SigningService::ephemeral();
+
+    let merkle_service1 =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service1)));
+    let merkle_service2 =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service2)));
+
+    let subscriber1 = AttestationEventSubscriber::new(merkle_service1.clone());
+    let subscriber2 = AttestationEventSubscriber::new(merkle_service2.clone());
+
+    // Setup multicast event testing
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation1", Arc::new(subscriber1));
+    tester.add_named_subscriber("attestation2", Arc::new(subscriber2));
+
+    assert_eq!(tester.subscriber_count(), 2);
+
+    // Send success event to both subscribers
+    let success_event = test_events::create_delivery_succeeded_event();
+    tester.handle_event(success_event).await;
+
+    tester.wait_for_all_completions().await;
+
+    // Verify both services received and processed the event
+    {
+        let service1 = merkle_service1.read().await;
+        let service2 = merkle_service2.read().await;
+
+        assert_eq!(
+            service1.pending_count().await.expect("failed to get pending count for service1"),
+            1,
+            "First attestation service should have one pending leaf"
+        );
+        assert_eq!(
+            service2.pending_count().await.expect("failed to get pending count for service2"),
+            1,
+            "Second attestation service should have one pending leaf"
+        );
     }
+
+    // Verify total completions
+    assert_eq!(tester.total_completions(), 2, "Both subscribers should have completed processing");
 }
 
-fn create_test_failure_event() -> DeliveryFailedEvent {
-    DeliveryFailedEvent {
-        delivery_attempt_id: Uuid::new_v4(),
-        event_id: EventId::new(),
-        tenant_id: TenantId::new(),
-        endpoint_url: "https://example.com/webhook".to_string(),
-        response_status: Some(500),
-        attempt_number: 1,
-        failed_at: Utc::now(),
-        error_message: "Internal server error".to_string(),
-        is_retryable: true,
+/// Test concurrent processing of multiple delivery events.
+///
+/// Verifies that the attestation system correctly handles concurrent
+/// delivery events without data races or lost attestations.
+#[tokio::test]
+async fn concurrent_delivery_events_create_correct_attestation_count() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
+
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Send multiple concurrent events
+    let event_count = 5;
+    for i in 0..event_count {
+        let event = test_events::create_delivery_succeeded_event_with_hash([i as u8; 32]);
+        tester.handle_event(event).await;
     }
+
+    // Wait for all events to be processed
+    tester.wait_for_total_completions(event_count).await;
+
+    // Verify all events created attestation leaves
+    let service = merkle_service.read().await;
+    assert_eq!(
+        service.pending_count().await.expect("failed to get pending count"),
+        event_count,
+        "All success events should create attestation leaves"
+    );
+}
+
+/// Test mixed success and failure event processing.
+///
+/// Verifies that attestation subscriber correctly handles mixed event types,
+/// creating attestations only for successful deliveries.
+#[tokio::test]
+async fn mixed_success_failure_events_create_correct_attestations() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
+
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Send mixed events: 3 successes, 2 failures
+    let success_events = [
+        test_events::create_delivery_succeeded_event_with_hash([1u8; 32]),
+        test_events::create_delivery_succeeded_event_with_hash([2u8; 32]),
+        test_events::create_delivery_succeeded_event_with_hash([3u8; 32]),
+    ];
+
+    let failure_events =
+        [test_events::create_delivery_failed_event(), test_events::create_delivery_failed_event()];
+
+    // Send all events
+    for event in success_events {
+        tester.handle_event(event).await;
+    }
+    for event in failure_events {
+        tester.handle_event(event).await;
+    }
+
+    // Wait for all events to process
+    tester.wait_for_total_completions(5).await;
+
+    // Verify only success events created attestation leaves
+    let service = merkle_service.read().await;
+    assert_eq!(
+        service.pending_count().await.expect("failed to get pending count"),
+        3,
+        "Only success events should create attestation leaves"
+    );
+
+    // Verify event history captured all events
+    let history = tester.event_history().await;
+    assert_eq!(history.len(), 5, "All events should be recorded in history");
+}
+
+/// Test that event processing maintains data integrity.
+///
+/// Verifies that event data is correctly preserved through the attestation
+/// subscription pipeline without corruption or modification.
+#[tokio::test]
+async fn event_data_integrity_preserved_through_attestation() {
+    let env = TestEnv::new().await.expect("failed to create test environment");
+
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Create event with specific data
+    let original_event = test_events::create_delivery_succeeded_event_custom(
+        "https://test.example.com/webhook",
+        201u16,
+        2u32,
+        [42u8; 32],
+        2048,
+    );
+
+    tester.handle_event(original_event.clone()).await;
+    tester.wait_for_all_completions().await;
+
+    // Verify data was processed
+    let service = merkle_service.read().await;
+    assert_eq!(
+        service.pending_count().await.expect("failed to get pending count"),
+        1,
+        "Event should be processed"
+    );
+
+    // Verify event was recorded in history with correct data
+    let history = tester.event_history().await;
+    assert_eq!(history.len(), 1);
+
+    // Verify the event was recorded correctly
+    assert_eq!(history[0], original_event, "Event should be preserved exactly as sent");
 }

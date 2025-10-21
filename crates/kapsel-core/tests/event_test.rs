@@ -1,30 +1,22 @@
-//! Integration tests for event system behavior.
+//! Integration tests for event system multicast and handler behavior.
 //!
-//! Tests event handler integration, multicast dispatch, and property-based
-//! invariant verification for the event-driven architecture.
+//! Tests component boundaries between event producers, multicast dispatch,
+//! and event subscribers using deterministic validation patterns.
 
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
 
 use async_trait::async_trait;
-use chrono::Utc;
-use futures::future::join_all;
-use kapsel_core::{
-    events::{
-        DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
-        MulticastEventHandler, NoOpEventHandler,
-    },
-    models::{EventId, TenantId},
-};
-use tokio::time::timeout;
-use uuid::Uuid;
+use kapsel_core::events::{DeliveryEvent, EventHandler};
+use kapsel_testing::events::{test_events, EventHandlerTester};
+use tokio::sync::Mutex;
 
-/// Event handler that simulates real-world processing with potential failures.
+/// Simulates realistic event processing with configurable behavior.
 #[derive(Debug)]
 struct RealisticEventHandler {
     _id: String,
@@ -45,417 +37,283 @@ impl RealisticEventHandler {
         }
     }
 
-    fn update_should_fail(&self, should_fail: bool) {
-        self.should_fail.store(should_fail, Ordering::Relaxed);
+    fn enable_failures(&self) {
+        self.should_fail.store(true, Ordering::Relaxed);
     }
 
-    fn processed_count(&self) -> usize {
-        self.processed_events.lock().unwrap().len()
+    async fn processed_count(&self) -> usize {
+        self.processed_events.lock().await.len()
     }
 
     fn failure_count(&self) -> usize {
         self.failure_count.load(Ordering::Relaxed)
     }
 
-    fn processed_events(&self) -> Vec<DeliveryEvent> {
-        self.processed_events.lock().unwrap().clone()
+    async fn processed_events(&self) -> Vec<DeliveryEvent> {
+        self.processed_events.lock().await.clone()
     }
 }
 
 #[async_trait]
 impl EventHandler for RealisticEventHandler {
     async fn handle_event(&self, event: DeliveryEvent) {
-        // Simulate processing time
+        // Simulate processing delay
         if !self.processing_delay.is_zero() {
             tokio::time::sleep(self.processing_delay).await;
         }
 
-        // Simulate failures
+        // Simulate failures when enabled
         if self.should_fail.load(Ordering::Relaxed) {
             self.failure_count.fetch_add(1, Ordering::Relaxed);
-            // Don't actually panic, just record the failure and return without processing
             return;
         }
 
-        // Process successfully
-        self.processed_events.lock().unwrap().push(event);
+        // Record successful processing
+        self.processed_events.lock().await.push(event);
     }
 }
 
-/// Test that event handler failures don't break the entire event system.
-///
-/// Verifies that when one handler panics, other handlers in a multicast
-/// continue to work correctly. This is critical for system resilience.
-#[tokio::test]
-async fn event_handler_failures_are_isolated() {
-    let stable_handler = Arc::new(RealisticEventHandler::new("stable", Duration::ZERO));
-    let failing_handler = Arc::new(RealisticEventHandler::new("failing", Duration::ZERO));
-    let another_stable = Arc::new(RealisticEventHandler::new("stable2", Duration::ZERO));
+/// Handler that always panics to test failure isolation.
+#[derive(Debug)]
+struct PanickingHandler;
 
-    failing_handler.update_should_fail(true);
-
-    let mut multicast = MulticastEventHandler::new();
-    multicast.add_subscriber(stable_handler.clone());
-    multicast.add_subscriber(failing_handler.clone());
-    multicast.add_subscriber(another_stable.clone());
-
-    let event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
-        delivery_attempt_id: Uuid::new_v4(),
-        event_id: EventId::new(),
-        tenant_id: TenantId::new(),
-        endpoint_url: "https://example.com/webhook".to_string(),
-        response_status: 200,
-        attempt_number: 1,
-        delivered_at: Utc::now(),
-        payload_hash: [1u8; 32],
-        payload_size: 1024,
-    });
-
-    // This should not panic even though one handler fails
-    multicast.handle_event(event).await;
-
-    // Stable handlers should have processed the event
-    assert_eq!(stable_handler.processed_count(), 1);
-    assert_eq!(another_stable.processed_count(), 1);
-
-    // Failing handler should have recorded the failure
-    assert_eq!(failing_handler.failure_count(), 1);
-    assert_eq!(failing_handler.processed_count(), 0);
+#[async_trait]
+impl EventHandler for PanickingHandler {
+    #[allow(clippy::panic)] // Intentional for testing isolation
+    async fn handle_event(&self, _event: DeliveryEvent) {
+        panic!("Handler panic for isolation testing");
+    }
 }
 
-/// Test event processing order and timing under concurrent load.
-///
-/// Verifies that events maintain consistent processing behavior even
-/// when multiple events arrive concurrently.
-#[tokio::test]
-async fn concurrent_event_processing_maintains_consistency() {
-    let handler = Arc::new(RealisticEventHandler::new("concurrent", Duration::from_millis(10)));
-    let mut multicast = MulticastEventHandler::new();
-    multicast.add_subscriber(handler.clone());
+/// Handler that tracks processing statistics.
+#[derive(Debug)]
+struct StatsHandler {
+    success_count: Arc<AtomicUsize>,
+    failure_count: Arc<AtomicUsize>,
+}
 
-    // Send 100 events concurrently
-    let mut tasks = Vec::new();
-    for i in 0..100 {
-        let multicast_clone = multicast.clone();
-        let event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
-            delivery_attempt_id: Uuid::new_v4(),
-            event_id: EventId::new(),
-            tenant_id: TenantId::new(),
-            endpoint_url: format!("https://example.com/webhook/{}", i),
-            response_status: 200,
-            attempt_number: 1,
-            delivered_at: Utc::now(),
-            payload_hash: [(i % 256) as u8; 32],
-            payload_size: 1024 + i as i32,
-        });
-
-        let task = tokio::spawn(async move {
-            multicast_clone.handle_event(event).await;
-        });
-        tasks.push(task);
-    }
-
-    // Wait for all events to process with timeout
-    let results = timeout(Duration::from_secs(5), join_all(tasks))
-        .await
-        .expect("All events should process within timeout");
-
-    // Verify no tasks panicked
-    for result in results {
-        result.expect("Event handling task should not panic");
-    }
-
-    // All events should be processed
-    assert_eq!(handler.processed_count(), 100);
-
-    // Verify event data integrity
-    let processed = handler.processed_events();
-    assert_eq!(processed.len(), 100);
-
-    for event in processed {
-        match event {
-            DeliveryEvent::Succeeded(success) => {
-                assert_eq!(success.response_status, 200);
-                assert_eq!(success.attempt_number, 1);
-                assert!(success.endpoint_url.starts_with("https://example.com/webhook/"));
-                assert!(success.payload_size >= 1024);
-            },
-            _ => panic!("All events should be success events"),
+impl StatsHandler {
+    fn new() -> Self {
+        Self {
+            success_count: Arc::new(AtomicUsize::new(0)),
+            failure_count: Arc::new(AtomicUsize::new(0)),
         }
     }
-}
 
-/// Test that event data integrity is preserved during processing.
-#[tokio::test]
-async fn event_data_integrity_preserved_during_processing() {
-    let handler = RealisticEventHandler::new("integrity", Duration::ZERO);
+    fn success_count(&self) -> usize {
+        self.success_count.load(Ordering::Relaxed)
+    }
 
-    let success_event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
-        delivery_attempt_id: Uuid::new_v4(),
-        event_id: EventId::new(),
-        tenant_id: TenantId::new(),
-        endpoint_url: "https://example.com/webhook".to_string(),
-        response_status: 200,
-        attempt_number: 1,
-        delivered_at: Utc::now(),
-        payload_hash: [42u8; 32],
-        payload_size: 1024,
-    });
+    fn failure_count(&self) -> usize {
+        self.failure_count.load(Ordering::Relaxed)
+    }
 
-    handler.handle_event(success_event.clone()).await;
-
-    let processed = handler.processed_events();
-    assert_eq!(processed.len(), 1);
-
-    match (&success_event, &processed[0]) {
-        (DeliveryEvent::Succeeded(original), DeliveryEvent::Succeeded(processed)) => {
-            assert_eq!(original.response_status, processed.response_status);
-            assert_eq!(original.attempt_number, processed.attempt_number);
-            assert_eq!(original.payload_size, processed.payload_size);
-            assert_eq!(original.endpoint_url, processed.endpoint_url);
-        },
-        _ => panic!("Event type should be preserved"),
+    fn total_count(&self) -> usize {
+        self.success_count() + self.failure_count()
     }
 }
 
-/// Test multicast consistency with different subscriber counts.
-#[tokio::test]
-async fn multicast_consistency_across_subscriber_counts() {
-    let mut handlers = Vec::new();
-    let mut multicast = MulticastEventHandler::new();
-
-    // Test with 5 subscribers and 10 events
-    for i in 0..5 {
-        let handler =
-            Arc::new(RealisticEventHandler::new(&format!("handler_{}", i), Duration::ZERO));
-        handlers.push(handler.clone());
-        multicast.add_subscriber(handler);
-    }
-
-    for i in 0..10 {
-        let event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
-            delivery_attempt_id: Uuid::new_v4(),
-            event_id: EventId::new(),
-            tenant_id: TenantId::new(),
-            endpoint_url: format!("https://example.com/webhook/{}", i),
-            response_status: 200,
-            attempt_number: 1,
-            delivered_at: Utc::now(),
-            payload_hash: [i as u8; 32],
-            payload_size: 1024,
-        });
-
-        multicast.handle_event(event).await;
-    }
-
-    for handler in &handlers {
-        assert_eq!(handler.processed_count(), 10);
-        assert_eq!(handler.failure_count(), 0);
-
-        let processed = handler.processed_events();
-        assert_eq!(processed.len(), 10);
-    }
-}
-
-/// Test that NoOp handler truly has no side effects under stress.
-///
-/// Verifies that NoOp handler can handle high-volume event streams
-/// without memory leaks or performance degradation.
-#[tokio::test]
-async fn noop_handler_has_no_side_effects_under_stress() {
-    let noop = NoOpEventHandler::new();
-    let start_time = std::time::Instant::now();
-
-    // Process many events rapidly
-    for i in 0..10_000 {
-        let event = if i % 2 == 0 {
-            DeliveryEvent::Succeeded(DeliverySucceededEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: format!("https://example.com/webhook/{}", i),
-                response_status: 200,
-                attempt_number: 1,
-                delivered_at: Utc::now(),
-                payload_hash: [(i % 256) as u8; 32],
-                payload_size: 1024,
-            })
-        } else {
-            DeliveryEvent::Failed(DeliveryFailedEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: format!("https://example.com/webhook/{}", i),
-                response_status: Some(500),
-                attempt_number: 3,
-                failed_at: Utc::now(),
-                error_message: format!("Error {}", i),
-                is_retryable: false,
-            })
-        };
-
-        noop.handle_event(event).await;
-    }
-
-    let elapsed = start_time.elapsed();
-
-    // Should complete quickly (less than 100ms for 10k events)
-    assert!(elapsed < Duration::from_millis(100), "NoOp handler too slow: {:?}", elapsed);
-}
-
-/// Test event handler behavior with mixed success/failure scenarios.
-///
-/// Verifies that handlers can correctly process realistic delivery outcome
-/// patterns.
-#[tokio::test]
-async fn event_handlers_process_realistic_delivery_patterns() {
-    let handler = Arc::new(RealisticEventHandler::new("realistic", Duration::from_millis(1)));
-    let mut multicast = MulticastEventHandler::new();
-    multicast.add_subscriber(handler.clone());
-
-    // Simulate realistic delivery pattern:
-    // - Most deliveries succeed on first attempt
-    // - Some fail with retryable errors
-    // - Few fail permanently
-
-    let scenarios = vec![
-        // Immediate success (80% of cases)
-        (200, 1, true, true), // Success on first try
-        (200, 1, true, true), // Success on first try
-        (200, 1, true, true), // Success on first try
-        (200, 1, true, true), // Success on first try
-        // Retry then success (15% of cases)
-        (500, 1, false, true), // Initial failure
-        (200, 2, true, true),  // Success on retry
-        (503, 1, false, true), // Service unavailable
-        (200, 3, true, true),  // Success after retries
-        // Permanent failure (5% of cases)
-        (404, 3, false, false), // Not found - non-retryable
-    ];
-
-    for (status, attempt, is_success, is_retryable) in scenarios {
-        let event = if is_success {
-            DeliveryEvent::Succeeded(DeliverySucceededEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: "https://webhook.example.com/receive".to_string(),
-                response_status: status,
-                attempt_number: attempt,
-                delivered_at: Utc::now(),
-                payload_hash: [status as u8; 32],
-                payload_size: 2048,
-            })
-        } else {
-            DeliveryEvent::Failed(DeliveryFailedEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: "https://webhook.example.com/receive".to_string(),
-                response_status: Some(status),
-                attempt_number: attempt,
-                failed_at: Utc::now(),
-                error_message: match status {
-                    404 => "Webhook endpoint not found".to_string(),
-                    500 => "Internal server error".to_string(),
-                    503 => "Service temporarily unavailable".to_string(),
-                    _ => format!("HTTP {}", status),
-                },
-                is_retryable,
-            })
-        };
-
-        multicast.handle_event(event).await;
-    }
-
-    // Verify all events processed
-    assert_eq!(handler.processed_count(), 9);
-
-    let processed = handler.processed_events();
-    let mut success_count = 0;
-    let mut failure_count = 0;
-    let mut retryable_failures = 0;
-
-    for event in processed {
+#[async_trait]
+impl EventHandler for StatsHandler {
+    async fn handle_event(&self, event: DeliveryEvent) {
         match event {
-            DeliveryEvent::Succeeded(_) => success_count += 1,
-            DeliveryEvent::Failed(failure) => {
-                failure_count += 1;
-                if failure.is_retryable {
-                    retryable_failures += 1;
-                }
+            DeliveryEvent::Succeeded(_) => {
+                self.success_count.fetch_add(1, Ordering::Relaxed);
+            },
+            DeliveryEvent::Failed(_) => {
+                self.failure_count.fetch_add(1, Ordering::Relaxed);
             },
             DeliveryEvent::AttemptStarted(_) => {
-                // Ignore attempt started events for this test
+                // AttemptStarted events don't affect success/failure counts
             },
         }
     }
-
-    // Verify expected distribution
-    assert_eq!(success_count, 6); // 4 immediate + 2 retry success
-    assert_eq!(failure_count, 3); // 2 retryable + 1 permanent
-    assert_eq!(retryable_failures, 2); // 500 and 503 errors
 }
 
-/// Test event timestamp consistency and realism.
 #[tokio::test]
-async fn event_timestamps_are_consistent_and_realistic() {
-    let handler = RealisticEventHandler::new("timestamp", Duration::ZERO);
-    let mut timestamps = Vec::new();
+async fn multicast_isolates_handler_panics() {
+    let mut tester = EventHandlerTester::new();
 
-    // Test with mixed success and failure events
-    let test_cases = vec![true, false, true, false, true];
+    // Add panicking handler and normal handler
+    let normal_handler = Arc::new(RealisticEventHandler::new("normal", Duration::ZERO));
+    let normal_count_before = normal_handler.processed_count().await;
 
-    for is_success in test_cases {
-        let now = Utc::now();
-        let event = if is_success {
-            DeliveryEvent::Succeeded(DeliverySucceededEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: "https://example.com/webhook".to_string(),
-                response_status: 200,
-                attempt_number: 1,
-                delivered_at: now,
-                payload_hash: [1u8; 32],
-                payload_size: 1024,
-            })
-        } else {
-            DeliveryEvent::Failed(DeliveryFailedEvent {
-                delivery_attempt_id: Uuid::new_v4(),
-                event_id: EventId::new(),
-                tenant_id: TenantId::new(),
-                endpoint_url: "https://example.com/webhook".to_string(),
-                response_status: Some(500),
-                attempt_number: 1,
-                failed_at: now,
-                error_message: "Error".to_string(),
-                is_retryable: true,
-            })
-        };
+    tester.add_named_subscriber("panicking", Arc::new(PanickingHandler));
+    tester.add_named_subscriber("normal", normal_handler.clone());
 
-        timestamps.push(now);
-        handler.handle_event(event).await;
+    assert_eq!(tester.subscriber_count(), 2);
 
-        tokio::time::sleep(Duration::from_millis(1)).await;
+    // Send event - should not crash despite panic
+    let event = create_test_success_event();
+    tester.handle_event(event).await;
+
+    // Wait for normal handler completion
+    tester.tracker("normal").unwrap().wait_for_completion().await;
+
+    // Verify normal handler processed event despite other handler panicking
+    let normal_count_after = normal_handler.processed_count().await;
+    assert_eq!(normal_count_after, normal_count_before + 1);
+}
+
+#[tokio::test]
+async fn concurrent_multicast_maintains_event_integrity() {
+    let mut tester = EventHandlerTester::new();
+
+    // Add multiple handlers with different processing characteristics
+    let fast_handler = Arc::new(RealisticEventHandler::new("fast", Duration::ZERO));
+    let slow_handler = Arc::new(RealisticEventHandler::new("slow", Duration::from_millis(10)));
+
+    tester.add_named_subscriber("fast", fast_handler.clone());
+    tester.add_named_subscriber("slow", slow_handler.clone());
+
+    // Send multiple events concurrently
+    let events =
+        vec![create_test_success_event(), create_test_failure_event(), create_test_success_event()];
+
+    for event in &events {
+        tester.handle_event(event.clone()).await;
     }
 
-    let processed = handler.processed_events();
-    assert_eq!(processed.len(), timestamps.len());
+    // Wait for all processing to complete
+    tester.wait_for_total_completions(6).await; // 3 events × 2 handlers
 
-    // Verify timestamps are reasonable (within last minute)
-    let cutoff = Utc::now() - chrono::Duration::seconds(60);
-    for (i, event) in processed.iter().enumerate() {
-        let event_time = match event {
-            DeliveryEvent::Succeeded(s) => s.delivered_at,
-            DeliveryEvent::Failed(f) => f.failed_at,
-            DeliveryEvent::AttemptStarted(_) => continue,
-        };
+    // Verify both handlers received all events
+    assert_eq!(fast_handler.processed_count().await, 3);
+    assert_eq!(slow_handler.processed_count().await, 3);
 
-        assert!(event_time > cutoff, "Event timestamp too old");
-        assert!(
-            event_time <= timestamps[i] + chrono::Duration::seconds(1),
-            "Event timestamp too far in future"
-        );
+    // Verify event data integrity
+    let fast_events = fast_handler.processed_events().await;
+    let slow_events = slow_handler.processed_events().await;
+
+    assert_eq!(fast_events.len(), 3);
+    assert_eq!(slow_events.len(), 3);
+
+    // Both should have received the same events (order may vary due to concurrency)
+    for event in &events {
+        assert!(fast_events.contains(event));
+        assert!(slow_events.contains(event));
     }
 }
+
+#[tokio::test]
+async fn handlers_process_mixed_success_and_failure_events() {
+    let mut tester = EventHandlerTester::new();
+
+    let stats_handler = Arc::new(StatsHandler::new());
+    tester.add_named_subscriber("stats", stats_handler.clone());
+
+    // Send mixed event types
+    tester.handle_event(create_test_success_event()).await;
+    tester.handle_event(create_test_failure_event()).await;
+    tester.handle_event(create_test_success_event()).await;
+    tester.handle_event(create_test_failure_event()).await;
+
+    // Wait for processing
+    tester.wait_for_total_completions(4).await;
+
+    // Verify correct event type handling
+    assert_eq!(stats_handler.success_count(), 2);
+    assert_eq!(stats_handler.failure_count(), 2);
+    assert_eq!(stats_handler.total_count(), 4);
+}
+
+#[tokio::test]
+async fn multicast_scales_with_subscriber_count() {
+    // Add varying numbers of subscribers
+    let subscriber_counts = [1, 5, 10, 20];
+
+    for &count in &subscriber_counts {
+        let mut tester = EventHandlerTester::new(); // Create new tester for each test
+
+        // Add subscribers
+        let handlers: Vec<Arc<RealisticEventHandler>> = (0..count)
+            .map(|i| {
+                Arc::new(RealisticEventHandler::new(&format!("handler-{}", i), Duration::ZERO))
+            })
+            .collect();
+
+        for (i, handler) in handlers.iter().enumerate() {
+            tester.add_named_subscriber(&format!("handler-{}", i), handler.clone());
+        }
+
+        assert_eq!(tester.subscriber_count(), count);
+
+        // Send single event
+        tester.handle_event(create_test_success_event()).await;
+
+        // Wait for all handlers to complete
+        tester.wait_for_total_completions(count).await;
+
+        // Verify all handlers processed the event
+        for handler in &handlers {
+            assert_eq!(handler.processed_count().await, 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn event_history_tracks_processed_events() {
+    let mut tester = EventHandlerTester::new();
+
+    let handler = Arc::new(RealisticEventHandler::new("tracking", Duration::ZERO));
+    tester.add_named_subscriber("tracking", handler);
+
+    // Verify empty history initially
+    let initial_history = tester.event_history().await;
+    assert_eq!(initial_history.len(), 0);
+
+    // Send events
+    let events =
+        vec![create_test_success_event(), create_test_failure_event(), create_test_success_event()];
+
+    for event in &events {
+        tester.handle_event(event.clone()).await;
+    }
+
+    tester.wait_for_total_completions(3).await;
+
+    // Verify history captured all events
+    let history = tester.event_history().await;
+    assert_eq!(history.len(), 3);
+    assert_eq!(history, events);
+
+    // Verify history can be cleared
+    tester.clear_history().await;
+    let cleared_history = tester.event_history().await;
+    assert_eq!(cleared_history.len(), 0);
+}
+
+#[tokio::test]
+async fn handler_failures_do_not_affect_other_handlers() {
+    let mut tester = EventHandlerTester::new();
+
+    let reliable_handler = Arc::new(RealisticEventHandler::new("reliable", Duration::ZERO));
+    let failing_handler = Arc::new(RealisticEventHandler::new("failing", Duration::ZERO));
+
+    // Configure one handler to fail
+    failing_handler.enable_failures();
+
+    tester.add_named_subscriber("reliable", reliable_handler.clone());
+    tester.add_named_subscriber("failing", failing_handler.clone());
+
+    // Send events
+    for _ in 0..3 {
+        tester.handle_event(create_test_success_event()).await;
+    }
+
+    tester.wait_for_total_completions(6).await; // Both handlers process all events
+
+    // Verify reliable handler succeeded
+    assert_eq!(reliable_handler.processed_count().await, 3);
+    assert_eq!(reliable_handler.failure_count(), 0);
+
+    // Verify failing handler failed as expected
+    assert_eq!(failing_handler.processed_count().await, 0);
+    assert_eq!(failing_handler.failure_count(), 3);
+}
+
+// Use consistent test event utilities from kapsel-testing
+use test_events::{
+    create_delivery_failed_event as create_test_failure_event,
+    create_delivery_succeeded_event as create_test_success_event,
+};

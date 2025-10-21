@@ -18,6 +18,7 @@ default = []
 kapsel-core = { path = "../kapsel-core" }
 kapsel-attestation = { path = "../kapsel-attestation" }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "migrate"] }
 
 # Test utilities
