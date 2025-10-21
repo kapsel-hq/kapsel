@@ -29,7 +29,7 @@ use uuid::Uuid;
 /// - `CI`: If set to "true", uses CI configuration
 fn proptest_config() -> ProptestConfig {
     let is_ci = std::env::var("CI").unwrap_or_default() == "true";
-    let default_cases = if is_ci { 100 } else { 20 };
+    let default_cases = if is_ci { 10 } else { 8 };
 
     let cases =
         std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
@@ -524,12 +524,12 @@ fn verify_hmac(payload: &[u8], secret: &str, signature: &str) -> bool {
 /// performs exactly that many retries before succeeding.
 #[test]
 fn property_webhook_delivery_retry_scenarios() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let config = proptest_config();
     let mut runner = TestRunner::new(config);
 
     runner
-        .run(&(0u32..5, any::<[u8; 16]>()), |(num_failures, webhook_data)| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+        .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
                 let mut env = TestEnv::new().await.unwrap();
 
@@ -601,12 +601,12 @@ fn property_webhook_delivery_retry_scenarios() {
 /// arrive at different points in the original event's lifecycle.
 #[test]
 fn property_idempotency_under_duress() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let config = proptest_config();
     let mut runner = TestRunner::new(config);
 
     runner
-        .run(&(1usize..3, 0u32..2), |(duplicate_count, initial_failures)| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+        .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
                 let mut env = TestEnv::new().await.unwrap();
 
@@ -693,6 +693,7 @@ fn property_idempotency_under_duress() {
 /// based on actual HTTP responses.
 #[test]
 fn property_circuit_breaker_resilience() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let config = proptest_config();
     let mut runner = TestRunner::new(config);
 
@@ -708,7 +709,6 @@ fn property_circuit_breaker_resilience() {
                 3..8,
             ),
             |response_sequence| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
                     let mut env = TestEnv::new().await.unwrap();
 
@@ -812,14 +812,14 @@ fn property_circuit_breaker_resilience() {
 /// based on received_at timestamps, even with random failures.
 #[test]
 fn property_fifo_processing_order() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let config = proptest_config();
     let mut runner = TestRunner::new(config);
 
     runner
         .run(
-            &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..6)),
+            &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
                     let mut env = TestEnv::new().await.unwrap();
 

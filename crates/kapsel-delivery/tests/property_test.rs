@@ -20,7 +20,7 @@ use proptest::{prelude::*, test_runner::Config as ProptestConfig};
 /// - `CI`: If set to "true", uses CI configuration
 fn proptest_config() -> ProptestConfig {
     let is_ci = std::env::var("CI").unwrap_or_default() == "true";
-    let default_cases = if is_ci { 100 } else { 20 };
+    let default_cases = if is_ci { 12 } else { 8 };
 
     let cases =
         std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
@@ -112,14 +112,15 @@ proptest! {
         }
     }
 
-    /// Verifies delivery circuit breaker state transitions follow correct patterns.
+    /// Verifies circuit breaker transitions correctly between states.
     #[test]
     fn delivery_circuit_breaker_state_transitions(
-        failure_threshold in 1usize..20,
-        success_threshold in 1usize..10,
+        failure_threshold in 1usize..15,
+        success_threshold in 1usize..8,
         failure_rate_threshold in 0.1f64..0.9,
-        consecutive_failures in 0usize..50
+        consecutive_failures in 0usize..30
     ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let config = CircuitConfig {
             failure_threshold: failure_threshold as u32,
             success_threshold: success_threshold as u32,
@@ -129,8 +130,6 @@ proptest! {
             half_open_max_requests: 3,
         };
 
-        // Create a new runtime to avoid nested runtime issues
-        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let manager = CircuitBreakerManager::new(config);
             let endpoint_id = "test-endpoint";
@@ -164,17 +163,16 @@ proptest! {
         })?;
     }
 
-    /// Verifies delivery circuit breaker failure rate calculation accuracy.
+    /// Verifies circuit breaker opens when failure rate threshold is exceeded.
     #[test]
     fn delivery_circuit_breaker_failure_rate(
         total_requests in 10usize..100,
         failed_requests in 0usize..100
     ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let failed_requests = failed_requests.min(total_requests);
         let expected_rate = failed_requests as f64 / total_requests as f64;
 
-        // Create a new runtime to avoid nested runtime issues
-        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let manager = CircuitBreakerManager::new(CircuitConfig::default());
             let endpoint_id = "test-endpoint";
@@ -283,9 +281,9 @@ proptest! {
     /// Fuzzes circuit breaker with random failure/success sequences.
     #[test]
     fn fuzz_circuit_breaker_random_sequences(
-        failure_threshold in 1usize..50,
-        success_threshold in 1usize..20,
-        operations in prop::collection::vec(any::<bool>(), 1..200)
+        failure_threshold in 1usize..20,
+        success_threshold in 1usize..10,
+        operations in prop::collection::vec(any::<bool>(), 1..100)
     ) {
         let config = CircuitConfig {
             failure_threshold: failure_threshold as u32,

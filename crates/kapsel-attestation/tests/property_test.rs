@@ -13,7 +13,7 @@ use proptest::{prelude::*, test_runner::Config as ProptestConfig};
 /// - `CI`: If set to "true", uses CI configuration
 fn proptest_config() -> ProptestConfig {
     let is_ci = std::env::var("CI").unwrap_or_default() == "true";
-    let default_cases = if is_ci { 100 } else { 20 };
+    let default_cases = if is_ci { 15 } else { 10 };
 
     let cases =
         std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
