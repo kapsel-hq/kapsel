@@ -4,11 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Core domain models and error types for Kapsel webhook reliability service"
 repository.workspace = true
-readme = "README.md"
-keywords = ["webhook", "reliability", "domain", "error", "types"]
-categories = ["web-programming", "network-programming", "data-structures"]
 
 [dependencies]
 serde = { workspace = true }

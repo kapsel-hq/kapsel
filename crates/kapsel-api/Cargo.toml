@@ -4,42 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "HTTP API server for Kapsel webhook reliability service"
 repository.workspace = true
-readme = "README.md"
-keywords = ["webhook", "api", "http", "axum", "server"]
-categories = ["web-programming", "network-programming", "api-bindings"]
 
 [dependencies]
-# Core domain
 kapsel-core = { path = "../kapsel-core" }
-
-# Web framework
 axum = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "timeout"] }
-
-# Async
 tokio = { workspace = true }
-
-# Database
 sqlx = { workspace = true }
-
-# Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
-
-# Data types
 uuid = { workspace = true }
 chrono = { workspace = true }
-
-# Tracing
 tracing = { workspace = true }
-
-# Error handling
 anyhow = { workspace = true }
-
-# Cryptography
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

@@ -1,14 +1,12 @@
 [package]
 name = "kapsel-delivery"
 version.workspace = true
-authors.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
 
 [dependencies]
-# Workspace dependencies
 tokio = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
@@ -21,11 +19,7 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
-
-# Internal dependencies
 kapsel-core = { path = "../kapsel-core" }
-
-# Additional dependencies for delivery engine
 tokio-util = { workspace = true }
 
 [dev-dependencies]

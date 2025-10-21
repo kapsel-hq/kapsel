@@ -4,45 +4,29 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Merkle tree attestation and cryptographic signing for Kapsel"
 repository.workspace = true
-keywords = ["attestation", "merkle-tree", "cryptography", "ed25519", "rfc6962"]
-categories = ["cryptography", "web-programming"]
 
 [dependencies]
-# Cryptography
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-rs_merkle = "1.4"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+rand = "0.6"  # Must match ed25519-dalek's rand_core 0.6 dependency
+rs_merkle = "1.5"
 sha2 = { workspace = true }
-
-# Core
 kapsel-core = { path = "../kapsel-core" }
-
-# Serialization
 serde_json = { workspace = true }
-
-# Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-
-# Database
 sqlx = { workspace = true }
-
-# Utilities
 chrono = { workspace = true }
 uuid = { workspace = true }
-rand = "0.8"  # Must match ed25519-dalek's rand_core 0.6 dependency
-
-# Async
 tokio = { workspace = true }
 async-trait = { workspace = true }
-
-# Logging
 tracing = { workspace = true }
 
-# Testing
 [dev-dependencies]
 kapsel-testing = { path = "../kapsel-testing" }
 kapsel-delivery = { path = "../kapsel-delivery" }
 wiremock = { workspace = true }
 proptest = { workspace = true }
+
+[lints]
+workspace = true
