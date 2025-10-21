@@ -1,0 +1,202 @@
+---
+source: crates/kapsel-testing/src/lib.rs
+assertion_line: 1563
+expression: snapshot
+---
+Database Schema Snapshot
+=======================
+
+Table: _sqlx_migrations
+-----------------------
+  version: bigint NOT NULL 
+  description: text NOT NULL 
+  installed_on: timestamp with time zone NOT NULL now()
+  success: boolean NOT NULL 
+  checksum: bytea NOT NULL 
+  execution_time: bigint NOT NULL 
+
+Table: api_keys
+---------------
+  id: uuid NOT NULL uuid_generate_v4()
+  tenant_id: uuid NOT NULL 
+  key_hash: text NOT NULL 
+  name: text NOT NULL 
+  permissions: jsonb NOT NULL '["read", "write"]'::jsonb
+  rate_limit_per_second: integer NULL 
+  last_used_at: timestamp with time zone NULL 
+  expires_at: timestamp with time zone NULL 
+  created_at: timestamp with time zone NOT NULL now()
+  revoked_at: timestamp with time zone NULL 
+
+Table: attestation_keys
+-----------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  public_key: bytea NOT NULL 
+  is_active: boolean NOT NULL false
+  created_at: timestamp with time zone NOT NULL now()
+  deactivated_at: timestamp with time zone NULL 
+  key_fingerprint: text NOT NULL 
+
+Table: delivery_attempts
+------------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  event_id: uuid NOT NULL 
+  attempt_number: integer NOT NULL 
+  request_url: text NOT NULL 
+  request_headers: jsonb NOT NULL 
+  request_method: text NOT NULL 'POST'::text
+  response_status: integer NULL 
+  response_headers: jsonb NULL 
+  response_body: text NULL 
+  attempted_at: timestamp with time zone NOT NULL now()
+  duration_ms: integer NULL 
+  error_type: text NULL 
+  error_message: text NULL 
+  retry_after: timestamp with time zone NULL 
+
+Table: endpoints
+----------------
+  id: uuid NOT NULL uuid_generate_v4()
+  tenant_id: uuid NOT NULL 
+  name: text NOT NULL 
+  url: text NOT NULL 
+  is_active: boolean NOT NULL true
+  signing_secret: text NULL 
+  signature_header: text NULL 
+  max_retries: integer NOT NULL 10
+  timeout_seconds: integer NOT NULL 30
+  retry_strategy: text NOT NULL 'exponential'::text
+  circuit_state: text NOT NULL 'closed'::text
+  circuit_failure_count: integer NOT NULL 0
+  circuit_success_count: integer NOT NULL 0
+  circuit_last_failure_at: timestamp with time zone NULL 
+  circuit_half_open_at: timestamp with time zone NULL 
+  created_at: timestamp with time zone NOT NULL now()
+  updated_at: timestamp with time zone NOT NULL now()
+  deleted_at: timestamp with time zone NULL 
+  total_events_received: bigint NOT NULL 0
+  total_events_delivered: bigint NOT NULL 0
+  total_events_failed: bigint NOT NULL 0
+
+Table: merkle_leaves
+--------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  leaf_hash: bytea NOT NULL 
+  delivery_attempt_id: uuid NOT NULL 
+  event_id: uuid NOT NULL 
+  tenant_id: uuid NOT NULL 
+  endpoint_url: text NOT NULL 
+  payload_hash: bytea NOT NULL 
+  attempt_number: integer NOT NULL 
+  attempted_at: timestamp with time zone NOT NULL 
+  tree_index: bigint NULL 
+  batch_id: uuid NULL 
+  created_at: timestamp with time zone NOT NULL now()
+
+Table: proof_cache
+------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  proof_type: text NOT NULL 
+  leaf_index: bigint NULL 
+  tree_size: bigint NULL 
+  old_tree_size: bigint NULL 
+  new_tree_size: bigint NULL 
+  proof_path: ARRAY NOT NULL 
+  created_at: timestamp with time zone NOT NULL now()
+  expires_at: timestamp with time zone NOT NULL (now() + '24:00:00'::interval)
+  access_count: integer NOT NULL 0
+  last_accessed_at: timestamp with time zone NULL 
+
+Table: signed_tree_heads
+------------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  tree_size: bigint NOT NULL 
+  root_hash: bytea NOT NULL 
+  timestamp_ms: bigint NOT NULL 
+  signature: bytea NOT NULL 
+  key_id: uuid NOT NULL 
+  batch_id: uuid NOT NULL 
+  batch_size: integer NOT NULL 
+  created_at: timestamp with time zone NOT NULL now()
+
+Table: tenants
+--------------
+  id: uuid NOT NULL uuid_generate_v4()
+  name: text NOT NULL 
+  plan: text NOT NULL 'free'::text
+  max_events_per_month: integer NOT NULL 10000
+  max_endpoints: integer NOT NULL 5
+  events_this_month: integer NOT NULL 0
+  created_at: timestamp with time zone NOT NULL now()
+  updated_at: timestamp with time zone NOT NULL now()
+  deleted_at: timestamp with time zone NULL 
+  stripe_customer_id: text NULL 
+  stripe_subscription_id: text NULL 
+
+Table: webhook_events
+---------------------
+  id: uuid NOT NULL uuid_generate_v4()
+  tenant_id: uuid NOT NULL 
+  endpoint_id: uuid NOT NULL 
+  source_event_id: text NOT NULL 
+  idempotency_strategy: text NOT NULL 
+  status: text NOT NULL 'received'::text
+  failure_count: integer NOT NULL 0
+  last_attempt_at: timestamp with time zone NULL 
+  next_retry_at: timestamp with time zone NULL 
+  headers: jsonb NOT NULL 
+  body: bytea NOT NULL 
+  content_type: text NOT NULL 
+  payload_size: integer NOT NULL 
+  signature_valid: boolean NULL 
+  signature_error: text NULL 
+  received_at: timestamp with time zone NOT NULL now()
+  delivered_at: timestamp with time zone NULL 
+  failed_at: timestamp with time zone NULL 
+
+Indexes:
+========
+_sqlx_migrations._sqlx_migrations_pkey: CREATE UNIQUE INDEX _sqlx_migrations_pkey ON public._sqlx_migrations USING btree (version)
+api_keys.api_keys_key_hash_key: CREATE UNIQUE INDEX api_keys_key_hash_key ON public.api_keys USING btree (key_hash)
+api_keys.api_keys_pkey: CREATE UNIQUE INDEX api_keys_pkey ON public.api_keys USING btree (id)
+api_keys.idx_api_keys_hash: CREATE INDEX idx_api_keys_hash ON public.api_keys USING btree (key_hash) WHERE (revoked_at IS NULL)
+api_keys.idx_api_keys_tenant: CREATE INDEX idx_api_keys_tenant ON public.api_keys USING btree (tenant_id) WHERE (revoked_at IS NULL)
+attestation_keys.attestation_keys_pkey: CREATE UNIQUE INDEX attestation_keys_pkey ON public.attestation_keys USING btree (id)
+attestation_keys.attestation_keys_public_key_key: CREATE UNIQUE INDEX attestation_keys_public_key_key ON public.attestation_keys USING btree (public_key)
+attestation_keys.idx_attestation_keys_active: CREATE INDEX idx_attestation_keys_active ON public.attestation_keys USING btree (created_at DESC) WHERE (is_active = true)
+attestation_keys.idx_attestation_keys_fingerprint: CREATE INDEX idx_attestation_keys_fingerprint ON public.attestation_keys USING btree (key_fingerprint)
+attestation_keys.idx_attestation_keys_single_active: CREATE UNIQUE INDEX idx_attestation_keys_single_active ON public.attestation_keys USING btree (is_active) WHERE (is_active = true)
+delivery_attempts.delivery_attempts_event_id_attempt_number_key: CREATE UNIQUE INDEX delivery_attempts_event_id_attempt_number_key ON public.delivery_attempts USING btree (event_id, attempt_number)
+delivery_attempts.delivery_attempts_pkey: CREATE UNIQUE INDEX delivery_attempts_pkey ON public.delivery_attempts USING btree (id)
+delivery_attempts.idx_delivery_attempts_event: CREATE INDEX idx_delivery_attempts_event ON public.delivery_attempts USING btree (event_id, attempt_number DESC)
+delivery_attempts.idx_delivery_attempts_timing: CREATE INDEX idx_delivery_attempts_timing ON public.delivery_attempts USING btree (attempted_at DESC)
+endpoints.endpoints_pkey: CREATE UNIQUE INDEX endpoints_pkey ON public.endpoints USING btree (id)
+endpoints.idx_endpoints_circuit: CREATE INDEX idx_endpoints_circuit ON public.endpoints USING btree (circuit_state) WHERE (circuit_state <> 'closed'::text)
+endpoints.idx_endpoints_tenant: CREATE INDEX idx_endpoints_tenant ON public.endpoints USING btree (tenant_id) WHERE (deleted_at IS NULL)
+endpoints.idx_endpoints_tenant_name_active: CREATE UNIQUE INDEX idx_endpoints_tenant_name_active ON public.endpoints USING btree (tenant_id, name) WHERE (deleted_at IS NULL)
+merkle_leaves.idx_merkle_leaves_batch: CREATE INDEX idx_merkle_leaves_batch ON public.merkle_leaves USING btree (batch_id, tree_index) WHERE (batch_id IS NOT NULL)
+merkle_leaves.idx_merkle_leaves_delivery_attempt: CREATE INDEX idx_merkle_leaves_delivery_attempt ON public.merkle_leaves USING btree (delivery_attempt_id)
+merkle_leaves.idx_merkle_leaves_event: CREATE INDEX idx_merkle_leaves_event ON public.merkle_leaves USING btree (event_id)
+merkle_leaves.idx_merkle_leaves_tenant_time: CREATE INDEX idx_merkle_leaves_tenant_time ON public.merkle_leaves USING btree (tenant_id, attempted_at DESC)
+merkle_leaves.idx_merkle_leaves_tree_index: CREATE INDEX idx_merkle_leaves_tree_index ON public.merkle_leaves USING btree (tree_index) WHERE (tree_index IS NOT NULL)
+merkle_leaves.merkle_leaves_delivery_attempt_id_key: CREATE UNIQUE INDEX merkle_leaves_delivery_attempt_id_key ON public.merkle_leaves USING btree (delivery_attempt_id)
+merkle_leaves.merkle_leaves_pkey: CREATE UNIQUE INDEX merkle_leaves_pkey ON public.merkle_leaves USING btree (id)
+merkle_leaves.merkle_leaves_tree_index_key: CREATE UNIQUE INDEX merkle_leaves_tree_index_key ON public.merkle_leaves USING btree (tree_index)
+proof_cache.idx_proof_cache_consistency: CREATE INDEX idx_proof_cache_consistency ON public.proof_cache USING btree (old_tree_size, new_tree_size) WHERE (proof_type = 'consistency'::text)
+proof_cache.idx_proof_cache_expiry: CREATE INDEX idx_proof_cache_expiry ON public.proof_cache USING btree (expires_at)
+proof_cache.idx_proof_cache_inclusion: CREATE INDEX idx_proof_cache_inclusion ON public.proof_cache USING btree (leaf_index, tree_size) WHERE (proof_type = 'inclusion'::text)
+proof_cache.proof_cache_pkey: CREATE UNIQUE INDEX proof_cache_pkey ON public.proof_cache USING btree (id)
+signed_tree_heads.idx_signed_tree_heads_batch: CREATE INDEX idx_signed_tree_heads_batch ON public.signed_tree_heads USING btree (batch_id)
+signed_tree_heads.idx_signed_tree_heads_key: CREATE INDEX idx_signed_tree_heads_key ON public.signed_tree_heads USING btree (key_id)
+signed_tree_heads.idx_signed_tree_heads_size_desc: CREATE INDEX idx_signed_tree_heads_size_desc ON public.signed_tree_heads USING btree (tree_size DESC)
+signed_tree_heads.idx_signed_tree_heads_timestamp: CREATE INDEX idx_signed_tree_heads_timestamp ON public.signed_tree_heads USING btree (timestamp_ms DESC)
+signed_tree_heads.signed_tree_heads_batch_id_key: CREATE UNIQUE INDEX signed_tree_heads_batch_id_key ON public.signed_tree_heads USING btree (batch_id)
+signed_tree_heads.signed_tree_heads_pkey: CREATE UNIQUE INDEX signed_tree_heads_pkey ON public.signed_tree_heads USING btree (id)
+signed_tree_heads.signed_tree_heads_tree_size_key: CREATE UNIQUE INDEX signed_tree_heads_tree_size_key ON public.signed_tree_heads USING btree (tree_size)
+tenants.idx_tenants_name_active: CREATE UNIQUE INDEX idx_tenants_name_active ON public.tenants USING btree (name) WHERE (deleted_at IS NULL)
+tenants.tenants_pkey: CREATE UNIQUE INDEX tenants_pkey ON public.tenants USING btree (id)
+webhook_events.idx_webhook_events_endpoint: CREATE INDEX idx_webhook_events_endpoint ON public.webhook_events USING btree (endpoint_id, received_at DESC)
+webhook_events.idx_webhook_events_status: CREATE INDEX idx_webhook_events_status ON public.webhook_events USING btree (status, next_retry_at) WHERE (status = ANY (ARRAY['pending'::text, 'delivering'::text]))
+webhook_events.idx_webhook_events_tenant: CREATE INDEX idx_webhook_events_tenant ON public.webhook_events USING btree (tenant_id, received_at DESC)
+webhook_events.webhook_events_pkey: CREATE UNIQUE INDEX webhook_events_pkey ON public.webhook_events USING btree (id)
+webhook_events.webhook_events_tenant_id_endpoint_id_source_event_id_key: CREATE UNIQUE INDEX webhook_events_tenant_id_endpoint_id_source_event_id_key ON public.webhook_events USING btree (tenant_id, endpoint_id, source_event_id)
