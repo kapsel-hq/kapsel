@@ -1,0 +1,34 @@
+[package]
+name = "kapsel-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Dependencies for fuzz target implementations
+bytes = "1.5"
+serde_json = "1.0"
+
+# Prevent this from interfering with workspace
+[[bin]]
+name = "webhook_parsing"
+path = "fuzz_targets/webhook_parsing.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "signature_validation"
+path = "fuzz_targets/signature_validation.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "json_payload_parsing"
+path = "fuzz_targets/json_payload_parsing.rs"
+test = false
+doc = false

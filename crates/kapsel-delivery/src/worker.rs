@@ -913,7 +913,7 @@ mod tests {
             setup_test_data_isolated(&env, &webhook_url).await;
 
         // Create worker with the pool
-        let worker = create_test_worker_with_pool(env.pool()).await;
+        let worker = create_test_worker_with_pool(env.pool());
 
         // Get the event and attempt delivery
         let event = event_by_id(env.pool(), &event_id).await;
@@ -949,7 +949,7 @@ mod tests {
         let (_tenant_id, _endpoint_id, event_id) =
             setup_test_data_isolated(&env, &webhook_url).await;
 
-        let worker = create_test_worker_with_pool(env.pool()).await;
+        let worker = create_test_worker_with_pool(env.pool());
 
         // Get event and attempt delivery
         let event = event_by_id(env.pool(), &event_id).await;
@@ -1000,7 +1000,7 @@ mod tests {
             default_retry_policy: RetryPolicy { max_attempts: 10, ..Default::default() },
             ..Default::default()
         };
-        let worker = create_test_worker_with_config_and_pool(env.pool(), config).await;
+        let worker = create_test_worker_with_config_and_pool(env.pool(), config);
 
         // Get event and attempt delivery (this will be attempt #10)
         let event = event_by_id(env.pool(), &event_id).await;
@@ -1037,7 +1037,7 @@ mod tests {
             .expect("failed to update event status");
 
         // Create worker
-        let worker = create_test_worker_with_pool(env.pool()).await;
+        let worker = create_test_worker_with_pool(env.pool());
 
         // Force circuit breaker open for this endpoint
         worker
@@ -1103,7 +1103,7 @@ mod tests {
         .expect("failed to insert second webhook event");
 
         // Create worker with the pool
-        let worker = create_test_worker_with_pool(env.pool()).await;
+        let worker = create_test_worker_with_pool(env.pool());
 
         // Claim events
         let claimed_events = worker.claim_pending_events().await.expect("failed to claim events");
@@ -1143,7 +1143,7 @@ mod tests {
         let (_tenant_id, _endpoint_id, event_id) =
             setup_test_data_isolated(&env, &webhook_url).await;
 
-        let worker = create_test_worker_with_pool(env.pool()).await;
+        let worker = create_test_worker_with_pool(env.pool());
 
         // Get event and attempt delivery
         let event = event_by_id(env.pool(), &event_id).await;

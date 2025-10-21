@@ -5,10 +5,11 @@
 
 use std::time::Duration;
 
+use kapsel_core::Clock;
 use kapsel_testing::{
     fixtures::{scenarios, EndpointBuilder, WebhookBuilder},
     http::{MockEndpoint, ScenarioBuilder as HttpScenarioBuilder},
-    time::{backoff, Clock, TestClock},
+    time::{backoff, TestClock},
 };
 use serde_json::json;
 
