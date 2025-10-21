@@ -6,7 +6,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use tracing::{debug, info};
@@ -59,7 +59,8 @@ impl SharedDatabase {
         let port =
             container.get_host_port_ipv4(5432).await.context("failed to get container port")?;
 
-        let connection_string = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
+        let connection_string =
+            format!("postgres://postgres:postgres@127.0.0.1:{}/postgres?sslmode=disable", port);
 
         debug!(port, "connecting to PostgreSQL container");
 
@@ -217,35 +218,6 @@ impl TestDatabase {
         &self.shared_db
     }
 
-    /// Begin a new transaction for test isolation.
-    ///
-    /// The transaction will automatically rollback when dropped,
-    /// ensuring no test data persists between tests.
-    ///
-    /// # Safety
-    ///
-    /// This uses unsafe code to transmute lifetimes. This is currently
-    /// necessary for ergonomics in TestEnv, but should be eliminated in the
-    /// future.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if transaction creation fails.
-    #[allow(unsafe_code)]
-    pub async fn begin_transaction(&self) -> Result<Transaction<'static, Postgres>> {
-        let tx = self.shared_db.pool.begin().await.context("failed to begin transaction")?;
-
-        // SAFETY: We need a 'static transaction for ergonomics in TestEnv.
-        // This is safe because the underlying pool is owned by SharedDatabase
-        // which lives for the entire process duration.
-        let tx = unsafe {
-            // TODO: Eliminate this by redesigning the API.
-            std::mem::transmute::<Transaction<'_, Postgres>, Transaction<'static, Postgres>>(tx)
-        };
-
-        Ok(tx)
-    }
-
     /// Get the underlying connection pool.
     ///
     /// Used by components that need their own database connections
@@ -270,6 +242,19 @@ impl TestDatabase {
     /// Schema name for the test database (always 'public').
     pub fn schema_name(&self) -> &str {
         "public"
+    }
+
+    /// Begin a new database transaction for test isolation.
+    ///
+    /// Returns a transaction that will automatically rollback when dropped,
+    /// providing test isolation. This method is provided for API compatibility
+    /// with existing attestation tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if transaction cannot be started.
+    pub async fn begin_transaction(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        self.shared_db.pool.begin().await.context("failed to begin transaction")
     }
 }
 
@@ -313,8 +298,8 @@ mod tests {
         let db = TestDatabase::new().await.unwrap();
 
         // Create two transactions
-        let mut tx1 = db.begin_transaction().await.unwrap();
-        let mut tx2 = db.begin_transaction().await.unwrap();
+        let mut tx1 = db.shared_database().pool().begin().await.unwrap();
+        let mut tx2 = db.shared_database().pool().begin().await.unwrap();
 
         // Insert in first transaction
         let tenant_id = Uuid::new_v4();
@@ -346,7 +331,7 @@ mod tests {
 
         // Create and commit a transaction
         {
-            let mut tx = db.begin_transaction().await.unwrap();
+            let mut tx = db.shared_database().pool().begin().await.unwrap();
 
             sqlx::query(
                 "INSERT INTO tenants (id, name, plan, created_at, updated_at)

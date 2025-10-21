@@ -8,7 +8,7 @@ use kapsel_testing::{fixtures::WebhookBuilder, Clock, TestEnv};
 #[tokio::test]
 async fn test_environment_initializes() {
     // Arrange
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
 
     // Act - verify components are accessible
     let health_check = env.database_health_check().await.expect("Health check should work");
@@ -21,7 +21,7 @@ async fn test_environment_initializes() {
 #[tokio::test]
 async fn database_migrations_applied() {
     // Arrange
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
 
     // Act - check if core tables exist
     let tables = env.list_tables().await.expect("Should query tables");
@@ -102,12 +102,12 @@ async fn webhook_fixture_builder_creates_valid_data() {
 #[tokio::test]
 async fn database_transaction_rollback_works() {
     // Arrange
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new().await.expect("Failed to create test environment");
     let tenant_id = uuid::Uuid::new_v4();
 
-    // Act - Test that transactions properly isolate operations
-    // For this test, we'll verify that a transaction exists and can be created
-    let _tx = env.db();
+    // Act - Test that database operations work
+    // For this test, we'll verify that the database pool is accessible
+    let _pool = env.db();
 
     // The transaction will be dropped and rollback automatically
     // The key test is that our transaction infrastructure works

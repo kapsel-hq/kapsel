@@ -51,8 +51,8 @@
 - `crates/kapsel-delivery/src/worker.rs`
 
 - [x] Spawn each `handle_event` call as detached task in `MulticastEventHandler`
-- [ ] Add timeout for subscriber execution (30s default)
-- [ ] Log subscriber failures without affecting delivery
+- [x] Add timeout for subscriber execution (30s default)
+- [x] Log subscriber failures without affecting delivery
 - [x] Test: Panicking subscriber doesn't crash worker
 - [x] Test: Slow subscriber doesn't block delivery
 

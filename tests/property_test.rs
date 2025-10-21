@@ -676,7 +676,7 @@ fn property_idempotency_under_duress() {
                     "SELECT COUNT(*) FROM webhook_events WHERE source_event_id = $1",
                 )
                 .bind(&source_event_id)
-                .fetch_one(&mut **env.db())
+                .fetch_one(env.db())
                 .await
                 .unwrap();
 
@@ -757,7 +757,7 @@ fn property_circuit_breaker_resilience() {
                         "SELECT COUNT(*) FROM webhook_events WHERE endpoint_id = $1",
                     )
                     .bind(endpoint_id.0)
-                    .fetch_one(&mut **env.db())
+                    .fetch_one(env.db())
                     .await
                     .unwrap();
 
@@ -767,7 +767,7 @@ fn property_circuit_breaker_resilience() {
                          WHERE we.endpoint_id = $1",
                     )
                     .bind(endpoint_id.0)
-                    .fetch_one(&mut **env.db())
+                    .fetch_one(env.db())
                     .await
                     .unwrap();
 
@@ -789,7 +789,7 @@ fn property_circuit_breaker_resilience() {
                              FROM endpoints WHERE id = $1",
                         )
                         .bind(endpoint_id.0)
-                        .fetch_one(&mut **env.db())
+                        .fetch_one(env.db())
                         .await
                         .unwrap();
 
@@ -880,7 +880,7 @@ fn property_fifo_processing_order() {
                          ORDER BY da.attempted_at ASC",
                     )
                     .bind(event_ids.iter().map(|id| id.0).collect::<Vec<_>>())
-                    .fetch_all(&mut **env.db())
+                    .fetch_all(env.db())
                     .await
                     .unwrap();
 
