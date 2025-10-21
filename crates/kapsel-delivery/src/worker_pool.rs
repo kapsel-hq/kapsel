@@ -5,6 +5,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use kapsel_core::Clock;
 use sqlx::PgPool;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +32,7 @@ pub struct WorkerPool {
     stats: Arc<RwLock<EngineStats>>,
     cancellation_token: CancellationToken,
     worker_handles: Vec<JoinHandle<Result<()>>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl WorkerPool {
@@ -42,6 +44,7 @@ impl WorkerPool {
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
         stats: Arc<RwLock<EngineStats>>,
         cancellation_token: CancellationToken,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             pool,
@@ -51,6 +54,7 @@ impl WorkerPool {
             stats,
             cancellation_token,
             worker_handles: Vec::new(),
+            clock,
         }
     }
 
@@ -80,6 +84,7 @@ impl WorkerPool {
                 self.circuit_manager.clone(),
                 self.stats.clone(),
                 self.cancellation_token.clone(),
+                self.clock.clone(),
             );
 
             let handle = tokio::spawn(async move {
@@ -245,7 +250,15 @@ mod tests {
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
 
-        WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token)
+        WorkerPool::new(
+            pg_pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
+        )
     }
 
     #[tokio::test]
@@ -259,8 +272,15 @@ mod tests {
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
 
-        let mut pool =
-            WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
+        let mut pool = WorkerPool::new(
+            pg_pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
+        );
 
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
@@ -284,8 +304,15 @@ mod tests {
         let cancellation_token = CancellationToken::new();
         let pg_pool = env.create_pool();
 
-        let mut pool =
-            WorkerPool::new(pg_pool, config, client, circuit_manager, stats, cancellation_token);
+        let mut pool = WorkerPool::new(
+            pg_pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
+        );
         pool.spawn_workers().await.expect("workers should spawn successfully");
 
         // Small delay to ensure workers are running
@@ -347,6 +374,7 @@ mod tests {
             circuit_manager,
             stats.clone(),
             cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
         );
 
         // Initially no active workers
@@ -405,6 +433,7 @@ mod tests {
             circuit_manager,
             stats.clone(),
             cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
         );
 
         // Verify initial state

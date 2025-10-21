@@ -9,10 +9,11 @@ use std::{sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use kapsel_core::{
     models::{EndpointId, EventId, WebhookEvent},
-    DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler, NoOpEventHandler,
+    Clock, DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
+    NoOpEventHandler,
 };
 use sqlx::PgPool;
-use tokio::{sync::RwLock, time::sleep};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -86,6 +87,7 @@ pub struct DeliveryEngine {
     stats: Arc<RwLock<EngineStats>>,
     cancellation_token: CancellationToken,
     worker_pool: Option<WorkerPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl DeliveryEngine {
@@ -94,7 +96,7 @@ impl DeliveryEngine {
     /// # Errors
     ///
     /// Returns error if the delivery client cannot be initialized.
-    pub fn new(pool: PgPool, config: DeliveryConfig) -> Result<Self> {
+    pub fn new(pool: PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
         let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
         let circuit_manager =
             Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
@@ -109,6 +111,7 @@ impl DeliveryEngine {
             stats,
             cancellation_token,
             worker_pool: None,
+            clock,
         })
     }
 
@@ -134,6 +137,7 @@ impl DeliveryEngine {
             self.circuit_manager.clone(),
             self.stats.clone(),
             self.cancellation_token.clone(),
+            self.clock.clone(),
         );
 
         worker_pool.spawn_workers().await?;
@@ -193,6 +197,7 @@ pub struct DeliveryWorker {
     stats: Arc<RwLock<EngineStats>>,
     cancellation_token: CancellationToken,
     event_handler: Arc<dyn EventHandler>,
+    clock: Arc<dyn Clock>,
 }
 
 impl DeliveryWorker {
@@ -205,6 +210,7 @@ impl DeliveryWorker {
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
         stats: Arc<RwLock<EngineStats>>,
         cancellation_token: CancellationToken,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             id,
@@ -215,6 +221,7 @@ impl DeliveryWorker {
             stats,
             cancellation_token,
             event_handler: Arc::new(NoOpEventHandler),
+            clock,
         }
     }
 
@@ -229,8 +236,19 @@ impl DeliveryWorker {
         stats: Arc<RwLock<EngineStats>>,
         cancellation_token: CancellationToken,
         event_handler: Arc<dyn EventHandler>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
-        Self { id, pool, config, client, circuit_manager, stats, cancellation_token, event_handler }
+        Self {
+            id,
+            pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            event_handler,
+            clock,
+        }
     }
 
     /// Main worker loop - claims and processes events until cancelled.
@@ -253,7 +271,7 @@ impl DeliveryWorker {
                 Ok(processed_count) => {
                     if processed_count == 0 {
                         tokio::select! {
-                            () = sleep(self.config.poll_interval) => {
+                            () = self.clock.sleep(self.config.poll_interval) => {
                                 // No events available, wait before polling again
                             }
                             () = self.cancellation_token.cancelled() => break,
@@ -267,7 +285,7 @@ impl DeliveryWorker {
                         "worker batch processing failed"
                     );
                     tokio::select! {
-                        () = sleep(Duration::from_secs(5)) => {
+                        () = self.clock.sleep(Duration::from_secs(5)) => {
                             // Wait before retrying to avoid tight error loops
                         }
                         () = self.cancellation_token.cancelled() => break,
@@ -845,8 +863,12 @@ mod tests {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
-        let mut engine =
-            DeliveryEngine::new(env.create_pool(), config).expect("engine creation should succeed");
+        let mut engine = DeliveryEngine::new(
+            env.create_pool(),
+            config,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
+        )
+        .expect("engine creation should succeed");
         engine.start().await.expect("engine should start successfully");
 
         let stats = engine.stats().await;
@@ -859,8 +881,12 @@ mod tests {
     async fn engine_shuts_down_gracefully() {
         let env = TestEnv::new().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
-        let mut engine =
-            DeliveryEngine::new(env.create_pool(), config).expect("engine creation should succeed");
+        let mut engine = DeliveryEngine::new(
+            env.create_pool(),
+            config,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
+        )
+        .expect("engine creation should succeed");
 
         engine.start().await.expect("engine should start");
 
@@ -1214,6 +1240,7 @@ mod tests {
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
             event_handler: Arc::new(NoOpEventHandler),
+            clock: Arc::new(kapsel_testing::time::TestClock::new()),
         }
     }
 
@@ -1232,6 +1259,7 @@ mod tests {
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
             event_handler: Arc::new(NoOpEventHandler),
+            clock: Arc::new(kapsel_testing::time::TestClock::new()),
         }
     }
 

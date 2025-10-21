@@ -4,6 +4,8 @@
 //! timestamp generation for reproducible time-based test scenarios.
 
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -11,6 +13,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use kapsel_core::Clock;
 use rand::Rng;
 
 /// Test clock for deterministic time control.
@@ -93,36 +96,6 @@ impl Default for TestClock {
     }
 }
 
-/// Clock trait for abstracting time sources.
-pub trait Clock: Send + Sync {
-    /// Returns current instant.
-    fn now(&self) -> Instant;
-
-    /// Returns current system time.
-    fn now_system(&self) -> SystemTime;
-
-    /// Sleeps for the specified duration.
-    #[allow(async_fn_in_trait)]
-    async fn sleep(&self, duration: Duration);
-}
-
-/// Real clock using actual system time.
-pub struct RealClock;
-
-impl Clock for RealClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-
-    fn now_system(&self) -> SystemTime {
-        SystemTime::now()
-    }
-
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await
-    }
-}
-
 impl Clock for TestClock {
     fn now(&self) -> Instant {
         self.now_instant()
@@ -132,11 +105,11 @@ impl Clock for TestClock {
         self.now_system()
     }
 
-    async fn sleep(&self, duration: Duration) {
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         // In tests, sleep just advances the clock
         self.advance(duration);
         // Yield to allow other tasks to run
-        tokio::task::yield_now().await;
+        Box::pin(tokio::task::yield_now())
     }
 }
 

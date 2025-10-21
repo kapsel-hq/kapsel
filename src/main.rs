@@ -6,6 +6,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result};
+use kapsel_core::time::RealClock;
 use kapsel_delivery::worker::DeliveryConfig;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
@@ -33,6 +34,7 @@ async fn main() -> Result<()> {
     let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
         db_pool.clone(),
         config.delivery_config.clone(),
+        std::sync::Arc::new(RealClock::new()),
     )?;
 
     delivery_engine.start().await.context("Failed to start delivery engine")?;

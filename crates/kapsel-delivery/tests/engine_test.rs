@@ -5,9 +5,12 @@
 //! - Error handling during event processing
 //! - Integration with HTTP client and database
 
+use std::{sync::Arc, time::Duration};
+
 use bytes::Bytes;
 use http::StatusCode;
-use kapsel_core::IdempotencyStrategy;
+use kapsel_core::Clock;
+use kapsel_delivery::worker::{DeliveryConfig, DeliveryEngine};
 use kapsel_testing::{http::MockResponse, TestEnv};
 use uuid::Uuid;
 
@@ -15,10 +18,9 @@ use uuid::Uuid;
 async fn delivery_engine_processes_pending_events() {
     let env = TestEnv::new().await.expect("test env");
 
-    // Setup: Create tenant, endpoint, and event
+    // Setup: Create tenant, endpoint, and event using TestEnv
     let tenant_id = Uuid::new_v4();
     let endpoint_id = Uuid::new_v4();
-    let event_id = Uuid::new_v4();
 
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
@@ -53,45 +55,38 @@ async fn delivery_engine_processes_pending_events() {
     .await
     .unwrap();
 
-    // Insert pending event
-    sqlx::query(
-        "INSERT INTO webhook_events
-         (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status,
-          headers, body, content_type, payload_size, failure_count, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())",
+    // Create test webhook using TestWebhook builder
+    let webhook = kapsel_testing::fixtures::WebhookBuilder::new()
+        .tenant(tenant_id)
+        .endpoint(endpoint_id)
+        .source_event("source-123")
+        .body(b"test payload".to_vec())
+        .content_type("application/json")
+        .build();
+
+    let event_id = env.ingest_webhook(&webhook).await.unwrap();
+
+    // Create delivery engine with test clock
+    let config = DeliveryConfig {
+        worker_count: 1, // Single worker for deterministic testing
+        batch_size: 10,
+        poll_interval: Duration::from_secs(1),
+        ..DeliveryConfig::default()
+    };
+
+    let mut engine = DeliveryEngine::new(
+        env.create_pool(),
+        config,
+        Arc::new(env.clock.clone()) as Arc<dyn Clock>,
     )
-    .bind(event_id)
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .bind("source-123")
-    .bind(IdempotencyStrategy::Header)
-    .bind("pending")
-    .bind(serde_json::json!({}))
-    .bind(b"test payload".as_slice())
-    .bind("application/json")
-    .bind(12i32)
-    .bind(0i32)
-    .execute(env.pool())
-    .await
     .unwrap();
-
-    // Start delivery engine
-    let config = kapsel_delivery::worker::DeliveryConfig::default();
-    let mut engine =
-        kapsel_delivery::worker::DeliveryEngine::new(env.create_pool(), config).unwrap();
-
     engine.start().await.unwrap();
 
-    // Wait for processing
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    // Process delivery deterministically
+    env.run_delivery_cycle().await.unwrap();
 
     // Verify event is marked delivered
-    let status: String = sqlx::query_scalar("SELECT status FROM webhook_events WHERE id = $1")
-        .bind(event_id)
-        .fetch_one(env.pool())
-        .await
-        .unwrap();
-
+    let status = env.find_webhook_status(event_id).await.unwrap();
     assert_eq!(status, "delivered");
 
     engine.shutdown().await.unwrap();

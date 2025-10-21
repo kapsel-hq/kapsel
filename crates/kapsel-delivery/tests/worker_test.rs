@@ -6,6 +6,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
+use kapsel_core::Clock;
 use kapsel_delivery::{
     circuit::{CircuitBreakerManager, CircuitConfig},
     client::{ClientConfig, DeliveryClient},
@@ -44,6 +45,7 @@ async fn worker_pool_explicit_shutdown() -> Result<()> {
         circuit_manager,
         stats,
         cancellation_token,
+        Arc::new(env.clock.clone()) as Arc<dyn Clock>,
     );
 
     pool.spawn_workers().await?;
@@ -87,6 +89,7 @@ async fn worker_pool_drop_cleanup() -> Result<()> {
             circuit_manager,
             stats,
             cancellation_token,
+            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
         );
 
         pool.spawn_workers().await?;
@@ -128,6 +131,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
+        Arc::new(env1.clock.clone()) as Arc<dyn Clock>,
     );
 
     let client2 = Arc::new(DeliveryClient::new(config.client_config.clone())?);
@@ -138,6 +142,7 @@ async fn multiple_worker_pools_isolation() -> Result<()> {
         Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
+        Arc::new(env2.clock.clone()) as Arc<dyn Clock>,
     );
 
     pool1.spawn_workers().await?;
@@ -185,6 +190,7 @@ async fn worker_pool_shutdown_timeout() -> Result<()> {
         Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
         Arc::new(RwLock::new(EngineStats::default())),
         CancellationToken::new(),
+        Arc::new(env.clock.clone()) as Arc<dyn Clock>,
     );
 
     pool.spawn_workers().await?;

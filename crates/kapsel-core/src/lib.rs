@@ -10,6 +10,7 @@
 pub mod error;
 pub mod events;
 pub mod models;
+pub mod time;
 
 pub use error::{KapselError, Result};
 pub use events::{
@@ -20,3 +21,4 @@ pub use models::{
     BackoffStrategy, CircuitState, DeliveryAttempt, DeliveryAttemptErrorType, Endpoint, EndpointId,
     EventId, EventStatus, HttpMethod, IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
 };
+pub use time::Clock;
