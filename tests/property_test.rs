@@ -533,7 +533,8 @@ fn property_webhook_delivery_retry_scenarios() {
             rt.block_on(async {
                 let mut env = TestEnv::new().await.unwrap();
 
-                let tenant_id = env.create_tenant("prop-test-tenant").await.unwrap();
+                let tenant_name = format!("prop-test-tenant-{}", uuid::Uuid::new_v4());
+                let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
                 let endpoint_id = env
                     .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
                     .await
@@ -610,7 +611,8 @@ fn property_idempotency_under_duress() {
             rt.block_on(async {
                 let mut env = TestEnv::new().await.unwrap();
 
-                let tenant_id = env.create_tenant("idempotency-tenant").await.unwrap();
+                let tenant_name = format!("idempotency-tenant-{}", uuid::Uuid::new_v4());
+                let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
                 let endpoint_id = env
                     .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
                     .await
@@ -712,7 +714,8 @@ fn property_circuit_breaker_resilience() {
                 rt.block_on(async {
                     let mut env = TestEnv::new().await.unwrap();
 
-                    let tenant_id = env.create_tenant("circuit-breaker-tenant").await.unwrap();
+                    let tenant_name = format!("circuit-breaker-tenant-{}", uuid::Uuid::new_v4());
+                    let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
                     let endpoint_id = env
                         .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
                         .await
@@ -823,7 +826,8 @@ fn property_fifo_processing_order() {
                 rt.block_on(async {
                     let mut env = TestEnv::new().await.unwrap();
 
-                    let tenant_id = env.create_tenant("fifo-tenant").await.unwrap();
+                    let tenant_name = format!("fifo-tenant-{}", uuid::Uuid::new_v4());
+                    let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
                     let endpoint_id = env
                         .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
                         .await

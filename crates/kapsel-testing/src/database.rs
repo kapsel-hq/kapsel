@@ -88,11 +88,11 @@ impl SharedDatabase {
 
         loop {
             match sqlx::postgres::PgPoolOptions::new()
-                .max_connections(100)
-                .min_connections(20)
-                .acquire_timeout(Duration::from_secs(30))
-                .idle_timeout(Duration::from_secs(60))
-                .max_lifetime(Duration::from_secs(300))
+                .max_connections(200)
+                .min_connections(10)
+                .acquire_timeout(Duration::from_secs(5))
+                .idle_timeout(Duration::from_secs(30))
+                .max_lifetime(Duration::from_secs(600))
                 .connect(connection_string)
                 .await
             {

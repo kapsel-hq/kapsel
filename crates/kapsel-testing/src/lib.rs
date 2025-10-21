@@ -87,8 +87,8 @@ impl TestEnv {
             (shared_db, db)
         } else {
             // Use shared database for standard test runtime
-            let shared_db = database::create_shared_database().await?;
             let db = TestDatabase::new().await?;
+            let shared_db = std::sync::Arc::clone(db.shared_database());
             (shared_db, db)
         };
 
