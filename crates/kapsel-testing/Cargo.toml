@@ -32,6 +32,9 @@ proptest = { workspace = true }
 reqwest = { workspace = true }
 http = "1.0"
 anyhow = { workspace = true }
+fslock = "0.2"
+url.workspace = true
+serde.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["insta"]

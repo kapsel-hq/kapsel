@@ -1,0 +1,18 @@
+---
+source: crates/kapsel-testing/src/lib.rs
+expression: retry_attempts_snapshot
+---
+Delivery Attempts Snapshot
+=========================
+
+Attempt 1:
+  attempt_number: 1
+  response_status: Some(503)
+  duration_ms: 75
+  error_type: Some("http_error")
+
+Attempt 2:
+  attempt_number: 2
+  response_status: Some(200)
+  duration_ms: 75
+  error_type: None

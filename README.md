@@ -41,17 +41,11 @@ Kapsel is a webhook reliability service for building guaranteed at-least-once de
 git clone https://github.com/kapsel-hq/kapsel
 cd kapsel
 
-# Start the test database in Docker
-docker-compose up -d postgres-test
-
-# Set up the database schema
-cargo make db-setup
-
-# Run the development server
-cargo make dev
-
-# Run the test suite
+# Run tests
 cargo make test
+
+# Run the dev server
+cargo make dev
 ```
 
 Read [`Makefile.toml`](Makefile.toml) for all avaliable [`cargo-make`](https://github.com/sagiegurari/cargo-make) tasks.

@@ -9,7 +9,7 @@ use kapsel_testing::database::TestDatabase;
 async fn store_and_load_signing_key() {
     // RED: Test storing and loading a signing key from database
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     // Generate test key
     let public_key = vec![1u8; 32];
@@ -38,7 +38,7 @@ async fn store_and_load_signing_key() {
 async fn only_one_active_key_at_a_time() {
     // RED: Verify constraint that only one key can be active
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
@@ -69,7 +69,7 @@ async fn only_one_active_key_at_a_time() {
 async fn deactivate_old_key_when_rotating() {
     // RED: Test key rotation by deactivating old key
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let old_key = vec![1u8; 32];
     let new_key = vec![2u8; 32];
@@ -116,7 +116,7 @@ async fn deactivate_old_key_when_rotating() {
 async fn load_active_key_returns_most_recent() {
     // RED: Test loading the most recently created active key
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let key = vec![1u8; 32];
 

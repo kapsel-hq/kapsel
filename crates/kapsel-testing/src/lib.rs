@@ -18,7 +18,7 @@ use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use database::{SharedDatabase, TestDatabase};
+use database::TestDatabase;
 pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 use kapsel_core::models::{EndpointId, EventId, TenantId};
 pub use kapsel_core::Clock;
@@ -122,8 +122,6 @@ pub struct TestEnv {
     pub clock: time::TestClock,
     /// Database handle for this test environment
     database: TestDatabase,
-    /// Shared database instance (Arc ensures proper cleanup)
-    shared_db: std::sync::Arc<SharedDatabase>,
     /// Optional attestation service for testing delivery capture
     attestation_service:
         Option<std::sync::Arc<tokio::sync::RwLock<kapsel_attestation::MerkleService>>>,
@@ -152,43 +150,11 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
-        // Use shared database for standard test runtime
-        let shared_db = database::create_shared_database().await?;
         let database = TestDatabase::new().await?;
-
-        // Create HTTP mock server
         let http_mock = http::MockServer::start().await;
-
-        // Create deterministic clock
         let clock = time::TestClock::new();
 
-        Ok(Self { http_mock, clock, database, shared_db, attestation_service: None })
-    }
-
-    /// Create a new isolated test environment with its own database instance.
-    ///
-    /// Use this for tests that create their own async runtime (like property
-    /// tests) or need complete database isolation. Most tests should use
-    /// `new()` instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if test environment setup fails.
-    pub async fn new_isolated() -> Result<Self> {
-        // Initialize tracing for isolated tests
-        let _ = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).try_init();
-
-        // Create completely isolated database for this runtime
-        let database = TestDatabase::new_isolated().await?;
-        let shared_db = std::sync::Arc::clone(database.shared_database());
-
-        // Create HTTP mock server
-        let http_mock = http::MockServer::start().await;
-
-        // Create deterministic clock
-        let clock = time::TestClock::new();
-
-        Ok(Self { http_mock, clock, database, shared_db, attestation_service: None })
+        Ok(Self { http_mock, clock, database, attestation_service: None })
     }
 
     /// Returns direct access to the database connection pool.
@@ -196,17 +162,16 @@ impl TestEnv {
     /// Use this for setup operations that need to persist across method calls.
     /// For transaction isolation, create transactions manually as needed.
     pub fn pool(&self) -> &PgPool {
-        self.database.shared_database().pool()
+        self.database.pool()
     }
 
     /// Create a new connection pool for components that manage their own
     /// connections.
     ///
     /// This is useful for testing delivery workers and other components
-    /// that need their own database connections while maintaining high
-    /// performance.
+    /// that need their own database connections while maintaining isolation.
     pub fn create_pool(&self) -> PgPool {
-        self.shared_db.pool().clone()
+        self.database.pool().clone()
     }
 
     /// Advance the test clock by the specified duration.
@@ -1841,8 +1806,7 @@ mod tests {
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("invariant check"),
-            "Error should mention invariant failure: {}",
-            error_msg
+            "Error should mention invariant failure: {error_msg}"
         );
     }
 
@@ -1958,7 +1922,7 @@ mod tests {
         assert!(result.is_err(), "Scenario should fail due to retry bounds violation");
 
         let error = result.unwrap_err();
-        let error_chain = format!("{:#}", error);
+        let error_chain = format!("{error:#}");
         assert!(error_chain.contains("exceeded max retries:"));
     }
 
@@ -2080,8 +2044,8 @@ mod tests {
 
         // Note: In CI this would fail the first time because snapshots don't exist
         // In practice, you'd review and accept the snapshots
-        if result.is_err() {
-            let error = result.unwrap_err().to_string();
+        if let Err(error) = result {
+            let error = error.to_string();
             // Expect insta snapshot assertion errors on first run
             assert!(error.contains("snapshot") || error.contains("insta"));
         }
@@ -2250,13 +2214,12 @@ mod tests {
         // In real usage, developer would review and accept snapshots
         let result = scenario.run(&mut env).await;
 
-        if result.is_err() {
-            let error = result.unwrap_err().to_string();
+        if let Err(error) = result {
+            let error = error.to_string();
             // Expect insta snapshot failures on first run - this is correct behavior
             assert!(
                 error.contains("snapshot") || error.contains("insta"),
-                "Expected snapshot assertion error, got: {}",
-                error
+                "Expected snapshot assertion error, got: {error}"
             );
         } else {
             // This would happen if snapshots already exist and match

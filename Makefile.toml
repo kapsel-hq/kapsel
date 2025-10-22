@@ -128,26 +128,6 @@ args = ["bench", "--workspace"]
 
 # Database tasks
 
-[tasks.db-setup]
-description = "Setup test database (using Docker PostgreSQL)"
-script = '''
-echo "Creating test database..."
-docker exec kapsel-postgres-test psql -U postgres -c "CREATE DATABASE kapsel_test;" 2>/dev/null || echo "Database may already exist"
-echo "Running migrations..."
-cargo sqlx migrate run
-echo "Database setup complete!"
-'''
-
-[tasks.db-reset]
-description = "Reset test database (using Docker PostgreSQL)"
-script = '''
-echo "Resetting test database..."
-docker exec kapsel-postgres-test psql -U postgres -c "DROP DATABASE IF EXISTS kapsel_test;"
-docker exec kapsel-postgres-test psql -U postgres -c "CREATE DATABASE kapsel_test;"
-echo "Running migrations..."
-cargo sqlx migrate run
-echo "Database reset complete!"
-'''
 
 [tasks.db-migrate]
 description = "Run database migrations"
@@ -169,11 +149,8 @@ dependencies = ["format-check", "lint", "test", "audit", "build"]
 
 [tasks.ci-test]
 description = "CI test suite"
-script = '''
-cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo nextest run --workspace
-'''
+command = "cargo"
+args = ["nextest", "run", "--workspace"]
 
 # Release tasks
 

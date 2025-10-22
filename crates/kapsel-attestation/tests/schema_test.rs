@@ -17,7 +17,7 @@ async fn attestation_tables_exist() {
          WHERE table_schema = 'public'
          AND table_name IN ('attestation_keys', 'merkle_leaves', 'signed_tree_heads', 'proof_cache')"
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
 
@@ -27,7 +27,7 @@ async fn attestation_tables_exist() {
 #[tokio::test]
 async fn only_one_active_attestation_key_allowed() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
@@ -52,7 +52,7 @@ async fn only_one_active_attestation_key_allowed() {
 #[tokio::test]
 async fn merkle_leaves_enforces_constraints() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     // Create test delivery attempt
     let attempt_id = create_test_delivery_attempt(&mut tx).await;

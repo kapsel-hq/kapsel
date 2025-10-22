@@ -105,7 +105,7 @@ async fn merkle_service_adds_leaf_to_pending_queue() {
 #[tokio::test]
 async fn merkle_service_commits_batch_atomically() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let delivery_attempt_id = Uuid::new_v4();
     let event_id = Uuid::new_v4();
@@ -123,13 +123,13 @@ async fn merkle_service_commits_batch_atomically() {
         "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
     )
     .bind(&public_key)
-    .fetch_one(&db.pool())
+    .fetch_one(db.pool())
     .await
     .unwrap();
 
     // Update signing service with database key ID
     let signing = signing.with_key_id(key_id);
-    let mut service = MerkleService::new(db.pool(), signing);
+    let mut service = MerkleService::new(db.pool().clone(), signing);
 
     let leaf = LeafData::new(
         delivery_attempt_id,
@@ -153,13 +153,13 @@ async fn merkle_service_commits_batch_atomically() {
 
     // Verify database persistence
     let leaf_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves")
-        .fetch_one(&db.pool())
+        .fetch_one(db.pool())
         .await
         .unwrap();
     assert_eq!(leaf_count, 1);
 
     let tree_head_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_tree_heads")
-        .fetch_one(&db.pool())
+        .fetch_one(db.pool())
         .await
         .unwrap();
     assert_eq!(tree_head_count, 1);
@@ -171,7 +171,7 @@ async fn merkle_service_commits_batch_atomically() {
 #[tokio::test]
 async fn merkle_service_handles_multiple_leaves_in_batch() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let delivery_attempt_id_1 = Uuid::new_v4();
     let event_id_1 = Uuid::new_v4();
@@ -192,13 +192,13 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
         "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
     )
     .bind(&public_key)
-    .fetch_one(&db.pool())
+    .fetch_one(db.pool())
     .await
     .unwrap();
 
     // Update signing service with database key ID
     let signing = signing.with_key_id(key_id);
-    let mut service = MerkleService::new(db.pool(), signing);
+    let mut service = MerkleService::new(db.pool().clone(), signing);
 
     let timestamp = DateTime::from_timestamp(1640995200, 0).unwrap().with_timezone(&Utc);
 
@@ -238,7 +238,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     // Verify both leaves are in database with correct tree indices
     let leaves: Vec<(i64,)> =
         sqlx::query_as("SELECT tree_index FROM merkle_leaves ORDER BY tree_index")
-            .fetch_all(&db.pool())
+            .fetch_all(db.pool())
             .await
             .unwrap();
 
@@ -258,13 +258,13 @@ async fn merkle_service_fails_commit_with_empty_pending_queue() {
         "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
     )
     .bind(&public_key)
-    .fetch_one(&db.pool())
+    .fetch_one(db.pool())
     .await
     .unwrap();
 
     // Update signing service with database key ID
     let signing = signing.with_key_id(key_id);
-    let mut service = MerkleService::new(db.pool(), signing);
+    let mut service = MerkleService::new(db.pool().clone(), signing);
 
     // Try to commit with no pending leaves
     let result = service.try_commit_pending().await;
@@ -276,7 +276,7 @@ async fn merkle_service_fails_commit_with_empty_pending_queue() {
 #[tokio::test]
 async fn merkle_service_stores_batch_metadata() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     let delivery_attempt_id = Uuid::new_v4();
     let event_id = Uuid::new_v4();
@@ -293,13 +293,13 @@ async fn merkle_service_stores_batch_metadata() {
         "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
     )
     .bind(&public_key)
-    .fetch_one(&db.pool())
+    .fetch_one(db.pool())
     .await
     .unwrap();
 
     // Update signing service with database key ID and add leaf
     let signing = signing.with_key_id(key_id);
-    let mut service = MerkleService::new(db.pool(), signing);
+    let mut service = MerkleService::new(db.pool().clone(), signing);
 
     let leaf = LeafData::new(
         delivery_attempt_id,
@@ -323,7 +323,7 @@ async fn merkle_service_stores_batch_metadata() {
     // Verify batch metadata in signed tree head
     let (batch_size, batch_id): (i32, Uuid) =
         sqlx::query_as("SELECT batch_size, batch_id FROM signed_tree_heads WHERE tree_size = 1")
-            .fetch_one(&db.pool())
+            .fetch_one(db.pool())
             .await
             .unwrap();
 
@@ -334,7 +334,7 @@ async fn merkle_service_stores_batch_metadata() {
     let leaf_batch_id: Uuid =
         sqlx::query_scalar("SELECT batch_id FROM merkle_leaves WHERE delivery_attempt_id = $1")
             .bind(delivery_attempt_id)
-            .fetch_one(&db.pool())
+            .fetch_one(db.pool())
             .await
             .unwrap();
 
@@ -372,7 +372,7 @@ async fn merkle_service_rejects_invalid_attempt_numbers() {
 #[tokio::test]
 async fn merkle_service_preserves_leaf_ordering() {
     let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.begin_transaction().await.unwrap();
+    let mut tx = db.pool().begin().await.unwrap();
 
     // Create multiple delivery attempts
     let mut delivery_attempt_ids = Vec::new();
@@ -395,13 +395,13 @@ async fn merkle_service_preserves_leaf_ordering() {
         "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
     )
     .bind(&public_key)
-    .fetch_one(&db.pool())
+    .fetch_one(db.pool())
     .await
     .unwrap();
 
     // Update signing service with database key ID
     let signing = signing.with_key_id(key_id);
-    let mut service = MerkleService::new(db.pool(), signing);
+    let mut service = MerkleService::new(db.pool().clone(), signing);
 
     let timestamp = Utc::now();
 
@@ -430,7 +430,7 @@ async fn merkle_service_preserves_leaf_ordering() {
     let stored_leaves: Vec<(Uuid, i64)> = sqlx::query_as(
         "SELECT delivery_attempt_id, tree_index FROM merkle_leaves ORDER BY tree_index",
     )
-    .fetch_all(&db.pool())
+    .fetch_all(db.pool())
     .await
     .unwrap();
 

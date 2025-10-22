@@ -223,7 +223,7 @@ pub struct PropertyTestState {
 impl PropertyTestState {
     /// Create a new property test state with isolated test environment.
     pub async fn new(_test_name: &str) -> Result<Self> {
-        let env = TestEnv::new_isolated().await?;
+        let env = TestEnv::new().await?;
 
         Ok(Self {
             env,
