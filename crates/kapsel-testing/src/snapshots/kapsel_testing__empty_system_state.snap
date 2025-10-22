@@ -1,0 +1,8 @@
+---
+source: crates/kapsel-testing/src/lib.rs
+expression: snapshot
+---
+Events Table Snapshot
+====================
+
+No events found.

@@ -1,0 +1,18 @@
+---
+source: crates/kapsel-testing/src/lib.rs
+expression: snapshot
+---
+Events Table Snapshot
+====================
+
+Event 1:
+  source_event_id: scenario-integration-test
+  status: pending
+  failure_count: 0
+  attempt_count: 1
+  payload_size: 33
+  content_type: application/json
+  id: [UUID]
+  tenant_id: [UUID]
+  endpoint_id: [UUID]
+  received_at: [TIMESTAMP]

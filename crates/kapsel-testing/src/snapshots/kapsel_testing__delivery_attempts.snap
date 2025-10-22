@@ -1,7 +1,6 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-assertion_line: 2346
-expression: attempts_snapshot
+expression: snapshot
 ---
 Delivery Attempts Snapshot
 =========================

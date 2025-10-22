@@ -1,22 +1,20 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-assertion_line: 2430
-expression: retry_events_snapshot
+expression: snapshot
 ---
 Events Table Snapshot
 ====================
 
 Event 1:
-  source_event_id: retry-validation-001
-  status: delivered
+  source_event_id: scenario-integration-test
+  status: pending
   failure_count: 1
   attempt_count: 2
-  payload_size: 24
+  payload_size: 33
   content_type: application/json
   id: [UUID]
   tenant_id: [UUID]
   endpoint_id: [UUID]
   received_at: [TIMESTAMP]
-  delivered_at: [TIMESTAMP]
   last_attempt_at: [TIMESTAMP]
   next_retry_at: [TIMESTAMP]

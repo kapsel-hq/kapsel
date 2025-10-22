@@ -1,17 +1,16 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-assertion_line: 1629
-expression: snapshot
+expression: retry_events_snapshot
 ---
 Events Table Snapshot
 ====================
 
 Event 1:
-  source_event_id: scenario-snap-001
+  source_event_id: retry-validation-001
   status: delivered
-  failure_count: 0
-  attempt_count: 1
-  payload_size: 17
+  failure_count: 1
+  attempt_count: 2
+  payload_size: 24
   content_type: application/json
   id: [UUID]
   tenant_id: [UUID]
@@ -19,3 +18,4 @@ Event 1:
   received_at: [TIMESTAMP]
   delivered_at: [TIMESTAMP]
   last_attempt_at: [TIMESTAMP]
+  next_retry_at: [TIMESTAMP]

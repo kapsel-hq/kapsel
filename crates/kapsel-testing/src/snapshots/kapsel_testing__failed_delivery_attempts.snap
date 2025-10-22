@@ -1,12 +1,12 @@
 ---
 source: crates/kapsel-testing/src/lib.rs
-expression: attempts_snapshot
+expression: snapshot
 ---
 Delivery Attempts Snapshot
 =========================
 
 Attempt 1:
   attempt_number: 1
-  response_status: Some(200)
+  response_status: Some(503)
   duration_ms: 75
-  error_type: None
+  error_type: Some("http_error")
