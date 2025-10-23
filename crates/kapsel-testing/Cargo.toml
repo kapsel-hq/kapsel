@@ -27,7 +27,6 @@ tracing-subscriber = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
 rand = { workspace = true }
-once_cell = "1.19"
 proptest = { workspace = true }
 reqwest = { workspace = true }
 http = "1.0"
