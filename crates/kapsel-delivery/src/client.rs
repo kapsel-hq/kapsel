@@ -7,13 +7,14 @@ use std::{collections::HashMap, time::Duration};
 
 use bytes::Bytes;
 use reqwest::{header::HeaderMap, Response};
+use serde::{Deserialize, Serialize};
 use tracing::{info_span, Instrument};
 use uuid::Uuid;
 
 use crate::error::{DeliveryError, Result};
 
 /// Configuration for the webhook delivery client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     /// Default timeout for HTTP requests.
     pub timeout: Duration,

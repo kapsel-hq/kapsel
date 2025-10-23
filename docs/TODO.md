@@ -71,16 +71,16 @@
 - `crates/kapsel-testing/src/database.rs`
 - `crates/kapsel-testing/src/env.rs`
 
-- [ ] Refactor to closure-based transaction management:
+- [x] Refactor to closure-based transaction management:
   ```rust
   pub async fn transaction<F, Fut, T>(&self, f: F) -> Result<T>
   where
       F: FnOnce(&mut sqlx::Transaction<'_, Postgres>) -> Fut,
       Fut: std::future::Future<Output = Result<T>>,
   ```
-- [ ] Update all tests to use new pattern
-- [ ] Remove `unsafe` block and `TODO` comment
-- [ ] Verify no performance regression
+- [x] Update all tests to use new pattern
+- [x] Remove `unsafe` block and `TODO` comment
+- [x] Verify no performance regression
 
 **Estimate:** 1-2 days
 

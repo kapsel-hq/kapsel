@@ -10,8 +10,9 @@ use chrono::{DateTime, Utc};
 use kapsel_core::{
     models::{EndpointId, EventId, WebhookEvent},
     Clock, DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
-    NoOpEventHandler,
+    MulticastEventHandler,
 };
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -27,7 +28,7 @@ use crate::{
 };
 
 /// Configuration for the delivery engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryConfig {
     /// Number of concurrent delivery workers.
     pub worker_count: usize,
@@ -88,6 +89,7 @@ pub struct DeliveryEngine {
     cancellation_token: CancellationToken,
     worker_pool: Option<WorkerPool>,
     clock: Arc<dyn Clock>,
+    event_handler: Arc<dyn EventHandler>,
 }
 
 impl DeliveryEngine {
@@ -103,6 +105,15 @@ impl DeliveryEngine {
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
 
+        let mut event_handler = MulticastEventHandler::new();
+        let signing_service = kapsel_attestation::SigningService::ephemeral();
+        let merkle_service = Arc::new(tokio::sync::RwLock::new(
+            kapsel_attestation::MerkleService::new(pool.clone(), signing_service),
+        ));
+        let attestation_subscriber =
+            Arc::new(kapsel_attestation::AttestationEventSubscriber::new(merkle_service));
+        event_handler.add_subscriber(attestation_subscriber);
+
         Ok(Self {
             pool,
             config,
@@ -112,6 +123,7 @@ impl DeliveryEngine {
             cancellation_token,
             worker_pool: None,
             clock,
+            event_handler: Arc::new(event_handler),
         })
     }
 
@@ -130,7 +142,7 @@ impl DeliveryEngine {
             "starting webhook delivery engine"
         );
 
-        let mut worker_pool = WorkerPool::new(
+        let mut worker_pool = WorkerPool::with_event_handler(
             self.pool.clone(),
             self.config.clone(),
             self.client.clone(),
@@ -138,6 +150,7 @@ impl DeliveryEngine {
             self.stats.clone(),
             self.cancellation_token.clone(),
             self.clock.clone(),
+            self.event_handler.clone(),
         );
 
         worker_pool.spawn_workers().await?;
@@ -221,7 +234,7 @@ impl DeliveryWorker {
             circuit_manager,
             stats,
             cancellation_token,
-            event_handler: Arc::new(NoOpEventHandler),
+            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
             clock,
         }
     }
@@ -1240,7 +1253,7 @@ mod tests {
             ))),
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
-            event_handler: Arc::new(NoOpEventHandler),
+            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
             clock: Arc::new(kapsel_testing::time::TestClock::new()),
         }
     }
@@ -1259,7 +1272,7 @@ mod tests {
             ))),
             stats: Arc::new(RwLock::new(EngineStats::default())),
             cancellation_token: CancellationToken::new(),
-            event_handler: Arc::new(NoOpEventHandler),
+            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
             clock: Arc::new(kapsel_testing::time::TestClock::new()),
         }
     }

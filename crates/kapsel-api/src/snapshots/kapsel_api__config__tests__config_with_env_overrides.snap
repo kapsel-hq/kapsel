@@ -1,0 +1,26 @@
+---
+source: crates/kapsel-api/src/config.rs
+assertion_line: 483
+expression: "serde_yaml::to_value(&config).unwrap()"
+---
+database_url: "postgresql://env:override@localhost:5432/test_db"
+database_max_connections: 25
+database_min_connections: 5
+database_connection_timeout: 15
+database_idle_timeout: 600
+database_max_lifetime: 1800
+host: 127.0.0.1
+port: 9090
+request_timeout: 60
+worker_pool_size: 16
+worker_queue_size: 25
+max_retry_attempts: 12
+retry_base_delay_ms: 2000
+retry_max_delay_ms: 120000
+retry_jitter_factor: 0.15
+circuit_breaker_failure_threshold: 8
+circuit_breaker_success_threshold: 3
+circuit_breaker_timeout_seconds: 60
+delivery_timeout_seconds: 35
+attestation_batch_size: 150
+rust_log: "info,kapsel=debug"

@@ -10,6 +10,7 @@
 pub mod error;
 pub mod events;
 pub mod models;
+
 pub mod time;
 
 pub use error::{KapselError, Result};

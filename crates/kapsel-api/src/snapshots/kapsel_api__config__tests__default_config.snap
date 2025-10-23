@@ -1,0 +1,25 @@
+---
+source: crates/kapsel-api/src/config.rs
+expression: "serde_yaml::to_value(&config).unwrap()"
+---
+database_url: "postgresql://localhost/kapsel"
+database_max_connections: 10
+database_min_connections: 2
+database_connection_timeout: 10
+database_idle_timeout: 600
+database_max_lifetime: 1800
+host: 127.0.0.1
+port: 8080
+request_timeout: 30
+worker_pool_size: 4
+worker_queue_size: 10
+max_retry_attempts: 5
+retry_base_delay_ms: 1000
+retry_max_delay_ms: 60000
+retry_jitter_factor: 0.1
+circuit_breaker_failure_threshold: 5
+circuit_breaker_success_threshold: 2
+circuit_breaker_timeout_seconds: 30
+delivery_timeout_seconds: 30
+attestation_batch_size: 100
+rust_log: info

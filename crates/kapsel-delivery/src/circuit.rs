@@ -70,7 +70,7 @@ use tokio::sync::Mutex;
 use crate::error::{DeliveryError, Result};
 
 /// Circuit breaker configuration for all endpoints.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CircuitConfig {
     /// Number of consecutive failures to trigger circuit open.
     pub failure_threshold: u32,

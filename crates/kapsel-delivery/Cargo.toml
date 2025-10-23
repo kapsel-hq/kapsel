@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 kapsel-core = { path = "../kapsel-core" }
+kapsel-attestation = { path = "../kapsel-attestation" }
 tokio-util = { workspace = true }
 
 [dev-dependencies]

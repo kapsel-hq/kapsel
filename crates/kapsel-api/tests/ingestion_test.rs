@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
 };
-use kapsel_api::create_router;
+use kapsel_api::create_test_router;
 use kapsel_testing::TestEnv;
 use serde_json::json;
 use tower::ServiceExt;
@@ -62,7 +62,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     .await
     .expect("insert endpoint");
 
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     // Prepare webhook payload
     let payload = json!({
@@ -135,7 +135,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
 #[tokio::test]
 async fn ingest_webhook_fails_with_invalid_auth() {
     let env = TestEnv::new().await.expect("test env setup");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let endpoint_id = Uuid::new_v4();
     let payload = json!({"event": "test"});
@@ -160,7 +160,7 @@ async fn ingest_webhook_fails_with_invalid_auth() {
 #[tokio::test]
 async fn ingest_webhook_fails_without_auth() {
     let env = TestEnv::new().await.expect("test env setup");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let endpoint_id = Uuid::new_v4();
     let payload = json!({"event": "test"});
@@ -207,7 +207,7 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
         .await
         .expect("insert api key");
 
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     // Use non-existent endpoint ID
     let endpoint_id = Uuid::new_v4();
@@ -273,7 +273,7 @@ async fn ingest_webhook_enforces_payload_size_limit() {
     .await
     .expect("insert endpoint");
 
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     // Create payload larger than 10MB limit
     let large_payload = vec![b'x'; 11 * 1024 * 1024]; // 11MB
@@ -344,7 +344,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
 
     // First request with idempotency key
-    let app1 = create_router(env.pool().clone());
+    let app1 = create_test_router(env.pool().clone());
     let request1 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{}", endpoint_id))
@@ -366,7 +366,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let first_event_id = response1_json["event_id"].as_str().expect("extract event ID");
 
     // Second request with same idempotency key
-    let app2 = create_router(env.pool().clone());
+    let app2 = create_test_router(env.pool().clone());
     let request2 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{}", endpoint_id))
@@ -450,7 +450,7 @@ async fn ingest_webhook_handles_different_content_types() {
     .expect("insert endpoint");
 
     // Test JSON content type
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
     let json_payload = json!({"type": "json"});
     let json_bytes = serde_json::to_vec(&json_payload).expect("serialize json");
 
@@ -477,7 +477,7 @@ async fn ingest_webhook_handles_different_content_types() {
     assert_eq!(stored_content_type, "application/json");
 
     // Test plain text content type
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
     let text_payload = "plain text payload";
 
     let request = Request::builder()
@@ -553,7 +553,7 @@ async fn ingest_webhook_without_idempotency_key() {
     let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
 
     // First request without idempotency key
-    let app1 = create_router(env.pool().clone());
+    let app1 = create_test_router(env.pool().clone());
     let request1 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{}", endpoint_id))
@@ -566,7 +566,7 @@ async fn ingest_webhook_without_idempotency_key() {
     assert_eq!(response1.status(), StatusCode::OK);
 
     // Second identical request without idempotency key
-    let app2 = create_router(env.pool().clone());
+    let app2 = create_test_router(env.pool().clone());
     let request2 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{}", endpoint_id))

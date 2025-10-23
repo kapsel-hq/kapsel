@@ -5,7 +5,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use kapsel_core::Clock;
+use kapsel_core::{Clock, EventHandler, NoOpEventHandler};
 use sqlx::PgPool;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -33,6 +33,7 @@ pub struct WorkerPool {
     cancellation_token: CancellationToken,
     worker_handles: Vec<JoinHandle<Result<()>>>,
     clock: Arc<dyn Clock>,
+    event_handler: Arc<dyn EventHandler>,
 }
 
 impl WorkerPool {
@@ -55,6 +56,32 @@ impl WorkerPool {
             cancellation_token,
             worker_handles: Vec::new(),
             clock,
+            event_handler: Arc::new(NoOpEventHandler),
+        }
+    }
+
+    /// Create a new worker pool with event handler support.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_event_handler(
+        pool: PgPool,
+        config: DeliveryConfig,
+        client: Arc<DeliveryClient>,
+        circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
+        stats: Arc<RwLock<EngineStats>>,
+        cancellation_token: CancellationToken,
+        clock: Arc<dyn Clock>,
+        event_handler: Arc<dyn EventHandler>,
+    ) -> Self {
+        Self {
+            pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            worker_handles: Vec::new(),
+            clock,
+            event_handler,
         }
     }
 
@@ -76,7 +103,7 @@ impl WorkerPool {
         }
 
         for worker_id in 0..self.config.worker_count {
-            let worker = DeliveryWorker::new(
+            let worker = DeliveryWorker::with_event_handler(
                 worker_id,
                 self.pool.clone(),
                 self.config.clone(),
@@ -84,6 +111,7 @@ impl WorkerPool {
                 self.circuit_manager.clone(),
                 self.stats.clone(),
                 self.cancellation_token.clone(),
+                self.event_handler.clone(),
                 self.clock.clone(),
             );
 

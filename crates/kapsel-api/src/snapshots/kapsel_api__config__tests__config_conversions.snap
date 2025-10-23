@@ -1,0 +1,27 @@
+---
+source: crates/kapsel-api/src/config.rs
+assertion_line: 561
+expression: conversions
+---
+{
+  "circuit_config": {
+    "failure_threshold": 8,
+    "success_threshold": 3,
+    "timeout_secs": 120
+  },
+  "client_config": {
+    "timeout_secs": 45,
+    "user_agent": "Kapsel/1.0"
+  },
+  "delivery_config": {
+    "batch_size": 50,
+    "shutdown_timeout_secs": 45,
+    "worker_count": 32
+  },
+  "retry_policy": {
+    "base_delay_ms": 2000,
+    "jitter_factor": 0.15,
+    "max_attempts": 15,
+    "max_delay_ms": 600000
+  }
+}

@@ -33,28 +33,28 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{handlers, middleware::auth::auth_middleware};
+use crate::{config::Config, handlers, middleware::auth::auth_middleware};
 
 /// Creates the Axum router with all routes and middleware.
 ///
 /// Sets up:
 /// - All API endpoints
 /// - Request tracing and logging
-/// - Timeout handling (30s default)
+/// - Timeout handling (configurable)
 /// - Shared application state
 ///
 /// # Example
 ///
 /// ```no_run
-/// use kapsel_api::server::create_router;
+/// use kapsel_api::{server::create_router, Config};
 /// use sqlx::PgPool;
 ///
-/// async fn start(db: PgPool) {
-///     let app = create_router(db);
+/// async fn start(db: PgPool, config: &Config) {
+///     let app = create_router(db, config);
 ///     // Serve the app...
 /// }
 /// ```
-pub fn create_router(db: PgPool) -> Router {
+pub fn create_router(db: PgPool, config: &Config) -> Router {
     let health_routes = Router::new()
         .route("/health", get(handlers::health_check))
         .route("/ready", get(handlers::readiness_check))
@@ -67,7 +67,7 @@ pub fn create_router(db: PgPool) -> Router {
     Router::new()
         .merge(health_routes)
         .merge(api_routes)
-        .layer(TimeoutLayer::new(Duration::from_secs(30)))
+        .layer(TimeoutLayer::new(Duration::from_secs(config.request_timeout)))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(inject_request_id))
         .with_state(db)
@@ -108,20 +108,25 @@ async fn inject_request_id(req: Request, next: Next) -> Response {
 /// ```no_run
 /// use std::net::SocketAddr;
 ///
-/// use kapsel_api::server::start_server;
+/// use kapsel_api::{server::start_server, Config};
 /// use sqlx::PgPool;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let db = PgPool::connect("postgresql://...").await?;
+///     let config = Config::load()?;
 ///     let addr = "127.0.0.1:8080".parse()?;
 ///
-///     start_server(db, addr).await?;
+///     start_server(db, &config, addr).await?;
 ///     Ok(())
 /// }
 /// ```
-pub async fn start_server(db: PgPool, addr: SocketAddr) -> Result<(), std::io::Error> {
-    let app = create_router(db);
+pub async fn start_server(
+    db: PgPool,
+    config: &Config,
+    addr: SocketAddr,
+) -> Result<(), std::io::Error> {
+    let app = create_router(db, config);
 
     info!("Starting HTTP server on {}", addr);
 
@@ -172,5 +177,11 @@ async fn shutdown_signal() {
         },
     }
 
-    warn!("Waiting up to 30 seconds for in-flight requests to complete");
+    warn!("Waiting for in-flight requests to complete");
+}
+
+/// Test helper to create router with default config.
+pub fn create_test_router(db: PgPool) -> Router {
+    let config = Config::default();
+    create_router(db, &config)
 }

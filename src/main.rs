@@ -3,11 +3,11 @@
 //! Main entry point for the Kapsel server. Initializes all subsystems
 //! and coordinates graceful startup and shutdown.
 
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use kapsel_api::Config;
 use kapsel_core::time::RealClock;
-use kapsel_delivery::worker::DeliveryConfig;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
 
@@ -17,12 +17,14 @@ async fn main() -> Result<()> {
 
     info!("Starting Kapsel webhook reliability service");
 
-    let config = Config::from_env()?;
+    let config = Config::load()?;
     info!(
         database_url = %config.database_url_masked(),
-        server_addr = %config.server_addr,
+        server_addr = %format!("{}:{}", config.host, config.port),
         max_connections = config.database_max_connections,
-        "Configuration loaded"
+        worker_count = config.worker_pool_size,
+        attestation_batch_size = config.attestation_batch_size,
+        "Configuration loaded from defaults → kapsel.toml → environment variables"
     );
 
     let db_pool = create_database_pool(&config).await?;
@@ -33,33 +35,34 @@ async fn main() -> Result<()> {
 
     let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
         db_pool.clone(),
-        config.delivery_config.clone(),
+        config.to_delivery_config(),
         std::sync::Arc::new(RealClock::new()),
     )?;
 
     delivery_engine.start().await.context("Failed to start delivery engine")?;
-    info!(worker_count = config.delivery_config.worker_count, "Delivery engine started");
+    info!(worker_count = config.worker_pool_size, "Delivery engine started");
 
     let server_handle = tokio::spawn({
         let db_pool = db_pool.clone();
-        let addr = config.server_addr;
+        let config = config.clone();
+        let addr = config.parse_server_addr().context("Invalid server address")?;
         async move {
-            if let Err(e) = kapsel_api::start_server(db_pool, addr).await {
+            if let Err(e) = kapsel_api::start_server(db_pool, &config, addr).await {
                 error!(error = %e, "Server failed");
             }
         }
     });
 
-    info!(addr = %config.server_addr, "Kapsel is ready to receive webhooks");
+    info!(addr = %format!("{}:{}", config.host, config.port), "Kapsel is ready to receive webhooks");
 
-    shutdown_signal().await;
+    shutdown_signal().await?;
     info!("Shutdown signal received, starting graceful shutdown");
 
     info!("Shutting down delivery engine");
     delivery_engine.shutdown().await.context("Delivery engine shutdown failed")?;
 
     tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+        _ = tokio::time::sleep(Duration::from_secs(config.delivery_timeout_seconds)) => {
             info!("Shutdown grace period expired");
         }
         _ = server_handle => {
@@ -101,15 +104,16 @@ async fn create_database_pool(config: &Config) -> Result<sqlx::PgPool> {
     loop {
         match PgPoolOptions::new()
             .max_connections(config.database_max_connections)
-            .min_connections(2)
-            .acquire_timeout(Duration::from_secs(10))
-            .idle_timeout(Duration::from_secs(600))
-            .max_lifetime(Duration::from_secs(1800))
+            .min_connections(config.database_min_connections)
+            .acquire_timeout(Duration::from_secs(config.database_connection_timeout))
+            .idle_timeout(Duration::from_secs(config.database_idle_timeout))
+            .max_lifetime(Duration::from_secs(config.database_max_lifetime))
             .connect(&config.database_url)
             .await
         {
             Ok(pool) => {
-                // Verify connection works
+                // Pool creation can succeed even if database is unreachable.
+                // Force actual connection attempt to detect issues early.
                 sqlx::query("SELECT 1")
                     .fetch_one(&pool)
                     .await
@@ -142,84 +146,32 @@ async fn run_migrations(pool: &sqlx::PgPool) -> Result<()> {
 }
 
 /// Waits for shutdown signal (CTRL+C or SIGTERM).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
-    };
+async fn shutdown_signal() -> Result<()> {
+    let ctrl_c =
+        async { tokio::signal::ctrl_c().await.context("Failed to install Ctrl+C handler") };
 
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
+            .context("Failed to install SIGTERM handler")?
             .recv()
             .await;
+        Ok::<_, anyhow::Error>(())
     };
 
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let terminate = async { Ok::<_, anyhow::Error>(()) };
 
     tokio::select! {
-        _ = ctrl_c => {
+        result = ctrl_c => {
+            result?;
             info!("Received CTRL+C signal");
         },
-        _ = terminate => {
+        result = terminate => {
+            result?;
             info!("Received SIGTERM signal");
         },
     }
-}
 
-/// Service configuration.
-struct Config {
-    /// PostgreSQL connection string
-    database_url: String,
-    /// Maximum database connections
-    database_max_connections: u32,
-    /// Server bind address
-    server_addr: SocketAddr,
-    /// Delivery engine configuration
-    delivery_config: DeliveryConfig,
-}
-
-impl Config {
-    /// Loads configuration from environment variables.
-    fn from_env() -> Result<Self> {
-        let database_url =
-            std::env::var("DATABASE_URL").context("DATABASE_URL environment variable not set")?;
-
-        let database_max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10);
-
-        let server_addr = std::env::var("SERVER_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
-            .parse()
-            .context("Invalid SERVER_ADDR format")?;
-
-        // Load delivery configuration from environment
-        let worker_count =
-            std::env::var("DELIVERY_WORKER_COUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-
-        let delivery_config = DeliveryConfig { worker_count, ..Default::default() };
-
-        Ok(Self { database_url, database_max_connections, server_addr, delivery_config })
-    }
-
-    /// Returns database URL with password masked for logging.
-    fn database_url_masked(&self) -> String {
-        if let Some(at_pos) = self.database_url.find('@') {
-            if let Some(password_start) = self.database_url[..at_pos].rfind(':') {
-                if let Some(user_start) = self.database_url[..password_start].rfind('/') {
-                    return format!(
-                        "{}//{}:***@{}",
-                        &self.database_url[..user_start],
-                        &self.database_url[user_start + 2..password_start],
-                        &self.database_url[at_pos + 1..]
-                    );
-                }
-            }
-        }
-        // Fallback: just return postgresql://***
-        "postgresql://***".to_string()
-    }
+    Ok(())
 }

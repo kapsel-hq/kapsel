@@ -4,7 +4,7 @@
 //! database connectivity checks, and response formatting.
 
 use axum::http::StatusCode;
-use kapsel_api::create_router;
+use kapsel_api::create_test_router;
 use kapsel_testing::TestEnv;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -16,7 +16,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn health_check_returns_success_when_healthy() {
     let env = TestEnv::new().await.expect("failed to create test environment");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()
         .method("GET")
@@ -55,7 +55,7 @@ async fn health_check_returns_success_when_healthy() {
 #[tokio::test]
 async fn health_check_includes_database_status() {
     let env = TestEnv::new().await.expect("failed to create test environment");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()
         .method("GET")
@@ -90,7 +90,7 @@ async fn health_check_includes_database_status() {
 #[tokio::test]
 async fn health_check_responds_quickly() {
     let env = TestEnv::new().await.expect("failed to create test environment");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let start_time = std::time::Instant::now();
 
@@ -127,7 +127,7 @@ async fn health_check_handles_concurrent_requests() {
     for _ in 0..10 {
         let pool = env.pool().clone();
         let handle = tokio::spawn(async move {
-            let app = create_router(pool);
+            let app = create_test_router(pool);
 
             let request = axum::http::Request::builder()
                 .method("GET")
@@ -160,7 +160,7 @@ async fn health_check_handles_http_methods() {
     let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Test GET method (should work)
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
     let request = axum::http::Request::builder()
         .method("GET")
         .uri("/health")
@@ -170,7 +170,7 @@ async fn health_check_handles_http_methods() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Test HEAD method (should work for health checks)
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
     let request = axum::http::Request::builder()
         .method("HEAD")
         .uri("/health")
@@ -183,7 +183,7 @@ async fn health_check_handles_http_methods() {
     );
 
     // Test POST method (should not be allowed)
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/health")
@@ -203,7 +203,7 @@ async fn health_check_response_format_is_consistent() {
 
     // Make multiple requests and verify consistent response format
     for _ in 0..5 {
-        let app = create_router(env.pool().clone());
+        let app = create_test_router(env.pool().clone());
 
         let request = axum::http::Request::builder()
             .method("GET")
@@ -251,7 +251,7 @@ async fn health_check_response_format_is_consistent() {
 #[tokio::test]
 async fn health_check_includes_timestamp() {
     let env = TestEnv::new().await.expect("failed to create test environment");
-    let app = create_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()
         .method("GET")
