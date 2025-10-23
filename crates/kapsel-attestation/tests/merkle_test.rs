@@ -5,7 +5,6 @@
 
 use chrono::{DateTime, Utc};
 use kapsel_attestation::{LeafData, MerkleService, SigningService};
-use kapsel_core::IdempotencyStrategy;
 use kapsel_testing::database::TestDatabase;
 use uuid::Uuid;
 
@@ -25,7 +24,7 @@ async fn create_test_delivery_attempt(
         .bind("enterprise")
         .execute(&mut **tx)
         .await
-        .unwrap();
+        .expect("Failed to insert test tenant");
 
     // Create endpoint
     sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url) VALUES ($1, $2, $3, $4)")
@@ -35,7 +34,7 @@ async fn create_test_delivery_attempt(
         .bind("https://example.com/webhook")
         .execute(&mut **tx)
         .await
-        .unwrap();
+        .expect("Failed to insert test endpoint");
 
     // Create webhook event
     sqlx::query(
@@ -47,15 +46,15 @@ async fn create_test_delivery_attempt(
     .bind(tenant_id)
     .bind(endpoint_id)
     .bind("test-source-event")
-    .bind(IdempotencyStrategy::Header)
+    .bind("header")
     .bind(serde_json::json!({}))
-    .bind(&b"test payload"[..])
+    .bind(b"test body")
     .bind("application/json")
-    .bind(12i32)
+    .bind(9i32)
     .bind("pending")
     .execute(&mut **tx)
     .await
-    .unwrap();
+    .expect("Failed to insert test webhook event");
 
     // Create delivery attempt
     sqlx::query(
@@ -69,10 +68,10 @@ async fn create_test_delivery_attempt(
     .bind("https://example.com/webhook")
     .bind(serde_json::json!({}))
     .bind("POST")
-    .bind(200i32)
+    .bind(Some(200i32))
     .execute(&mut **tx)
     .await
-    .unwrap();
+    .expect("Failed to insert test delivery attempt");
 
     tenant_id
 }
@@ -138,7 +137,7 @@ async fn merkle_service_commits_batch_atomically() {
         [0x11u8; 32],
         1,
         Some(201),
-        DateTime::from_timestamp(1640995200, 0).unwrap().with_timezone(&Utc),
+        DateTime::from_timestamp(1_640_995_200, 0).unwrap().with_timezone(&Utc),
     )
     .unwrap();
 
@@ -200,7 +199,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     let signing = signing.with_key_id(key_id);
     let mut service = MerkleService::new(db.pool().clone(), signing);
 
-    let timestamp = DateTime::from_timestamp(1640995200, 0).unwrap().with_timezone(&Utc);
+    let timestamp = DateTime::from_timestamp(1_640_995_200, 0).unwrap().with_timezone(&Utc);
 
     let leaf1 = LeafData::new(
         delivery_attempt_id_1,
@@ -412,8 +411,8 @@ async fn merkle_service_preserves_leaf_ordering() {
         let leaf = LeafData::new(
             *delivery_id,
             *event_id,
-            format!("https://example.com/webhook{}", i),
-            [i as u8; 32],
+            format!("https://example.com/webhook{i}"),
+            [u8::try_from(i).unwrap_or(0); 32],
             1,
             Some(200),
             timestamp,
@@ -438,6 +437,6 @@ async fn merkle_service_preserves_leaf_ordering() {
 
     for (i, (stored_id, tree_index)) in stored_leaves.iter().enumerate() {
         assert_eq!(*stored_id, delivery_attempt_ids[i]);
-        assert_eq!(*tree_index, i as i64);
+        assert_eq!(*tree_index, i64::try_from(i).unwrap_or(0));
     }
 }

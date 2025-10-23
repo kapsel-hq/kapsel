@@ -194,7 +194,7 @@ mod tests {
         let attempt_id = uuid::Uuid::new_v4();
         let event_id = uuid::Uuid::new_v4();
         let timestamp =
-            chrono::DateTime::from_timestamp(1234567890, 0).unwrap().with_timezone(&chrono::Utc);
+            chrono::DateTime::from_timestamp(1_234_567_890, 0).unwrap().with_timezone(&chrono::Utc);
 
         let leaf1 = LeafData::new(
             attempt_id,
@@ -239,7 +239,7 @@ mod tests {
         hasher.update(leaf.event_id.as_bytes());
 
         let url_bytes = leaf.endpoint_url.as_bytes();
-        hasher.update((url_bytes.len() as u32).to_be_bytes());
+        hasher.update(u32::try_from(url_bytes.len()).unwrap_or(0).to_be_bytes());
         hasher.update(url_bytes);
 
         hasher.update(leaf.payload_hash);
@@ -300,7 +300,7 @@ mod tests {
         );
 
         // Different response status
-        let mut different_leaf = base_leaf.clone();
+        let mut different_leaf = base_leaf;
         different_leaf.response_status = Some(500);
         assert_ne!(
             base_hash,

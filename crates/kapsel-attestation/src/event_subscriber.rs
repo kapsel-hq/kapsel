@@ -142,8 +142,10 @@ mod tests {
         subscriber.handle_event(DeliveryEvent::Succeeded(success_event)).await;
 
         // Verify attestation leaf was created
-        let service = merkle_service.read().await;
-        assert_eq!(service.pending_count(), 1);
+        {
+            let service = merkle_service.read().await;
+            assert_eq!(service.pending_count(), 1);
+        }
     }
 
     #[tokio::test]
@@ -158,8 +160,10 @@ mod tests {
         subscriber.handle_event(DeliveryEvent::Failed(failure_event)).await;
 
         // Verify no attestation leaf was created for failure
-        let service = merkle_service.read().await;
-        assert_eq!(service.pending_count(), 0);
+        {
+            let service = merkle_service.read().await;
+            assert_eq!(service.pending_count(), 0);
+        }
     }
 
     #[tokio::test]
@@ -177,8 +181,10 @@ mod tests {
         }
 
         // Verify all attestation leaves were created
-        let service = merkle_service.read().await;
-        assert_eq!(service.pending_count(), 3);
+        {
+            let service = merkle_service.read().await;
+            assert_eq!(service.pending_count(), 3);
+        }
     }
 
     fn create_test_delivery_success_event() -> DeliverySucceededEvent {

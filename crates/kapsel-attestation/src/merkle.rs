@@ -336,11 +336,12 @@ mod tests {
         let key_id = uuid::Uuid::new_v4();
 
         let tree_head =
-            SignedTreeHead::new(100, root_hash, 1640995200000, signature.clone(), key_id).unwrap();
+            SignedTreeHead::new(100, root_hash, 1_640_995_200_000, signature.clone(), key_id)
+                .unwrap();
 
         assert_eq!(tree_head.tree_size, 100);
         assert_eq!(tree_head.root_hash, root_hash);
-        assert_eq!(tree_head.timestamp_ms, 1640995200000);
+        assert_eq!(tree_head.timestamp_ms, 1_640_995_200_000);
         assert_eq!(tree_head.signature, signature);
         assert_eq!(tree_head.key_id, key_id);
     }
@@ -351,7 +352,8 @@ mod tests {
         let invalid_signature = vec![0x01u8; 63]; // Invalid length
         let key_id = uuid::Uuid::new_v4();
 
-        let result = SignedTreeHead::new(100, root_hash, 1640995200000, invalid_signature, key_id);
+        let result =
+            SignedTreeHead::new(100, root_hash, 1_640_995_200_000, invalid_signature, key_id);
 
         assert!(result.is_err(), "Should reject signature with wrong length");
     }
@@ -361,14 +363,14 @@ mod tests {
         let tree_head = SignedTreeHead::new(
             50,
             [0u8; 32],
-            1640995200000, // Jan 1, 2022 00:00:00 UTC
+            1_640_995_200_000, // Jan 1, 2022 00:00:00 UTC
             vec![0u8; 64],
             uuid::Uuid::new_v4(),
         )
         .unwrap();
 
         let timestamp = tree_head.timestamp();
-        assert_eq!(timestamp.timestamp(), 1640995200);
+        assert_eq!(timestamp.timestamp(), 1_640_995_200);
     }
 
     #[test]

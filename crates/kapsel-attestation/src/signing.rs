@@ -180,7 +180,7 @@ mod tests {
         let service = SigningService::ephemeral();
         let root_hash = [0u8; 32];
         let tree_size = 100i64;
-        let timestamp_ms = 1234567890000i64;
+        let timestamp_ms = 1_234_567_890_000_i64;
 
         let sig1 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
         let sig2 = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
@@ -194,7 +194,7 @@ mod tests {
         let service = SigningService::ephemeral();
         let root_hash = [1u8; 32];
         let tree_size = 42i64;
-        let timestamp_ms = 9876543210000i64;
+        let timestamp_ms = 9_876_543_210_000_i64;
 
         let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
         let is_valid =
@@ -208,7 +208,7 @@ mod tests {
         let service = SigningService::ephemeral();
         let root_hash = [2u8; 32];
         let tree_size = 100i64;
-        let timestamp_ms = 1111111111111i64;
+        let timestamp_ms = 1_111_111_111_111_i64;
 
         let signature = service.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 

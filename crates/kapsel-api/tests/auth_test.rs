@@ -53,7 +53,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
     // Make authenticated request
     let request = Request::builder()
         .uri("/test")
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .body(Body::empty())
         .expect("request build");
 
@@ -169,7 +169,7 @@ async fn authenticate_request_fails_with_revoked_key() {
 
     let request = Request::builder()
         .uri("/test")
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .body(Body::empty())
         .expect("request build");
 
@@ -214,7 +214,7 @@ async fn authenticate_request_fails_with_expired_key() {
 
     let request = Request::builder()
         .uri("/test")
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .body(Body::empty())
         .expect("request build");
 
@@ -267,7 +267,7 @@ async fn authenticate_request_updates_last_used_timestamp() {
     // Make authenticated request
     let request = Request::builder()
         .uri("/test")
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .body(Body::empty())
         .expect("request build");
 

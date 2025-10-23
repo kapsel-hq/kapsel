@@ -239,7 +239,7 @@ mod tests {
             AttestationError::InvalidKeyFormat { message } => {
                 assert_eq!(message, "wrong length");
             },
-            _ => panic!("Expected InvalidKeyFormat variant"),
+            _ => unreachable!("Expected InvalidKeyFormat variant"),
         }
 
         let err = AttestationError::proof_verification_failed("hash mismatch");
@@ -247,7 +247,7 @@ mod tests {
             AttestationError::ProofVerificationFailed { reason } => {
                 assert_eq!(reason, "hash mismatch");
             },
-            _ => panic!("Expected ProofVerificationFailed variant"),
+            _ => unreachable!("Expected ProofVerificationFailed variant"),
         }
     }
 }

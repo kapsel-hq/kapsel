@@ -44,8 +44,7 @@ async fn health_check_returns_success_when_healthy() {
     let status = health_response["status"].as_str().expect("status should be a string");
     assert!(
         status == "healthy" || status == "ok" || status == "UP",
-        "Status should indicate healthy state, got: {}",
-        status
+        "Status should indicate healthy state, got: {status}"
     );
 }
 
@@ -110,8 +109,7 @@ async fn health_check_responds_quickly() {
     // Health check should respond within 5 seconds (generous for test environments)
     assert!(
         duration < std::time::Duration::from_secs(5),
-        "Health check took too long: {:?}",
-        duration
+        "Health check took too long: {duration:?}"
     );
 }
 

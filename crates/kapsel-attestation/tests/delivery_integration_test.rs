@@ -189,7 +189,7 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
-            .source_event(format!("concurrent-{}", i))
+            .source_event(format!("concurrent-{i}"))
             .json_body(&json!({"batch": i, "data": "concurrent test"}))
             .build();
 
@@ -228,7 +228,7 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
-            .source_event(format!("batch-commitment-{}", i))
+            .source_event(format!("batch-commitment-{i}"))
             .json_body(&json!({"batch_item": i}))
             .build();
 
@@ -251,7 +251,7 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
         .await
 }
 
-async fn create_test_attestation_service(env: &mut TestEnv) -> Result<MerkleService> {
+async fn create_test_attestation_service(env: &TestEnv) -> Result<MerkleService> {
     let signing_service = SigningService::ephemeral();
     let public_key = signing_service.public_key_as_bytes();
 
