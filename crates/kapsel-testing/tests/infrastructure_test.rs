@@ -278,3 +278,36 @@ async fn complete_webhook_reliability_workflow() {
     tracing::info!("   Total processing time: {:?}", total_time);
     tracing::info!("   Webhook delivered successfully with exponential backoff retry");
 }
+
+/// Example test demonstrating transaction-based isolation pattern.
+///
+/// This test shows how to use database transactions for perfect test isolation.
+/// The transaction automatically rolls back when dropped, cleaning up all test
+/// data.
+#[tokio::test]
+async fn example_transaction_based_test() {
+    let env = kapsel_testing::TestEnv::new().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
+
+    // Test data created in transaction
+    let tenant_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+        .bind(tenant_id)
+        .bind("example-tenant")
+        .bind("free")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // Verify data exists within transaction
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 1);
+
+    // Explicit rollback to prevent connection leak
+    tx.rollback().await.unwrap();
+}

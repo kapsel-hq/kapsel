@@ -5,4 +5,26 @@ expression: snapshot
 Events Table Snapshot
 ====================
 
-No events found.
+Event 1:
+  source_event_id: scenario-snap-001
+  status: pending
+  failure_count: 0
+  attempt_count: 1
+  payload_size: 17
+  content_type: application/json
+  id: [UUID]
+  tenant_id: [UUID]
+  endpoint_id: [UUID]
+  received_at: [TIMESTAMP]
+
+Event 2:
+  source_event_id: invariant-test-1
+  status: pending
+  failure_count: 0
+  attempt_count: 1
+  payload_size: 20
+  content_type: application/json
+  id: [UUID]
+  tenant_id: [UUID]
+  endpoint_id: [UUID]
+  received_at: [TIMESTAMP]
