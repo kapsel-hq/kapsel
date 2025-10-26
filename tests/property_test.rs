@@ -531,14 +531,20 @@ fn property_webhook_delivery_retry_scenarios() {
     runner
         .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
-                let mut env = TestEnv::new().await.unwrap();
+                let mut env = TestEnv::new_isolated().await.unwrap();
+                let mut tx = env.pool().begin().await.unwrap();
 
-                let tenant_name = format!("prop-test-tenant-{}", uuid::Uuid::new_v4());
-                let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
+                let tenant_name = "prop-test-tenant";
+                let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
                 let endpoint_id = env
-                    .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                    .create_endpoint_tx(
+                        &mut *tx,
+                        tenant_id,
+                        &env.http_mock.endpoint_url("/webhook"),
+                    )
                     .await
                     .unwrap();
+                tx.commit().await.unwrap();
 
                 // Dynamically build mock response sequence based on generated failure count
                 let mut mock_sequence = env.http_mock.mock_sequence();
@@ -609,14 +615,20 @@ fn property_idempotency_under_duress() {
     runner
         .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
-                let mut env = TestEnv::new().await.unwrap();
+                let mut env = TestEnv::new_isolated().await.unwrap();
+                let mut tx = env.pool().begin().await.unwrap();
 
-                let tenant_name = format!("idempotency-tenant-{}", uuid::Uuid::new_v4());
-                let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
+                let tenant_name = "idempotency-tenant";
+                let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
                 let endpoint_id = env
-                    .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                    .create_endpoint_tx(
+                        &mut *tx,
+                        tenant_id,
+                        &env.http_mock.endpoint_url("/webhook"),
+                    )
                     .await
                     .unwrap();
+                tx.commit().await.unwrap();
 
                 // Setup mock responses - initial failures then success
                 let mut mock_sequence = env.http_mock.mock_sequence();
@@ -712,14 +724,20 @@ fn property_circuit_breaker_resilience() {
             ),
             |response_sequence| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new().await.unwrap();
+                    let mut env = TestEnv::new_isolated().await.unwrap();
+                    let mut tx = env.pool().begin().await.unwrap();
 
-                    let tenant_name = format!("circuit-breaker-tenant-{}", uuid::Uuid::new_v4());
-                    let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
+                    let tenant_name = "circuit-breaker-tenant";
+                    let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
                     let endpoint_id = env
-                        .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                        .create_endpoint_tx(
+                            &mut *tx,
+                            tenant_id,
+                            &env.http_mock.endpoint_url("/webhook"),
+                        )
                         .await
                         .unwrap();
+                    tx.commit().await.unwrap();
 
                     // Configure mock with the generated response sequence
                     let mut mock_sequence = env.http_mock.mock_sequence();
@@ -824,14 +842,13 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new().await.unwrap();
+                    let env = TestEnv::new_isolated().await.unwrap();
+                    let mut tx = env.pool().begin().await.unwrap();
 
-                    let tenant_name = format!("fifo-tenant-{}", uuid::Uuid::new_v4());
-                    let tenant_id = env.create_tenant(&tenant_name).await.unwrap();
-                    let endpoint_id = env
-                        .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
-                        .await
-                        .unwrap();
+                    let tenant_name = "fifo-tenant";
+                    let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
+                    let endpoint_id =
+                        env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await.unwrap();
 
                     // Setup mock responses - some may fail initially
                     let mut mock_sequence = env.http_mock.mock_sequence();
@@ -842,7 +859,8 @@ fn property_fifo_processing_order() {
                                 .respond_with(503, "Temporary failure")
                                 .respond_with_json(200, &json!({"ok": true}));
                         } else {
-                            mock_sequence = mock_sequence.respond_with_json(200, &json!({"ok": true}));
+                            mock_sequence =
+                                mock_sequence.respond_with_json(200, &json!({"ok": true}));
                         }
                     }
                     mock_sequence.build().await;
@@ -857,18 +875,23 @@ fn property_fifo_processing_order() {
                             .json_body(&json!({"sequence": i}))
                             .build();
 
-                        let event_id = env.ingest_webhook(&webhook).await.unwrap();
+                        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
                         event_ids.push(event_id);
+
 
                         // Ensure different received_at timestamps
                         env.advance_time(Duration::from_millis(10));
+
                     }
 
-                    // Process webhooks with single delivery cycle first
-                    let scenario = ScenarioBuilder::new("FIFO processing order test")
-                        .run_delivery_cycle(); // Single cycle to capture first attempts
+                    // Commit transaction to make data available for delivery testing
+                    tx.commit().await.unwrap();
 
-                    scenario.run(&mut env).await.unwrap();
+                    // Process webhooks with single delivery cycle first
+                    env.run_delivery_cycle().await.unwrap();
+
+
+
 
                     // Verify FIFO processing by checking first attempt order
                     // Get the first delivery attempt for each event, ordered by attempt time
@@ -887,6 +910,7 @@ fn property_fifo_processing_order() {
                     .fetch_all(env.pool())
                     .await
                     .unwrap();
+
 
                     // Verify that first attempts happened in FIFO order
                     for (attempt_idx, (event_id, _)) in first_attempts.iter().enumerate() {
