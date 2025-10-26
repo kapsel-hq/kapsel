@@ -227,13 +227,11 @@ async fn multicast_scales_with_subscriber_count() {
 
         // Add subscribers
         let handlers: Vec<Arc<RealisticEventHandler>> = (0..count)
-            .map(|i| {
-                Arc::new(RealisticEventHandler::new(&format!("handler-{}", i), Duration::ZERO))
-            })
+            .map(|i| Arc::new(RealisticEventHandler::new(&format!("handler-{i}"), Duration::ZERO)))
             .collect();
 
         for (i, handler) in handlers.iter().enumerate() {
-            tester.add_named_subscriber(&format!("handler-{}", i), handler.clone());
+            tester.add_named_subscriber(format!("handler-{i}"), handler.clone());
         }
 
         assert_eq!(tester.subscriber_count(), count);

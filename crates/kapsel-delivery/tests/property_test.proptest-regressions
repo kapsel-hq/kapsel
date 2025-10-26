@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f0e5cf3067f97d3f9bca9e5be6820d33f1554f896c9b9d951515ca6ecce9c956 # shrinks to status_code = 425, timeout_seconds = 0, message = "@&?ﬥ\\ὓuU🣁Ⱥ᥉:/<P", retry_after = 67763
+cc e07ffc93258280086e64682ffe5c1e884b7788abe636a8efe2769446d94af937 # shrinks to status_code = 408, timeout_seconds = 1

@@ -3,6 +3,10 @@
 //! Tests webhook delivery client behavior with timeout handling,
 //! error categorization, and response processing.
 
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
+
 use std::{collections::HashMap, time::Duration};
 
 use bytes::Bytes;
@@ -18,7 +22,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn delivers_webhook_successfully() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("Failed to create test environment");
 
     // Setup mock server to respond with success
     env.http_mock
@@ -81,8 +85,8 @@ async fn handles_connection_timeout() {
             // Expected - delivery timed out
         },
         Ok(Ok(_)) => panic!("Expected timeout error, got success"),
-        Ok(Err(e)) => panic!("Expected timeout error, got: {}", e),
-        Err(_) => panic!("Test itself timed out"),
+        Ok(Err(e)) => panic!("Expected timeout error, got: {e}"),
+        Err(e) => panic!("Test itself timed out: {e}"),
     }
 }
 
@@ -178,7 +182,7 @@ async fn handles_connection_refused() {
             // Expected - connection refused
         },
         Ok(_) => panic!("Expected connection error, got success"),
-        Err(e) => panic!("Expected connection error, got: {}", e),
+        Err(e) => panic!("Expected connection error, got: {e}"),
     }
 }
 
