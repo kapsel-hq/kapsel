@@ -35,7 +35,7 @@ impl TestEnv {
         let unique_name = format!("{}-{}-{}", name, self.test_run_id, tenant_id.simple());
 
         sqlx::query(
-            "INSERT INTO tenants (id, name, plan, created_at, updated_at)
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at)
              VALUES ($1, $2, $3, NOW(), NOW())",
         )
         .bind(tenant_id)

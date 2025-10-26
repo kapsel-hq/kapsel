@@ -14,7 +14,8 @@ use axum::{
 use bytes::Bytes;
 use chrono::Utc;
 use kapsel_core::{
-    EndpointId, EventId, EventStatus, IdempotencyStrategy, KapselError, Result, TenantId,
+    error::CoreError, EndpointId, EventId, EventStatus, IdempotencyStrategy, KapselError, Result,
+    TenantId,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -232,7 +233,7 @@ async fn fetch_endpoint(db: &PgPool, endpoint_id: EndpointId) -> Result<TenantId
 
     match row {
         Some((tenant_id,)) => Ok(TenantId::from(tenant_id)),
-        None => Err(KapselError::InvalidEndpoint { id: endpoint_id }),
+        None => Err(CoreError::NotFound(format!("endpoint {} not found", endpoint_id.0))),
     }
 }
 
@@ -334,8 +335,7 @@ async fn validate_webhook_signature(
     )
     .bind(endpoint_id.0)
     .fetch_one(db)
-    .await
-    .map_err(KapselError::Database)?;
+    .await?;
 
     let (signing_secret, signature_header) = signature_config;
 

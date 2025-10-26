@@ -10,6 +10,7 @@
 pub mod error;
 pub mod events;
 pub mod models;
+pub mod storage;
 
 pub mod time;
 
