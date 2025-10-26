@@ -21,12 +21,6 @@ use uuid::Uuid;
 /// Template database name used for fast database creation.
 const TEMPLATE_DB_NAME: &str = "kapsel_test_template";
 
-/// Template version to detect when recreation is needed.
-const TEMPLATE_VERSION: &str = "v1";
-
-/// Maximum age for test databases before they're considered stale (1 hour).
-const STALE_DATABASE_TIMEOUT_SECS: u64 = 3600;
-
 /// Static database pool shared across all tests in a process.
 static SHARED_POOL: tokio::sync::OnceCell<PgPool> = tokio::sync::OnceCell::const_new();
 
@@ -211,12 +205,12 @@ async fn cleanup_stale_databases() -> Result<()> {
 
     // Find all test databases - using simpler query without timestamp
     let test_databases: Vec<(String,)> = sqlx::query_as(
-        r#"
+        r"
         SELECT datname
         FROM pg_database
         WHERE datname LIKE 'test_%'
         AND datname != $1
-        "#,
+        ",
     )
     .bind(TEMPLATE_DB_NAME)
     .fetch_all(&admin_pool)
