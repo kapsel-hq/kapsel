@@ -122,7 +122,7 @@ pub async fn health_check(State(db): State<PgPool>) -> Response {
 ///
 /// Executes a lightweight query to verify the database connection
 /// is working properly. Does not perform expensive operations.
-async fn check_database_health(db: &PgPool) -> DatabaseHealth {
+pub async fn check_database_health(db: &PgPool) -> DatabaseHealth {
     let _start_time = std::time::Instant::now();
 
     match sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(db).await {
@@ -148,15 +148,19 @@ async fn check_database_health(db: &PgPool) -> DatabaseHealth {
 }
 
 /// Internal structure for database health check results.
-struct DatabaseHealth {
-    status: ComponentStatus,
-    message: Option<String>,
+pub struct DatabaseHealth {
+    /// Current status of the database component
+    pub status: ComponentStatus,
+    /// Optional status message with additional details
+    pub message: Option<String>,
 }
 
 /// Readiness check endpoint for Kubernetes probes.
 ///
 /// Similar to health check but focuses on whether the service is ready
-/// to accept traffic. Currently identical to health check but could
+/// to accept traffic.
+///
+/// TODO: Currently identical to health check but could
 /// include additional startup-specific checks in the future.
 #[instrument(name = "readiness_check", skip(db))]
 pub async fn readiness_check(State(db): State<PgPool>) -> Response {
@@ -183,29 +187,7 @@ pub async fn liveness_check() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use kapsel_testing::TestEnv;
-
     use super::*;
-
-    #[tokio::test]
-    async fn database_health_check_succeeds_with_valid_connection() {
-        let env = TestEnv::new().await.expect("test env setup");
-
-        let health = check_database_health(env.pool()).await;
-
-        assert!(matches!(health.status, ComponentStatus::Up));
-        assert!(health.message.is_none());
-    }
-
-    #[tokio::test]
-    async fn health_check_returns_structured_response() {
-        let env = TestEnv::new().await.expect("test env setup");
-
-        let response = health_check(State(env.pool().clone())).await;
-
-        // Should return OK status for healthy database
-        assert_eq!(response.status(), StatusCode::OK);
-    }
 
     #[tokio::test]
     async fn liveness_check_always_succeeds() {

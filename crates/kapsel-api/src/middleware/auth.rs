@@ -100,6 +100,7 @@ mod tests {
 
     use super::*;
 
+    #[allow(clippy::panic)] // panic is acceptable in test setup
     #[test]
     fn extract_api_key_from_bearer_token() {
         let mut headers = HeaderMap::new();
@@ -114,36 +115,5 @@ mod tests {
         let headers = HeaderMap::new();
         let result = extract_api_key(&headers);
         assert_eq!(result, None);
-    }
-
-    #[tokio::test]
-    async fn authenticate_request_succeeds_with_valid_key() {
-        use kapsel_testing::TestEnv;
-
-        let env = TestEnv::new().await.expect("test env setup");
-
-        let tenant_id = Uuid::new_v4();
-        let api_key = "test-key-abc123";
-        let key_hash = sha256::digest(api_key.as_bytes());
-
-        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-            .bind(tenant_id)
-            .bind("test-tenant")
-            .bind("free")
-            .execute(env.pool())
-            .await
-            .expect("insert tenant");
-
-        sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-            .bind(tenant_id)
-            .bind(&key_hash)
-            .bind("test-key")
-            .execute(env.pool())
-            .await
-            .expect("insert api key");
-
-        let result = validate_api_key(env.pool(), api_key).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), tenant_id);
     }
 }
