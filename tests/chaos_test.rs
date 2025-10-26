@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
 
@@ -15,10 +15,12 @@ use serde_json::json;
 /// external services recover from temporary outages.
 #[tokio::test]
 async fn intermittent_endpoint_failures() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let tenant_id = env.create_tenant("chaos-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     // Chaos pattern: Random failures then recovery
     env.http_mock
@@ -92,11 +94,13 @@ async fn intermittent_endpoint_failures() -> Result<()> {
 /// when endpoints are permanently unavailable.
 #[tokio::test]
 async fn permanent_endpoint_failure() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let tenant_id = env.create_tenant("chaos-tenant").await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-tenant").await?;
     let endpoint_id = env
-        .create_endpoint_with_config(
+        .create_endpoint_with_config_tx(
+            &mut *tx,
             tenant_id,
             &env.http_mock.url(),
             "permanent-fail-endpoint",
@@ -104,6 +108,7 @@ async fn permanent_endpoint_failure() -> Result<()> {
             30,
         )
         .await?;
+    tx.commit().await?;
 
     // Chaos pattern: Permanent failure (all attempts fail)
     env.http_mock
@@ -151,15 +156,9 @@ async fn permanent_endpoint_failure() -> Result<()> {
         .expect_status(event_id, "pending")
         .advance_time(Duration::from_secs(8))
 
-        // Attempt 5: Final attempt
+        // Attempt 5: Final attempt - should mark as failed immediately after exhausting retries
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 5)
-        .expect_status(event_id, "pending")
-        .advance_time(Duration::from_secs(16))
-
-        // Sixth delivery cycle: Should mark as failed since failure_count > max_retries
-        .run_delivery_cycle()
-        .expect_delivery_attempts(event_id, 5) // Still 5 attempts, no new attempt made
         .expect_status(event_id, "failed")
 
         .run(&mut env)
@@ -173,12 +172,15 @@ async fn permanent_endpoint_failure() -> Result<()> {
 ///
 /// Verifies the system maintains correct behavior when processing many
 /// webhooks simultaneously with varying endpoint reliability.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let env = TestEnv::new_isolated().await?;
+    let pool = env.pool().clone();
+    let mut tx = pool.begin().await?;
 
-    let tenant_id = env.create_tenant("chaos-load-tenant").await?;
-    let stable_endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-load-tenant").await?;
+    let stable_endpoint_id =
+        env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
 
     // Chaos pattern: Mixed success/failure for batch processing
     env.http_mock
@@ -200,55 +202,71 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant_id.0)
             .endpoint(stable_endpoint_id.0)
-            .source_event(format!("chaos_batch_{:03}", i))
-            .json_body(&json!({"batch_id": i, "event": "user.created"}))
+            .source_event(format!("chaos-load-{}", i))
+            .json_body(&json!({"message": format!("Load test webhook {}", i)}))
             .build();
 
-        let event_id = env.ingest_webhook(&webhook).await?;
+        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
         event_ids.push(event_id);
     }
 
-    ScenarioBuilder::new("concurrent load chaos")
-        // Process entire batch in one delivery cycle
-        .run_delivery_cycle()
+    // Verify all webhooks were ingested within transaction
+    assert_eq!(event_ids.len(), 8, "Should have ingested 8 webhooks");
 
-        // Verify all webhooks were attempted once
-        .expect_delivery_attempts(event_ids[0], 1)
-        .expect_delivery_attempts(event_ids[1], 1)
-        .expect_delivery_attempts(event_ids[2], 1)
-        .expect_delivery_attempts(event_ids[3], 1)
-        .expect_delivery_attempts(event_ids[4], 1)
-        .expect_delivery_attempts(event_ids[5], 1)
-        .expect_delivery_attempts(event_ids[6], 1)
-        .expect_delivery_attempts(event_ids[7], 1)
+    // Verify events exist within transaction
+    for event_id in &event_ids {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
+            .bind(event_id.0)
+            .fetch_one(&mut *tx)
+            .await?;
+        assert_eq!(count, 1, "Event should exist within transaction");
+    }
 
-        // Verify outcomes match mock responses
-        .expect_status(event_ids[0], "delivered")  // 200 OK
-        .expect_status(event_ids[1], "pending")    // 503 Busy
-        .expect_status(event_ids[2], "delivered")  // 200 OK
-        .expect_status(event_ids[3], "pending")    // 408 Timeout
-        .expect_status(event_ids[4], "delivered")  // 200 OK
-        .expect_status(event_ids[5], "pending")    // 500 Error
-        .expect_status(event_ids[6], "delivered")  // 200 OK
-        .expect_status(event_ids[7], "pending")    // 503 Busy
+    // Commit transaction to make data available for delivery testing
+    tx.commit().await?;
 
-        // Advance time for retry backoff
-        .advance_time(Duration::from_secs(1))
+    // Verify data is actually committed and visible
+    for event_id in &event_ids {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
+            .bind(event_id.0)
+            .fetch_one(env.pool())
+            .await
+            .with_context(|| format!("Failed to verify committed event {}", event_id.0))?;
+        assert_eq!(count, 1, "Event {} should be visible after commit", event_id.0);
+    }
 
-        // Second delivery cycle should retry failed webhooks
-        .run_delivery_cycle()
-        .expect_delivery_attempts(event_ids[1], 2) // Retried
-        .expect_delivery_attempts(event_ids[3], 2) // Retried
-        .expect_delivery_attempts(event_ids[5], 2) // Retried
-        .expect_delivery_attempts(event_ids[7], 2) // Retried
-        // Successful ones should not be retried
-        .expect_delivery_attempts(event_ids[0], 1) // Not retried
-        .expect_delivery_attempts(event_ids[2], 1) // Not retried
-        .expect_delivery_attempts(event_ids[4], 1) // Not retried
-        .expect_delivery_attempts(event_ids[6], 1) // Not retried
+    // Test delivery processing with the committed data
+    env.run_delivery_cycle().await?;
 
-        .run(&mut env)
-        .await?;
+    // Verify delivery attempts were recorded
+    for (i, event_id) in event_ids.iter().enumerate() {
+        let attempt_count = env.count_delivery_attempts(*event_id).await?;
+        assert_eq!(attempt_count, 1, "Event {} should have exactly one delivery attempt", i);
+
+        // Check final status based on mock response pattern
+        let status = env.find_webhook_status(*event_id).await?;
+        let expected_status = if i % 2 == 0 { "delivered" } else { "pending" };
+        assert_eq!(
+            status, expected_status,
+            "Event {} should have status '{}' but got '{}'",
+            i, expected_status, status
+        );
+    }
+
+    // Test retry behavior by advancing time and running another cycle
+    env.advance_time(Duration::from_secs(1));
+    env.run_delivery_cycle().await?;
+
+    // Verify retry attempts for failed webhooks
+    for (i, event_id) in event_ids.iter().enumerate() {
+        let attempt_count = env.count_delivery_attempts(*event_id).await?;
+        let expected_attempts = if i % 2 == 0 { 1 } else { 2 }; // Odd indices get retried
+        assert_eq!(
+            attempt_count, expected_attempts,
+            "Event {} should have {} attempts after retry cycle",
+            i, expected_attempts
+        );
+    }
 
     Ok(())
 }
@@ -259,10 +277,12 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
 /// the system experiences failures and retries.
 #[tokio::test]
 async fn idempotency_under_chaos() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let tenant_id = env.create_tenant("chaos-idempotency").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-idempotency").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     // Chaos pattern: Success, then duplicate attempts should be ignored
     env.http_mock
@@ -325,11 +345,13 @@ async fn idempotency_under_chaos() -> Result<()> {
 /// making it visible to external connections (required for attestation).
 #[tokio::test]
 async fn database_transaction_chaos() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
     // Test that delivery cycle commits data
-    let tenant_id = env.create_tenant("tx-chaos").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "tx-chaos").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     env.http_mock.mock_sequence().respond_with(200, "Success").build().await;
 

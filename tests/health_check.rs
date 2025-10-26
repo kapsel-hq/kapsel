@@ -119,7 +119,10 @@ async fn database_transaction_rollback_works() {
     assert_eq!(initial_count, 0, "Tenant should not exist initially");
 
     // Test that a committed operation does persist
-    let created_tenant_id = env.create_tenant("Test Tenant").await.expect("Insert should work");
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let created_tenant_id =
+        env.create_tenant_tx(&mut *tx, "Test Tenant").await.expect("Insert should work");
+    tx.commit().await.expect("commit transaction");
     let _tenant_id_str = created_tenant_id.0.to_string();
 
     let final_count =
