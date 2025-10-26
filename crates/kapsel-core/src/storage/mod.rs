@@ -12,8 +12,12 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+pub mod api_keys;
+pub mod attestation_keys;
 pub mod delivery_attempts;
 pub mod endpoints;
+pub mod merkle_leaves;
+pub mod signed_tree_heads;
 pub mod tenants;
 pub mod webhook_events;
 
@@ -37,6 +41,18 @@ pub struct Storage {
 
     /// Repository for tenant management.
     pub tenants: Arc<tenants::Repository>,
+
+    /// Repository for API key management.
+    pub api_keys: Arc<api_keys::Repository>,
+
+    /// Repository for attestation key management.
+    pub attestation_keys: Arc<attestation_keys::Repository>,
+
+    /// Repository for merkle leaf operations.
+    pub merkle_leaves: Arc<merkle_leaves::Repository>,
+
+    /// Repository for signed tree head operations.
+    pub signed_tree_heads: Arc<signed_tree_heads::Repository>,
 }
 
 impl Storage {
@@ -51,7 +67,11 @@ impl Storage {
             webhook_events: Arc::new(webhook_events::Repository::new(pool.clone())),
             delivery_attempts: Arc::new(delivery_attempts::Repository::new(pool.clone())),
             endpoints: Arc::new(endpoints::Repository::new(pool.clone())),
-            tenants: Arc::new(tenants::Repository::new(pool)),
+            tenants: Arc::new(tenants::Repository::new(pool.clone())),
+            api_keys: Arc::new(api_keys::Repository::new(pool.clone())),
+            attestation_keys: Arc::new(attestation_keys::Repository::new(pool.clone())),
+            merkle_leaves: Arc::new(merkle_leaves::Repository::new(pool.clone())),
+            signed_tree_heads: Arc::new(signed_tree_heads::Repository::new(pool)),
         }
     }
 

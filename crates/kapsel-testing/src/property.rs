@@ -249,7 +249,7 @@ impl PropertyTestState {
 
         // Ensure tenant exists
         if !self.tenants.contains_key(tenant_name) {
-            let tenant_id = self.env.create_tenant_tx(&mut *tx, tenant_name).await?;
+            let tenant_id = self.env.create_tenant_tx(&mut tx, tenant_name).await?;
             self.tenants.insert(tenant_name.to_string(), tenant_id);
         }
 
@@ -258,7 +258,7 @@ impl PropertyTestState {
             let endpoint_id = self
                 .env
                 .create_endpoint_with_config_tx(
-                    &mut *tx,
+                    &mut tx,
                     self.tenants[tenant_name],
                     &format!("http://example.com/{endpoint_name}"),
                     endpoint_name,

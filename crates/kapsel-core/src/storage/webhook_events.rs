@@ -461,6 +461,71 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts all webhook events across all tenants.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_all(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM webhook_events
+            "#,
+        )
+        .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts webhook events in terminal states (delivered, failed).
+    /// Counts events with terminal status (delivered or failed).
+    ///
+    /// Terminal events are no longer processed by the delivery system.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_terminal(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM webhook_events
+            WHERE status IN ('delivered', 'failed')
+            "#,
+        )
+        .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts events for a specific tenant and endpoint.
+    ///
+    /// This provides tenant-scoped counting with endpoint specificity,
+    /// ensuring proper isolation between tenants.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_tenant_and_endpoint(
+        &self,
+        tenant_id: TenantId,
+        endpoint_id: EndpointId,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM webhook_events
+            WHERE tenant_id = $1 AND endpoint_id = $2
+            "#,
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint_id.0)
+        .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
     /// Deletes all events for a tenant.
     ///
     /// Used for tenant cleanup or GDPR compliance. This operation is
@@ -636,6 +701,53 @@ impl Repository {
         .await?;
 
         Ok(())
+    }
+
+    /// Lists all webhook events ordered by received timestamp.
+    ///
+    /// Used for test verification and debugging. Returns events in
+    /// chronological order for consistent test results.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn list_all(&self) -> Result<Vec<WebhookEvent>> {
+        let events = sqlx::query_as::<_, WebhookEvent>(
+            r#"
+            SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                   status, failure_count, last_attempt_at, next_retry_at,
+                   headers, body, content_type, received_at, delivered_at, failed_at,
+                   payload_size, signature_valid, signature_error
+            FROM webhook_events
+            ORDER BY received_at ASC
+            "#,
+        )
+        .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(events)
+    }
+
+    /// Checks if a webhook event exists by ID.
+    ///
+    /// Used for test verification instead of COUNT queries.
+    /// More efficient than fetching the full event when only
+    /// existence checking is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists(&self, event_id: EventId) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(SELECT 1 FROM webhook_events WHERE id = $1)
+            "#,
+        )
+        .bind(event_id.0)
+        .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(exists)
     }
 }
 

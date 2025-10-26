@@ -103,9 +103,11 @@ impl WorkerPool {
         }
 
         for worker_id in 0..self.config.worker_count {
-            let worker = DeliveryWorker::with_event_handler(
+            let storage = Arc::new(kapsel_core::storage::Storage::new(self.pool.clone()));
+            let worker = DeliveryWorker::new(
                 worker_id,
                 self.pool.clone(),
+                storage,
                 self.config.clone(),
                 self.client.clone(),
                 self.circuit_manager.clone(),

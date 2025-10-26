@@ -3,18 +3,27 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use sqlx::Row;
+use chrono::Utc;
+use kapsel_core::{
+    models::{
+        BackoffStrategy, CircuitState, Endpoint, EventStatus, IdempotencyStrategy, SignatureConfig,
+        Tenant, WebhookEvent,
+    },
+    storage::api_keys::ApiKey,
+};
+use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use crate::{EndpointId, EventId, TenantId, TestEnv, TestWebhook, WebhookEventData};
 
 impl TestEnv {
     /// Create tenant within a transaction.
-    pub async fn create_tenant_tx<'a, E>(&self, executor: E, name: &str) -> Result<TenantId>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
-        self.create_tenant_with_plan_tx(executor, name, "enterprise").await
+    pub async fn create_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        name: &str,
+    ) -> Result<TenantId> {
+        self.create_tenant_with_plan_tx(tx, name, "free").await
     }
 
     /// Create tenant with specific plan within a transaction.
@@ -22,105 +31,126 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database insert fails.
-    pub async fn create_tenant_with_plan_tx<'a, E>(
+    /// Create tenant with plan within a transaction.
+    pub async fn create_tenant_with_plan_tx(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         name: &str,
         plan: &str,
-    ) -> Result<TenantId>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
-        let tenant_id = Uuid::new_v4();
-        let unique_name = format!("{}-{}-{}", name, self.test_run_id, tenant_id.simple());
+    ) -> Result<TenantId> {
+        let tenant_id = TenantId::new();
+        let unique_name = format!("{}-{}-{}", name, self.test_run_id, tenant_id.0.simple());
+        let now = Utc::now();
 
-        sqlx::query(
-            "INSERT INTO tenants (id, name, tier, created_at, updated_at)
-             VALUES ($1, $2, $3, NOW(), NOW())",
-        )
-        .bind(tenant_id)
-        .bind(unique_name)
-        .bind(plan)
-        .execute(executor)
-        .await
-        .context("failed to create test tenant")?;
+        let tenant = Tenant {
+            id: tenant_id,
+            name: unique_name,
+            tier: plan.to_string(),
+            max_events_per_month: 100000, // Default for testing
+            max_endpoints: 100,           // Default for testing
+            events_this_month: 0,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            stripe_customer_id: None,
+            stripe_subscription_id: None,
+        };
 
-        Ok(TenantId(tenant_id))
+        self.storage()
+            .tenants
+            .create_in_tx(tx, &tenant)
+            .await
+            .context("failed to create test tenant")?;
+
+        Ok(tenant_id)
     }
 
     /// Create endpoint within a transaction.
-    pub async fn create_endpoint_tx<'a, E>(
+    pub async fn create_endpoint_tx(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         tenant_id: TenantId,
         url: &str,
-    ) -> Result<EndpointId>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
-        self.create_endpoint_with_config_tx(executor, tenant_id, url, "test-endpoint", 10, 30).await
+    ) -> Result<EndpointId> {
+        self.create_endpoint_with_config_tx(tx, tenant_id, url, "test-endpoint", 10, 30).await
     }
 
     /// Create endpoint with full configuration within a transaction.
-    pub async fn create_endpoint_with_config_tx<'a, E>(
+    pub async fn create_endpoint_with_config_tx(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         tenant_id: TenantId,
         url: &str,
         name: &str,
         max_retries: i32,
         timeout_seconds: i32,
-    ) -> Result<EndpointId>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
-        let endpoint_id = Uuid::new_v4();
-        let unique_name = format!("{}-{}-{}", name, self.test_run_id, endpoint_id.simple());
+    ) -> Result<EndpointId> {
+        let endpoint_id = EndpointId::new();
+        let unique_name = format!("{}-{}-{}", name, self.test_run_id, endpoint_id.0.simple());
+        let now = Utc::now();
 
-        sqlx::query(
-            "INSERT INTO endpoints (id, tenant_id, name, url, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())",
-        )
-        .bind(endpoint_id)
-        .bind(tenant_id.0)
-        .bind(unique_name)
-        .bind(url)
-        .bind(max_retries)
-        .bind(timeout_seconds)
-        .bind("closed")
-        .execute(executor)
-        .await
-        .context("failed to create test endpoint")?;
+        let endpoint = Endpoint {
+            id: endpoint_id,
+            tenant_id,
+            name: unique_name,
+            url: url.to_string(),
+            is_active: true,
+            signature_config: SignatureConfig::None,
+            max_retries,
+            timeout_seconds,
+            retry_strategy: BackoffStrategy::Exponential,
+            circuit_state: CircuitState::Closed,
+            circuit_failure_count: 0,
+            circuit_success_count: 0,
+            circuit_last_failure_at: None,
+            circuit_half_open_at: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            total_events_received: 0,
+            total_events_delivered: 0,
+            total_events_failed: 0,
+        };
 
-        Ok(EndpointId(endpoint_id))
+        self.storage()
+            .endpoints
+            .create_in_tx(tx, &endpoint)
+            .await
+            .context("failed to create test endpoint")?;
+
+        Ok(endpoint_id)
     }
 
     /// Create API key within a transaction.
     ///
     /// Returns both the API key string and its hash.
-    pub async fn create_api_key_tx<'a, E>(
+    pub async fn create_api_key_tx(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         tenant_id: TenantId,
         name: &str,
-    ) -> Result<(String, String)>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
+    ) -> Result<(String, String)> {
         let unique_suffix = Uuid::new_v4().simple();
         let api_key = format!("{}-{}-{}", name, self.test_run_id, unique_suffix);
         let key_hash = sha256::digest(api_key.as_bytes());
+        let now = chrono::Utc::now();
 
-        sqlx::query(
-            "INSERT INTO api_keys (tenant_id, key_hash, name, created_at)
-             VALUES ($1, $2, $3, NOW())",
-        )
-        .bind(tenant_id.0)
-        .bind(&key_hash)
-        .bind(&api_key)
-        .execute(executor)
-        .await
-        .context("failed to create test API key")?;
+        let api_key_record = ApiKey {
+            id: Uuid::new_v4(),
+            tenant_id,
+            key_hash: key_hash.clone(),
+            name: api_key.clone(),
+            expires_at: None,
+            revoked_at: None,
+            last_used_at: None,
+            created_at: now,
+        };
+
+        self.storage()
+            .api_keys
+            .create_in_tx(tx, &api_key_record)
+            .await
+            .context("failed to create test API key")?;
 
         Ok((api_key, key_hash))
     }
@@ -129,47 +159,62 @@ impl TestEnv {
     ///
     /// Handles idempotency by returning existing event ID if duplicate
     /// source_event_id.
-    pub async fn ingest_webhook_tx<'a, E>(
+    pub async fn ingest_webhook_tx(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         webhook: &TestWebhook,
-    ) -> Result<EventId>
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres>,
-    {
-        let event_id = Uuid::new_v4();
-        let body_bytes = webhook.body.clone();
+    ) -> Result<EventId> {
+        // Check for existing duplicate first
+        if let Some(existing_event) = self
+            .storage()
+            .webhook_events
+            .find_duplicate(webhook.endpoint_id.into(), &webhook.source_event_id)
+            .await
+            .context("failed to check for duplicate webhook")?
+        {
+            return Ok(existing_event.id);
+        }
+
+        let event_id = EventId::new();
+        let body_bytes = webhook.body.to_vec();
         let payload_size = i32::try_from(body_bytes.len()).unwrap_or(i32::MAX).max(1);
 
-        let result: (Uuid,) = sqlx::query_as(
-            "INSERT INTO webhook_events
-             (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-              status, failure_count, headers, body, content_type, payload_size, received_at)
-             VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, $7, $8, $9, $10)
-             ON CONFLICT (tenant_id, endpoint_id, source_event_id)
-             DO UPDATE SET id = webhook_events.id
-             RETURNING id",
-        )
-        .bind(event_id)
-        .bind(webhook.tenant_id)
-        .bind(webhook.endpoint_id)
-        .bind(&webhook.source_event_id)
-        .bind(&webhook.idempotency_strategy)
-        .bind(serde_json::to_value(&webhook.headers)?)
-        .bind(&body_bytes[..])
-        .bind(&webhook.content_type)
-        .bind(payload_size)
-        .bind(chrono::DateTime::<chrono::Utc>::from(self.now_system()))
-        .fetch_one(executor)
-        .await
-        .context("failed to ingest test webhook")?;
+        let event = WebhookEvent {
+            id: event_id,
+            tenant_id: webhook.tenant_id.into(),
+            endpoint_id: webhook.endpoint_id.into(),
+            source_event_id: webhook.source_event_id.clone(),
+            idempotency_strategy: IdempotencyStrategy::SourceId,
+            status: EventStatus::Pending,
+            failure_count: 0,
+            last_attempt_at: None,
+            next_retry_at: None,
+            headers: sqlx::types::Json(webhook.headers.clone()),
+            body: body_bytes,
+            content_type: webhook.content_type.clone(),
+            received_at: Utc::now(),
+            delivered_at: None,
+            failed_at: None,
+            payload_size,
+            signature_valid: None,
+            signature_error: None,
+        };
 
-        Ok(EventId(result.0))
+        self.storage()
+            .webhook_events
+            .create_in_tx(tx, &event)
+            .await
+            .context("failed to create test webhook event")?;
+
+        Ok(event_id)
     }
 
     /// Ingests a test webhook directly to the database pool.
     pub async fn ingest_webhook(&self, webhook: &TestWebhook) -> Result<EventId> {
-        self.ingest_webhook_tx(self.pool(), webhook).await
+        let mut tx = self.pool().begin().await?;
+        let event_id = self.ingest_webhook_tx(&mut tx, webhook).await?;
+        tx.commit().await?;
+        Ok(event_id)
     }
 
     /// Finds the current status of a webhook event from the database.
@@ -181,18 +226,19 @@ impl TestEnv {
         // Add timeout to prevent hanging
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            sqlx::query_as::<_, (String,)>("SELECT status FROM webhook_events WHERE id = $1")
-                .bind(event_id.0)
-                .fetch_one(self.pool()),
+            self.storage().webhook_events.find_by_id(event_id),
         )
         .await
         .context("timeout waiting for webhook status query")?;
 
-        let status = result.with_context(|| {
+        let event = result.with_context(|| {
             format!("failed to find webhook status for event_id: {}", event_id.0)
         })?;
 
-        Ok(status.0)
+        match event {
+            Some(webhook_event) => Ok(webhook_event.status.to_string()),
+            None => Err(anyhow::anyhow!("webhook event {} not found", event_id.0)),
+        }
     }
 
     /// Waits for a webhook event to reach the expected status.
@@ -256,16 +302,12 @@ impl TestEnv {
     pub async fn count_delivery_attempts(&self, event_id: EventId) -> Result<u32> {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            sqlx::query_as::<_, (i64,)>(
-                "SELECT COUNT(*) FROM delivery_attempts WHERE event_id = $1",
-            )
-            .bind(event_id.0)
-            .fetch_one(self.pool()),
+            self.storage().delivery_attempts.count_by_event(event_id),
         )
         .await
         .context("timeout waiting for delivery attempts count")?;
 
-        let (count,) = result.with_context(|| {
+        let count = result.with_context(|| {
             format!("failed to count delivery attempts for event_id: {}", event_id.0)
         })?;
 
@@ -296,8 +338,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn database_health_check(&self) -> Result<bool> {
-        let result = sqlx::query("SELECT 1 as health").fetch_one(self.pool()).await;
-        Ok(result.is_ok())
+        Ok(self.storage().health_check().await.is_ok())
     }
 
     /// List all tables in the database schema.
@@ -325,11 +366,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_total_events(&self) -> Result<i64> {
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM webhook_events")
-            .fetch_one(self.pool())
-            .await
-            .context("failed to count total events")?;
-        Ok(count.0)
+        self.storage().webhook_events.count_all().await.map_err(Into::into)
     }
 
     /// Count events in terminal states (delivered, failed, dead_letter).
@@ -338,13 +375,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_terminal_events(&self) -> Result<i64> {
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM webhook_events WHERE status IN ('delivered', 'failed', 'dead_letter')",
-        )
-        .fetch_one(self.pool())
-        .await
-        .context("failed to count terminal events")?;
-        Ok(count.0)
+        self.storage().webhook_events.count_terminal().await.map_err(Into::into)
     }
 
     /// Count events currently being processed (delivering).
@@ -353,12 +384,11 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_processing_events(&self) -> Result<i64> {
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM webhook_events WHERE status = 'delivering'")
-                .fetch_one(self.pool())
-                .await
-                .context("failed to count processing events")?;
-        Ok(count.0)
+        self.storage()
+            .webhook_events
+            .count_by_status(EventStatus::Delivering)
+            .await
+            .map_err(Into::into)
     }
 
     /// Count events in pending state (waiting for delivery).
@@ -367,12 +397,11 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_pending_events(&self) -> Result<i64> {
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM webhook_events WHERE status = 'pending'")
-                .fetch_one(self.pool())
-                .await
-                .context("failed to count pending events")?;
-        Ok(count.0)
+        self.storage()
+            .webhook_events
+            .count_by_status(EventStatus::Pending)
+            .await
+            .map_err(Into::into)
     }
 
     /// Get all webhook events for invariant checking.

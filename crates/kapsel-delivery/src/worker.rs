@@ -4,11 +4,12 @@
 //! LOCKED for lock-free distribution. Integrates circuit breakers, exponential
 //! backoff, and graceful shutdown with event-driven architecture support.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use kapsel_core::{
     models::{EndpointId, EventId, WebhookEvent},
+    storage::Storage,
     Clock, DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
     MulticastEventHandler,
 };
@@ -204,6 +205,7 @@ impl DeliveryEngine {
 pub struct DeliveryWorker {
     id: usize,
     pool: PgPool,
+    storage: Arc<Storage>,
     config: DeliveryConfig,
     client: Arc<DeliveryClient>,
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -219,31 +221,7 @@ impl DeliveryWorker {
     pub fn new(
         id: usize,
         pool: PgPool,
-        config: DeliveryConfig,
-        client: Arc<DeliveryClient>,
-        circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
-        stats: Arc<RwLock<EngineStats>>,
-        cancellation_token: CancellationToken,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
-        Self {
-            id,
-            pool,
-            config,
-            client,
-            circuit_manager,
-            stats,
-            cancellation_token,
-            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
-            clock,
-        }
-    }
-
-    /// Creates a new delivery worker with event handler.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_event_handler(
-        id: usize,
-        pool: PgPool,
+        storage: Arc<Storage>,
         config: DeliveryConfig,
         client: Arc<DeliveryClient>,
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -255,6 +233,7 @@ impl DeliveryWorker {
         Self {
             id,
             pool,
+            storage,
             config,
             client,
             circuit_manager,
@@ -347,62 +326,16 @@ impl DeliveryWorker {
     ///
     /// Returns error if database transaction or query fails.
     pub async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
-        let now = Utc::now();
+        let events =
+            self.storage.webhook_events.claim_pending(self.config.batch_size).await.map_err(
+                |e| DeliveryError::database(format!("failed to claim pending events: {e}")),
+            )?;
 
-        // Use transaction to ensure atomicity of claim operation
-        let mut tx =
-            self.pool.begin().await.map_err(|e| {
-                DeliveryError::database(format!("failed to begin transaction: {e}"))
-            })?;
-
-        // Select events to claim using FOR UPDATE SKIP LOCKED
-        let event_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-            r"
-            SELECT id FROM webhook_events
-            WHERE status = 'pending'
-              AND (next_retry_at IS NULL OR next_retry_at <= $1)
-            ORDER BY received_at ASC
-            LIMIT $2
-            FOR UPDATE SKIP LOCKED
-            ",
-        )
-        .bind(now)
-        .bind(i32::try_from(self.config.batch_size).unwrap_or(100))
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| {
-            DeliveryError::database(format!("failed to select events for claiming: {e}"))
-        })?;
-
-        if event_ids.is_empty() {
-            tx.rollback().await.map_err(|e| {
-                DeliveryError::database(format!("failed to rollback transaction: {e}"))
-            })?;
-            return Ok(Vec::new());
-        }
-
-        // Update selected events to delivering status and fetch full data
-        let events = sqlx::query_as::<_, WebhookEvent>(
-            r"
-            UPDATE webhook_events
-            SET status = 'delivering'
-            WHERE id = ANY($1)
-            RETURNING id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-                status, failure_count, last_attempt_at, next_retry_at,
-                headers, body, content_type, received_at, delivered_at, failed_at,
-                payload_size, signature_valid, signature_error
-            ",
-        )
-        .bind(&event_ids)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| DeliveryError::database(format!("failed to claim events: {e}")))?;
-
-        tx.commit()
-            .await
-            .map_err(|e| DeliveryError::database(format!("failed to commit transaction: {e}")))?;
-
-        debug!(worker_id = self.id, claimed_events = events.len(), "claimed events from database");
+        debug!(
+            worker_id = self.id,
+            claimed_count = events.len(),
+            "claimed webhook events for processing"
+        );
 
         Ok(events)
     }
@@ -661,7 +594,7 @@ impl DeliveryWorker {
                 },
                 crate::retry::RetryDecision::GiveUp { reason } => {
                     // Mark as permanently failed
-                    self.mark_event_failed(event_id).await?;
+                    self.mark_event_failed(&event).await?;
 
                     error!(
                         worker_id = self.id,
@@ -675,7 +608,7 @@ impl DeliveryWorker {
             }
         } else {
             // Non-retryable error - mark as failed immediately
-            self.mark_event_failed(event_id).await?;
+            self.mark_event_failed(event).await?;
 
             error!(
                 worker_id = self.id,
@@ -695,18 +628,17 @@ impl DeliveryWorker {
     ///
     /// Returns error if endpoint is not found or database query fails.
     async fn endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
-        let url = sqlx::query_scalar::<_, String>("SELECT url FROM endpoints WHERE id = $1")
-            .bind(endpoint_id.0)
-            .fetch_one(&self.pool)
+        let endpoint = self
+            .storage
+            .endpoints
+            .find_by_id(*endpoint_id)
             .await
-            .map_err(|e| match e {
-                sqlx::Error::RowNotFound => {
-                    DeliveryError::configuration(format!("endpoint {endpoint_id} not found"))
-                },
-                _ => DeliveryError::database(format!("failed to fetch endpoint URL: {e}")),
+            .map_err(|e| DeliveryError::database(format!("failed to fetch endpoint: {e}")))?
+            .ok_or_else(|| {
+                DeliveryError::configuration(format!("endpoint {endpoint_id} not found"))
             })?;
 
-        Ok(url)
+        Ok(endpoint.url)
     }
 
     /// Updates event status to 'delivered' after successful delivery.
@@ -715,17 +647,9 @@ impl DeliveryWorker {
     ///
     /// Returns error if database update fails.
     async fn mark_event_delivered(&self, event_id: &EventId) -> Result<()> {
-        let now = Utc::now();
-        sqlx::query(
-            "UPDATE webhook_events
-             SET status = 'delivered', delivered_at = $1
-             WHERE id = $2",
-        )
-        .bind(now)
-        .bind(event_id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DeliveryError::database(format!("failed to mark event delivered: {e}")))?;
+        self.storage.webhook_events.mark_delivered(*event_id).await.map_err(|e| {
+            DeliveryError::database(format!("failed to mark event as delivered: {e}"))
+        })?;
 
         Ok(())
     }
@@ -740,19 +664,11 @@ impl DeliveryWorker {
         event: &WebhookEvent,
         next_retry_at: DateTime<Utc>,
     ) -> Result<()> {
-        let now = Utc::now();
-        sqlx::query(
-            "UPDATE webhook_events
-             SET status = 'pending', failure_count = failure_count + 1,
-                 last_attempt_at = $1, next_retry_at = $2
-             WHERE id = $3",
-        )
-        .bind(now)
-        .bind(next_retry_at)
-        .bind(event.id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DeliveryError::database(format!("failed to schedule retry: {e}")))?;
+        self.storage
+            .webhook_events
+            .mark_failed(event.id, event.failure_count + 1, Some(next_retry_at))
+            .await
+            .map_err(|e| DeliveryError::database(format!("failed to schedule event retry: {e}")))?;
 
         Ok(())
     }
@@ -762,18 +678,12 @@ impl DeliveryWorker {
     /// # Errors
     ///
     /// Returns error if database update fails.
-    async fn mark_event_failed(&self, event_id: &EventId) -> Result<()> {
-        let now = Utc::now();
-        sqlx::query(
-            "UPDATE webhook_events
-             SET status = 'failed', failed_at = $1
-             WHERE id = $2",
-        )
-        .bind(now)
-        .bind(event_id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DeliveryError::database(format!("failed to mark event failed: {e}")))?;
+    async fn mark_event_failed(&self, event: &WebhookEvent) -> Result<()> {
+        self.storage
+            .webhook_events
+            .mark_failed(event.id, event.failure_count + 1, None)
+            .await
+            .map_err(|e| DeliveryError::database(format!("failed to mark event as failed: {e}")))?;
 
         Ok(())
     }
@@ -782,46 +692,41 @@ impl DeliveryWorker {
     async fn record_delivery_attempt(
         &self,
         event: &WebhookEvent,
-        url: &str,
+        _url: &str,
         attempt_number: u32,
         result: &Result<crate::client::DeliveryResponse>,
-        duration: std::time::Duration,
+        _duration: std::time::Duration,
     ) {
-        let duration_ms = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
-        let (response_status, response_body, error_message) = match result {
-            Ok(response) => (Some(i32::from(response.status_code)), response.body.clone(), None),
-            Err(e) => (None, String::new(), Some(e.to_string())),
+        let (response_status, response_body, error_message, succeeded) = match result {
+            Ok(response) => (
+                Some(i32::from(response.status_code)),
+                Some(response.body.as_bytes().to_vec()),
+                None,
+                (200..300).contains(&response.status_code),
+            ),
+            Err(e) => (None, None, Some(e.to_string()), false),
         };
 
-        if let Err(e) = sqlx::query(
-            r"
-            INSERT INTO delivery_attempts (
-                event_id, attempt_number, request_url, request_headers,
-                response_status, response_headers, response_body,
-                attempted_at, duration_ms, error_type, error_message
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
-            )
-            ",
-        )
-        .bind(event.id)
-        .bind(i32::try_from(attempt_number).unwrap_or(i32::MAX))
-        .bind(url)
-        .bind(serde_json::json!({})) // Empty headers for now
-        .bind(response_status)
-        .bind(serde_json::json!({})) // Empty response headers for now
-        .bind(response_body)
-        .bind(chrono::Utc::now())
-        .bind(duration_ms)
-        .bind(Self::categorize_error(result))
-        .bind(error_message)
-        .execute(&self.pool)
-        .await
-        {
+        let delivery_attempt = kapsel_core::models::DeliveryAttempt {
+            id: uuid::Uuid::new_v4(),
+            event_id: event.id,
+            attempt_number,
+            endpoint_id: event.endpoint_id,
+            request_headers: HashMap::new(), // Empty headers for now
+            request_body: event.body.clone(),
+            response_status,
+            response_headers: None, // Empty response headers for now
+            response_body,
+            attempted_at: chrono::Utc::now(),
+            succeeded,
+            error_message,
+        };
+
+        if let Err(e) = self.storage.delivery_attempts.create(&delivery_attempt).await {
             warn!(
                 worker_id = self.id,
                 event_id = %event.id,
-                url = url,
+                attempt = attempt_number,
                 error = %e,
                 "failed to record delivery attempt"
             );
@@ -1243,38 +1148,38 @@ mod tests {
     }
 
     fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
-        DeliveryWorker {
-            id: 0,
-            pool: pool.clone(),
-            config: DeliveryConfig::default(),
-            client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
-            circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
-                CircuitConfig::default(),
-            ))),
-            stats: Arc::new(RwLock::new(EngineStats::default())),
-            cancellation_token: CancellationToken::new(),
-            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
-            clock: Arc::new(kapsel_testing::time::TestClock::new()),
-        }
+        let storage = Arc::new(Storage::new(pool.clone()));
+        DeliveryWorker::new(
+            0,
+            pool.clone(),
+            storage,
+            DeliveryConfig::default(),
+            Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
+            Arc::new(RwLock::new(EngineStats::default())),
+            CancellationToken::new(),
+            Arc::new(MulticastEventHandler::default()),
+            Arc::new(kapsel_core::SystemClock),
+        )
     }
 
     fn create_test_worker_with_config_and_pool(
         pool: &PgPool,
         config: DeliveryConfig,
     ) -> DeliveryWorker {
-        DeliveryWorker {
-            id: 0,
-            pool: pool.clone(),
+        let storage = Arc::new(Storage::new(pool.clone()));
+        DeliveryWorker::new(
+            0,
+            pool.clone(),
+            storage,
             config,
-            client: Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
-            circuit_manager: Arc::new(RwLock::new(CircuitBreakerManager::new(
-                CircuitConfig::default(),
-            ))),
-            stats: Arc::new(RwLock::new(EngineStats::default())),
-            cancellation_token: CancellationToken::new(),
-            event_handler: Arc::new(kapsel_core::NoOpEventHandler),
-            clock: Arc::new(kapsel_testing::time::TestClock::new()),
-        }
+            Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
+            Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
+            Arc::new(RwLock::new(EngineStats::default())),
+            CancellationToken::new(),
+            Arc::new(MulticastEventHandler::default()),
+            Arc::new(kapsel_core::SystemClock),
+        )
     }
 
     async fn event_by_id(pool: &PgPool, event_id: &uuid::Uuid) -> WebhookEvent {
