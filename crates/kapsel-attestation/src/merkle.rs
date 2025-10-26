@@ -71,10 +71,14 @@ pub struct MerkleService {
     signing: SigningService,
 
     /// Current Merkle tree state.
+    #[allow(dead_code)]
     tree: MerkleTree<Sha256>,
 
     /// Pending leaves awaiting batch commit.
     pending: VecDeque<LeafData>,
+
+    /// Advisory lock ID for database transaction serialization.
+    lock_id: i64,
 }
 
 impl std::fmt::Debug for MerkleService {
@@ -82,8 +86,9 @@ impl std::fmt::Debug for MerkleService {
         f.debug_struct("MerkleService")
             .field("db", &"PgPool")
             .field("signing", &self.signing)
-            .field("tree", &"MerkleTree<Sha256>")
+            .field("tree", &"MerkleTree")
             .field("pending_count", &self.pending.len())
+            .field("lock_id", &self.lock_id)
             .finish()
     }
 }
@@ -94,7 +99,23 @@ impl MerkleService {
     /// Initializes with an empty tree and pending queue. The service will
     /// load existing tree state from the database on first use.
     pub fn new(db: PgPool, signing: SigningService) -> Self {
-        Self { db, signing, tree: MerkleTree::new(), pending: VecDeque::new() }
+        // Use a fixed lock ID for production consistency
+        const DEFAULT_LOCK_ID: i64 = 1234567890;
+        Self {
+            db,
+            signing,
+            tree: MerkleTree::new(),
+            pending: VecDeque::new(),
+            lock_id: DEFAULT_LOCK_ID,
+        }
+    }
+
+    /// Create a new Merkle service instance with a custom advisory lock ID.
+    ///
+    /// This is primarily used for test isolation where multiple services
+    /// need different lock IDs to prevent serialization conflicts.
+    pub fn with_lock_id(db: PgPool, signing: SigningService, lock_id: i64) -> Self {
+        Self { db, signing, tree: MerkleTree::new(), pending: VecDeque::new(), lock_id }
     }
 
     /// Add a leaf to the pending batch queue.
@@ -151,27 +172,67 @@ impl MerkleService {
 
         let mut tx = self.db.begin().await.map_err(|e| AttestationError::Database { source: e })?;
 
+        // Acquire advisory lock to serialize tree commits and prevent concurrent
+        // tree_index conflicts
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(self.lock_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AttestationError::Database { source: e })?;
+
+        // Get current tree size from database atomically within transaction
+        let current_tree_size: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| AttestationError::Database { source: e })?;
+
+        let new_tree_size = current_tree_size
+            + i64::try_from(batch_size)
+                .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?;
+
         let mut leaf_hashes = Vec::with_capacity(batch_size);
         for leaf in &self.pending {
             leaf_hashes.push(leaf.compute_hash());
         }
 
-        let mut tree_hashes = leaf_hashes.clone();
-        self.tree.append(&mut tree_hashes);
-        self.tree.commit();
+        // Build temporary tree with existing + new leaves for root calculation
+        let mut temp_tree = MerkleTree::<Sha256>::new();
 
-        let root_hash = self.tree.root().ok_or_else(|| AttestationError::MissingRoot {
-            tree_size: self.tree.leaves_len() as u64,
+        // Load existing leaves if any
+        if current_tree_size > 0 {
+            let existing_hashes: Vec<Vec<u8>> = sqlx::query_scalar(
+                "SELECT leaf_hash FROM merkle_leaves WHERE tree_index IS NOT NULL ORDER BY tree_index ASC"
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| AttestationError::Database { source: e })?;
+
+            let mut existing_32: Vec<[u8; 32]> = Vec::new();
+            for hash in existing_hashes {
+                if hash.len() == 32 {
+                    let mut array = [0u8; 32];
+                    array.copy_from_slice(&hash);
+                    existing_32.push(array);
+                }
+            }
+            temp_tree.append(&mut existing_32);
+        }
+
+        // Add new leaves
+        let mut new_hashes = leaf_hashes.clone();
+        temp_tree.append(&mut new_hashes);
+        temp_tree.commit();
+
+        let root_hash = temp_tree.root().ok_or_else(|| AttestationError::MissingRoot {
+            tree_size: u64::try_from(new_tree_size).unwrap_or(0),
         })?;
 
-        let tree_size = i64::try_from(self.tree.leaves_len())
-            .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?;
+        let tree_size = new_tree_size;
         let timestamp_ms = Utc::now().timestamp_millis();
         let signature = self.signing.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
-        let start_index = tree_size
-            - i64::try_from(batch_size)
-                .map_err(|_| AttestationError::InvalidTreeSize { tree_size: i64::MAX })?;
+        let start_index = current_tree_size;
         for (i, leaf) in self.pending.iter().enumerate() {
             self.insert_leaf(
                 &mut tx,
@@ -251,6 +312,45 @@ impl MerkleService {
         .execute(&mut **tx)
         .await
         .map_err(|e| AttestationError::Database { source: e })?;
+
+        Ok(())
+    }
+
+    /// Restore tree state from database.
+    ///
+    /// Loads all committed leaves from the database and rebuilds the internal
+    /// Merkle tree state. This ensures tree_index calculations are correct
+    /// when multiple service instances exist or after restarts.
+    #[allow(dead_code)]
+    async fn restore_tree_state_from_db(&mut self) -> Result<()> {
+        // Query all leaves that have been committed to the tree (tree_index IS NOT
+        // NULL)
+        let leaf_hashes: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT leaf_hash FROM merkle_leaves WHERE tree_index IS NOT NULL ORDER BY tree_index ASC"
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| AttestationError::Database { source: e })?;
+
+        if !leaf_hashes.is_empty() {
+            // Convert to the format expected by MerkleTree
+            let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(leaf_hashes.len());
+            for hash in leaf_hashes {
+                if hash.len() == 32 {
+                    let mut array = [0u8; 32];
+                    array.copy_from_slice(&hash);
+                    hashes.push(array);
+                } else {
+                    return Err(AttestationError::InvalidTreeSize {
+                        tree_size: i64::try_from(hash.len()).unwrap_or(i64::MAX),
+                    });
+                }
+            }
+
+            // Rebuild tree state
+            self.tree.append(&mut hashes);
+            self.tree.commit();
+        }
 
         Ok(())
     }
@@ -378,8 +478,6 @@ mod tests {
         // Test that we can create a service with mock components
         let signing = SigningService::ephemeral();
 
-        // This would need a real database in integration tests
-        // For unit tests, we focus on the service structure
         assert!(!signing.key_id().is_nil());
         assert_eq!(signing.public_key_as_bytes().len(), 32);
     }
