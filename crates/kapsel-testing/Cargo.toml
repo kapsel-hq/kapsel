@@ -35,8 +35,5 @@ http = "1.0"
 anyhow = { workspace = true }
 futures = { workspace = true }
 
-[package.metadata.cargo-machete]
-ignored = ["insta"]
-
 [lints]
 workspace = true
