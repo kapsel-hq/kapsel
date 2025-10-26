@@ -449,7 +449,7 @@ impl DeliveryWorker {
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
         let start_time = std::time::Instant::now();
         let endpoint_key = event.endpoint_id.to_string();
-        let attempt_number = event.failure_count + 1;
+        let attempt_number = (event.failure_count + 1) as u32;
 
         // 1. Check circuit breaker state BEFORE we do anything else
         let should_allow =
@@ -494,7 +494,7 @@ impl DeliveryWorker {
         self.record_delivery_attempt(
             event,
             &endpoint_url,
-            event.failure_count + 1,
+            (event.failure_count + 1) as u32,
             &delivery_result,
             start_time.elapsed(),
         )

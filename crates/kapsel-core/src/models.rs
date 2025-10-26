@@ -135,6 +135,46 @@ impl sqlx::Encode<'_, PgDb> for TenantId {
     }
 }
 
+/// Tenant represents an isolated customer or organization.
+///
+/// All resources (endpoints, events, etc.) are scoped to a tenant,
+/// ensuring complete data isolation between customers.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Tenant {
+    /// Unique identifier for this tenant.
+    pub id: TenantId,
+
+    /// Human-readable name for the tenant.
+    pub name: String,
+
+    /// Subscription tier (e.g., "free", "pro", "enterprise").
+    pub tier: String,
+
+    /// Maximum events allowed per month.
+    pub max_events_per_month: i32,
+
+    /// Maximum endpoints allowed.
+    pub max_endpoints: i32,
+
+    /// Events processed this month.
+    pub events_this_month: i32,
+
+    /// When this tenant was created.
+    pub created_at: DateTime<Utc>,
+
+    /// When this tenant was last updated.
+    pub updated_at: DateTime<Utc>,
+
+    /// When this tenant was deleted (soft delete).
+    pub deleted_at: Option<DateTime<Utc>>,
+
+    /// Stripe customer ID for billing.
+    pub stripe_customer_id: Option<String>,
+
+    /// Stripe subscription ID.
+    pub stripe_subscription_id: Option<String>,
+}
+
 /// Strongly-typed endpoint identifier.
 ///
 /// Each endpoint represents a unique webhook destination URL with its own
@@ -279,7 +319,7 @@ impl<'r> sqlx::Decode<'r, PgDb> for EventStatus {
 ///
 /// Events are deduplicated using `source_event_id` within a 24-hour window.
 /// This prevents duplicate processing when source systems retry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct WebhookEvent {
     /// Unique identifier for this event.
     pub id: EventId,
@@ -307,7 +347,7 @@ pub struct WebhookEvent {
     ///
     /// Incremented after each failure. Event fails permanently
     /// when this reaches the endpoint's `max_retries`.
-    pub failure_count: u32,
+    pub failure_count: i32,
 
     /// Timestamp of most recent delivery attempt.
     pub last_attempt_at: Option<DateTime<Utc>>,
@@ -352,38 +392,6 @@ pub struct WebhookEvent {
     ///
     /// Only populated when signature_valid is Some(false).
     pub signature_error: Option<String>,
-}
-
-impl<'r> sqlx::FromRow<'r, PgRow> for WebhookEvent {
-    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-        use sqlx::Row;
-
-        let failure_count_i32: i32 = row.try_get("failure_count")?;
-        let failure_count = u32::try_from(failure_count_i32).map_err(|e| {
-            sqlx::Error::ColumnDecode { index: "failure_count".to_string(), source: e.into() }
-        })?;
-
-        Ok(Self {
-            id: row.try_get("id")?,
-            tenant_id: row.try_get("tenant_id")?,
-            endpoint_id: row.try_get("endpoint_id")?,
-            source_event_id: row.try_get("source_event_id")?,
-            idempotency_strategy: row.try_get("idempotency_strategy")?,
-            status: row.try_get("status")?,
-            failure_count,
-            last_attempt_at: row.try_get("last_attempt_at")?,
-            next_retry_at: row.try_get("next_retry_at")?,
-            headers: row.try_get("headers")?,
-            body: row.try_get("body")?,
-            content_type: row.try_get("content_type")?,
-            received_at: row.try_get("received_at")?,
-            delivered_at: row.try_get("delivered_at")?,
-            failed_at: row.try_get("failed_at")?,
-            payload_size: row.try_get("payload_size")?,
-            signature_valid: row.try_get("signature_valid")?,
-            signature_error: row.try_get("signature_error")?,
-        })
-    }
 }
 
 impl WebhookEvent {
@@ -444,7 +452,7 @@ impl WebhookEvent {
 /// Defines where and how to deliver webhooks. Each endpoint has its own
 /// retry policy, timeout settings, and circuit breaker to prevent cascading
 /// failures.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Endpoint {
     /// Unique identifier for this endpoint.
     pub id: EndpointId,
@@ -475,12 +483,12 @@ pub struct Endpoint {
     /// Maximum delivery attempts before marking as failed.
     ///
     /// Includes the initial attempt. Zero means unlimited retries.
-    pub max_retries: u32,
+    pub max_retries: i32,
 
     /// HTTP request timeout in seconds.
     ///
     /// Prevents slow endpoints from blocking workers.
-    pub timeout_seconds: u32,
+    pub timeout_seconds: i32,
 
     /// Retry backoff strategy: exponential, linear, or fixed.
     pub retry_strategy: BackoffStrategy,
@@ -491,13 +499,13 @@ pub struct Endpoint {
     /// Consecutive failures in current window.
     ///
     /// Reset to zero on successful delivery.
-    pub circuit_failure_count: u32,
+    pub circuit_failure_count: i32,
 
     /// Consecutive successes in half-open state.
     ///
     /// Used to determine when to transition from half-open back to closed.
     /// Typically requires 3 consecutive successes.
-    pub circuit_success_count: u32,
+    pub circuit_success_count: i32,
 
     /// When the last failure occurred.
     ///
@@ -685,16 +693,6 @@ pub enum IdempotencyStrategy {
     ContentHash,
 }
 
-impl fmt::Display for IdempotencyStrategy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Header => write!(f, "header"),
-            Self::SourceId => write!(f, "source_id"),
-            Self::ContentHash => write!(f, "content_hash"),
-        }
-    }
-}
-
 impl sqlx::Type<PgDb> for IdempotencyStrategy {
     fn type_info() -> PgTypeInfo {
         <str as sqlx::Type<PgDb>>::type_info()
@@ -715,7 +713,22 @@ impl<'r> sqlx::Decode<'r, PgDb> for IdempotencyStrategy {
 
 impl sqlx::Encode<'_, PgDb> for IdempotencyStrategy {
     fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
-        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+        let s = match self {
+            Self::Header => "header",
+            Self::SourceId => "source_id",
+            Self::ContentHash => "content_hash",
+        };
+        <&str as sqlx::Encode<PgDb>>::encode_by_ref(&s, buf)
+    }
+}
+
+impl fmt::Display for IdempotencyStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Header => write!(f, "header"),
+            Self::SourceId => write!(f, "source_id"),
+            Self::ContentHash => write!(f, "content_hash"),
+        }
     }
 }
 
@@ -873,6 +886,30 @@ impl fmt::Display for CircuitState {
     }
 }
 
+impl sqlx::Type<PgDb> for CircuitState {
+    fn type_info() -> PgTypeInfo {
+        <str as sqlx::Type<PgDb>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, PgDb> for CircuitState {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <&str as sqlx::Decode<PgDb>>::decode(value)?;
+        match s {
+            "closed" => Ok(Self::Closed),
+            "open" => Ok(Self::Open),
+            "half_open" => Ok(Self::HalfOpen),
+            _ => Err(format!("invalid circuit state: {s}").into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, PgDb> for CircuitState {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> EncodeResult {
+        <String as sqlx::Encode<PgDb>>::encode_by_ref(&self.to_string(), buf)
+    }
+}
+
 /// Complete audit record of a delivery attempt.
 ///
 /// Captures full request/response details for debugging and compliance.
@@ -890,21 +927,19 @@ pub struct DeliveryAttempt {
     /// Starts at 1 for the first attempt.
     pub attempt_number: u32,
 
-    /// Actual URL used (after any redirects).
-    pub request_url: String,
+    /// Endpoint this attempt was made to.
+    pub endpoint_id: EndpointId,
 
     /// HTTP headers sent with the request.
     pub request_headers: HashMap<String, String>,
 
-    /// HTTP method used for delivery request.
-    ///
-    /// Defaults to POST but endpoints may configure other methods.
-    pub request_method: HttpMethod,
+    /// Raw request body sent to the endpoint.
+    pub request_body: Vec<u8>,
 
     /// HTTP status code received.
     ///
     /// None if request failed before receiving response.
-    pub response_status: Option<u16>,
+    pub response_status: Option<i32>,
 
     /// Response headers received.
     pub response_headers: Option<HashMap<String, String>>,
@@ -912,23 +947,48 @@ pub struct DeliveryAttempt {
     /// Response body (truncated if too large).
     ///
     /// Useful for debugging integration issues.
-    pub response_body: Option<String>,
+    pub response_body: Option<Vec<u8>>,
 
     /// When this attempt was made.
     pub attempted_at: DateTime<Utc>,
 
-    /// Total request duration in milliseconds.
+    /// Whether the delivery was successful.
     ///
-    /// Includes connection time, TLS handshake, and response streaming.
-    pub duration_ms: u32,
-
-    /// Classification of any error that occurred.
-    ///
-    /// Examples: "timeout", `"connection_refused"`, `"dns_failure"`
-    pub error_type: Option<DeliveryAttemptErrorType>,
+    /// True for 2xx HTTP status codes, false otherwise.
+    pub succeeded: bool,
 
     /// Human-readable error description.
     pub error_message: Option<String>,
+}
+
+impl<'r> sqlx::FromRow<'r, PgRow> for DeliveryAttempt {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let request_headers: sqlx::types::Json<HashMap<String, String>> =
+            row.try_get("request_headers")?;
+        let response_headers: Option<sqlx::types::Json<HashMap<String, String>>> =
+            row.try_get("response_headers")?;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            event_id: row.try_get("event_id")?,
+            attempt_number: {
+                let val: i32 = row.try_get("attempt_number")?;
+                val.try_into()
+                    .map_err(|_| sqlx::Error::Decode("attempt_number cannot be negative".into()))?
+            },
+            endpoint_id: row.try_get("endpoint_id")?,
+            request_headers: request_headers.0,
+            request_body: row.try_get("request_body")?,
+            response_status: row.try_get("response_status")?,
+            response_headers: response_headers.map(|h| h.0),
+            response_body: row.try_get("response_body")?,
+            attempted_at: row.try_get("attempted_at")?,
+            succeeded: row.try_get("succeeded")?,
+            error_message: row.try_get("error_message")?,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -8,8 +8,46 @@ use thiserror::Error;
 
 use crate::EndpointId;
 
-/// Result type alias using `KapselError`.
-pub type Result<T> = std::result::Result<T, KapselError>;
+/// Result type alias using `CoreError`.
+pub type Result<T> = std::result::Result<T, CoreError>;
+
+/// Core error type for internal operations.
+#[derive(Debug, Error)]
+pub enum CoreError {
+    /// Database operation failed.
+    #[error("Database error: {0}")]
+    Database(String),
+
+    /// Entity not found.
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    /// Constraint violation.
+    #[error("Constraint violation: {0}")]
+    ConstraintViolation(String),
+
+    /// Invalid input.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+}
+
+impl From<sqlx::Error> for CoreError {
+    fn from(err: sqlx::Error) -> Self {
+        match err {
+            sqlx::Error::RowNotFound => Self::NotFound("requested entity not found".to_string()),
+            sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
+                Self::ConstraintViolation(format!("unique constraint violation: {}", db_err))
+            },
+            sqlx::Error::Database(db_err) if db_err.is_foreign_key_violation() => {
+                Self::ConstraintViolation(format!("foreign key constraint violation: {}", db_err))
+            },
+            sqlx::Error::Database(db_err) if db_err.is_check_violation() => {
+                Self::ConstraintViolation(format!("check constraint violation: {}", db_err))
+            },
+            _ => Self::Database(err.to_string()),
+        }
+    }
+}
 
 /// Kapsel error types with codes matching specification.
 #[derive(Debug, Error)]

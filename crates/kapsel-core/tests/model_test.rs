@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use kapsel_core::models::{
-    BackoffStrategy, CircuitState, DeliveryAttempt, DeliveryAttemptErrorType, Endpoint, EndpointId,
-    EventId, EventStatus, HttpMethod, IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
+    BackoffStrategy, CircuitState, DeliveryAttempt, Endpoint, EndpointId, EventId, EventStatus,
+    IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
 };
 use serde_json::json;
 use sqlx::types::Json;
@@ -231,7 +231,6 @@ fn endpoint_model_creation_and_validation() {
     assert_eq!(endpoint.name, "Production Endpoint");
     assert!(endpoint.is_active);
     assert_eq!(endpoint.signature_config.secret(), Some("webhook_secret_123"));
-    assert_eq!(endpoint.signature_config.header(), Some("X-Webhook-Signature"));
     assert_eq!(endpoint.max_retries, 3);
     assert_eq!(endpoint.timeout_seconds, 30);
 }
@@ -287,6 +286,7 @@ fn endpoint_serialization_roundtrip() {
 fn delivery_attempt_model_with_realistic_data() {
     let attempt_id = Uuid::new_v4();
     let event_id = EventId::new();
+    let endpoint_id = EndpointId::new();
     let now = Utc::now();
 
     let mut request_headers = HashMap::new();
@@ -297,54 +297,53 @@ fn delivery_attempt_model_with_realistic_data() {
     response_headers.insert("server".to_string(), "nginx/1.18".to_string());
     response_headers.insert("content-type".to_string(), "application/json".to_string());
 
+    let request_body = b"{\"event\": \"user.created\", \"user_id\": 123}";
+    let response_body = b"{\"received\": true}";
+
     let delivery_attempt = DeliveryAttempt {
         id: attempt_id,
         event_id,
         attempt_number: 1,
-        request_url: "https://api.customer.com/webhooks".to_string(),
+        endpoint_id,
         request_headers,
-        request_method: HttpMethod::Post,
+        request_body: request_body.to_vec(),
         response_status: Some(200),
         response_headers: Some(response_headers),
-        response_body: Some("{\"received\": true}".to_string()),
+        response_body: Some(response_body.to_vec()),
         attempted_at: now,
-        duration_ms: 250,
-        error_type: None,
+        succeeded: true,
         error_message: None,
     };
 
     // Verify successful delivery attempt
     assert_eq!(delivery_attempt.id, attempt_id);
     assert_eq!(delivery_attempt.event_id, event_id);
+    assert_eq!(delivery_attempt.endpoint_id, endpoint_id);
     assert_eq!(delivery_attempt.attempt_number, 1);
-    assert_eq!(delivery_attempt.request_url, "https://api.customer.com/webhooks");
-    assert_eq!(delivery_attempt.request_method, HttpMethod::Post);
     assert_eq!(delivery_attempt.response_status, Some(200));
-    assert_eq!(delivery_attempt.duration_ms, 250);
-    assert!(delivery_attempt.error_type.is_none());
+    assert!(delivery_attempt.succeeded);
     assert!(delivery_attempt.error_message.is_none());
 
     // Test failed attempt
-    let failed_attempt = DeliveryAttempt {
+    let attempt = DeliveryAttempt {
         id: Uuid::new_v4(),
         event_id,
         attempt_number: 2,
-        request_url: "https://api.customer.com/webhooks".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: HashMap::new(),
-        request_method: HttpMethod::Patch,
+        request_body: b"test request".to_vec(),
         response_status: None,
         response_headers: None,
         response_body: None,
         attempted_at: now,
-        duration_ms: 5000,
-        error_type: Some(DeliveryAttemptErrorType::Timeout),
-        error_message: Some("Request timeout after 5s".to_string()),
+        succeeded: false,
+        error_message: Some("Connection timeout".to_string()),
     };
 
-    assert_eq!(failed_attempt.attempt_number, 2);
-    assert_eq!(failed_attempt.response_status, None);
-    assert_eq!(failed_attempt.error_type, Some(DeliveryAttemptErrorType::Timeout));
-    assert_eq!(failed_attempt.error_message, Some("Request timeout after 5s".to_string()));
+    assert_eq!(attempt.attempt_number, 2);
+    assert_eq!(attempt.response_status, None);
+    assert!(!attempt.succeeded);
+    assert!(attempt.error_message.is_some());
 }
 
 /// Test DeliveryAttempt serialization and deserialization.
@@ -356,19 +355,20 @@ fn delivery_attempt_serialization_roundtrip() {
     let mut headers = HashMap::new();
     headers.insert("user-agent".to_string(), "kapsel/1.0".to_string());
 
+    let request_body = b"{\"test\": \"data\"}";
+
     let original = DeliveryAttempt {
         id: Uuid::new_v4(),
         event_id: EventId::new(),
         attempt_number: 3,
-        request_url: "https://hooks.example.com/receive".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: headers,
-        request_method: HttpMethod::Put,
+        request_body: request_body.to_vec(),
         response_status: Some(422),
         response_headers: Some(HashMap::new()),
-        response_body: Some("{\"error\": \"validation failed\"}".to_string()),
+        response_body: Some(b"Unprocessable Entity".to_vec()),
         attempted_at: Utc::now(),
-        duration_ms: 150,
-        error_type: Some(DeliveryAttemptErrorType::ClientError),
+        succeeded: false,
         error_message: Some("Unprocessable Entity".to_string()),
     };
 
@@ -378,12 +378,11 @@ fn delivery_attempt_serialization_roundtrip() {
 
     assert_eq!(deserialized.id, original.id);
     assert_eq!(deserialized.event_id, original.event_id);
+    assert_eq!(deserialized.endpoint_id, original.endpoint_id);
     assert_eq!(deserialized.attempt_number, original.attempt_number);
-    assert_eq!(deserialized.request_url, original.request_url);
-    assert_eq!(deserialized.request_method, original.request_method);
+    assert_eq!(deserialized.request_body, original.request_body);
     assert_eq!(deserialized.response_status, original.response_status);
-    assert_eq!(deserialized.duration_ms, original.duration_ms);
-    assert_eq!(deserialized.error_type, original.error_type);
+    assert_eq!(deserialized.succeeded, original.succeeded);
     assert_eq!(deserialized.error_message, original.error_message);
 }
 
@@ -559,22 +558,21 @@ fn model_field_constraints_and_validation() {
         id: Uuid::new_v4(),
         event_id: EventId::new(),
         attempt_number: 1,
-        request_url: "https://valid.example.com".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: HashMap::new(),
-        request_method: HttpMethod::Get,
+        request_body: b"test payload".to_vec(),
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
-        response_body: Some("OK".to_string()),
+        response_body: Some(b"OK".to_vec()),
         attempted_at: now,
-        duration_ms: 100,
-        error_type: None,
+        succeeded: true,
         error_message: None,
     };
 
     // Attempt number should be positive
     assert!(delivery_attempt.attempt_number > 0);
     // Duration should be reasonable
-    assert!(delivery_attempt.duration_ms < 60000); // Less than 60 seconds
+    assert!(delivery_attempt.succeeded || delivery_attempt.error_message.is_some());
 }
 
 /// Test WebhookEvent::new() enforces business rules correctly.
@@ -686,7 +684,7 @@ fn endpoint_circuit_breaker_state_transitions() {
         name: "Healthy Endpoint".to_string(),
         is_active: true,
         signature_config: SignatureConfig::None,
-        max_retries: 3,
+        max_retries: 5,
         timeout_seconds: 30,
         retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Closed,
@@ -715,7 +713,7 @@ fn endpoint_circuit_breaker_state_transitions() {
         name: "Failing Endpoint".to_string(),
         is_active: true,
         signature_config: SignatureConfig::None,
-        max_retries: 3,
+        max_retries: 10,
         timeout_seconds: 30,
         retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::Open,
@@ -746,7 +744,7 @@ fn endpoint_circuit_breaker_state_transitions() {
         name: "Recovering Endpoint".to_string(),
         is_active: true,
         signature_config: SignatureConfig::None,
-        max_retries: 3,
+        max_retries: 100,
         timeout_seconds: 30,
         retry_strategy: BackoffStrategy::Exponential,
         circuit_state: CircuitState::HalfOpen,
@@ -782,10 +780,7 @@ fn endpoint_retry_configuration_validation() {
         url: "https://api.example.com".to_string(),
         name: "API Endpoint".to_string(),
         is_active: true,
-        signature_config: SignatureConfig::hmac_sha256_with_header(
-            "secret".to_string(),
-            "X-Signature".to_string(),
-        ),
+        signature_config: SignatureConfig::hmac_sha256("secret".to_string()),
         max_retries: 3,
         timeout_seconds: 30,
         retry_strategy: BackoffStrategy::Exponential,
@@ -839,8 +834,8 @@ fn endpoint_retry_configuration_validation() {
     let minimal_endpoint = Endpoint {
         id: EndpointId::new(),
         tenant_id: TenantId::new(),
-        url: "https://simple.example.com".to_string(),
-        name: "Simple Endpoint".to_string(),
+        url: "https://limits.example.com".to_string(),
+        name: "Max Limits Endpoint".to_string(),
         is_active: true,
         signature_config: SignatureConfig::None,
         max_retries: 1,      // Minimal retries
@@ -877,64 +872,61 @@ fn delivery_attempt_timing_constraints() {
         id: Uuid::new_v4(),
         event_id,
         attempt_number: 1,
-        request_url: "https://fast.example.com".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: HashMap::new(),
-        request_method: HttpMethod::Post,
+        request_body: b"quick request".to_vec(),
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
-        response_body: Some("OK".to_string()),
+        response_body: Some(b"OK".to_vec()),
         attempted_at: now,
-        duration_ms: 50, // Very fast response
-        error_type: None,
+        succeeded: true,
         error_message: None,
     };
 
-    assert!(quick_success.duration_ms < 1000); // Under 1 second
+    assert!(quick_success.succeeded); // Should be successful
     assert!(quick_success.response_status.unwrap() >= 200);
     assert!(quick_success.response_status.unwrap() < 300);
-    assert!(quick_success.error_type.is_none());
+    assert!(quick_success.error_message.is_none());
 
     // Test slow successful delivery
+    // Slow but successful attempt
     let slow_success = DeliveryAttempt {
         id: Uuid::new_v4(),
         event_id,
         attempt_number: 2,
-        request_url: "https://slow.example.com".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: HashMap::new(),
-        request_method: HttpMethod::Post,
+        request_body: b"slow request".to_vec(),
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
-        response_body: Some("Processed".to_string()),
+        response_body: Some(b"Processed".to_vec()),
         attempted_at: now,
-        duration_ms: 2500, // Slow but successful
-        error_type: None,
+        succeeded: true,
         error_message: None,
     };
 
-    assert!(slow_success.duration_ms > 2000);
-    assert!(slow_success.duration_ms < 30000); // Under 30 seconds
+    assert!(slow_success.succeeded);
     assert!(slow_success.attempt_number > 1); // Retry attempt
 
     // Test timeout failure
+    // Timeout failure
     let timeout_failure = DeliveryAttempt {
         id: Uuid::new_v4(),
         event_id,
         attempt_number: 3,
-        request_url: "https://timeout.example.com".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: HashMap::new(),
-        request_method: HttpMethod::Get,
+        request_body: b"timeout request".to_vec(),
         response_status: None,
         response_headers: None,
         response_body: None,
         attempted_at: now,
-        duration_ms: 30000, // Timed out
-        error_type: Some(DeliveryAttemptErrorType::Timeout),
+        succeeded: false,
         error_message: Some("Request timed out after 30s".to_string()),
     };
 
-    assert!(timeout_failure.duration_ms >= 30000); // Full timeout duration
     assert!(timeout_failure.response_status.is_none());
-    assert!(timeout_failure.error_type.is_some());
+    assert!(!timeout_failure.succeeded);
     assert!(timeout_failure.error_message.is_some());
     assert!(timeout_failure.attempt_number > 1); // Should be a retry
 }
@@ -970,15 +962,12 @@ fn domain_model_invariants_and_edge_cases() {
         url: "https://a.co/w".to_string(), // Very short valid URL
         name: "X".to_string(),             // Single character name
         is_active: false,                  // Inactive endpoint
-        signature_config: SignatureConfig::hmac_sha256_with_header(
-            "minimal-secret".to_string(),
-            "X".to_string(),
-        ),
-        max_retries: 0,     // No retries
+        signature_config: SignatureConfig::hmac_sha256("minimal-secret".to_string()),
+        max_retries: 0i32,  // No retries
         timeout_seconds: 1, // Minimal timeout
         retry_strategy: BackoffStrategy::Fixed,
         circuit_state: CircuitState::Open,
-        circuit_failure_count: u32::MAX, // Maximum failures
+        circuit_failure_count: u32::MAX as i32, // Maximum failures
         circuit_success_count: 0,
         circuit_last_failure_at: Some(now),
         circuit_half_open_at: None,
@@ -1001,7 +990,7 @@ fn domain_model_invariants_and_edge_cases() {
         id: Uuid::new_v4(),
         event_id: EventId::new(),
         attempt_number: 100, // Many attempts
-        request_url: "https://extremely-long-domain-name-for-testing-purposes.example.com/very/deep/path/structure".to_string(),
+        endpoint_id: EndpointId::new(),
         request_headers: {
             let mut headers = HashMap::new();
             // Add many headers
@@ -1010,18 +999,17 @@ fn domain_model_invariants_and_edge_cases() {
             }
             headers
         },
-        request_method: HttpMethod::Patch, // Less common method
+        request_body: b"unusual request".to_vec(),
         response_status: Some(418), // I'm a teapot - unusual but valid
         response_headers: Some(HashMap::new()),
-        response_body: Some("🫖".to_string()), // Unicode content
+        response_body: Some("☕".as_bytes().to_vec()), // Unicode response
         attempted_at: now,
-        duration_ms: 0, // Instantaneous response (edge case)
-        error_type: None,
+        succeeded: true,
         error_message: None,
     };
 
     assert!(unusual_attempt.attempt_number > 10);
     assert!(unusual_attempt.request_headers.len() == 50);
     assert_eq!(unusual_attempt.response_status, Some(418));
-    assert_eq!(unusual_attempt.duration_ms, 0);
+    assert!(unusual_attempt.succeeded);
 }
