@@ -13,6 +13,7 @@ env:
   CARGO_TERM_COLOR: always
   SQLX_VERSION: 0.8.6
   SQLX_FEATURES: "rustls,postgres"
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5433/kapsel_test
 
 jobs:
   format:
@@ -48,35 +49,107 @@ jobs:
           - rust: nightly
             experimental: true
     continue-on-error: ${{ matrix.experimental == true }}
+    services:
+      postgres-test:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kapsel_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --tmpfs /var/lib/postgresql/data:size=2g
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install sqlx-cli
+        run: |
+          cargo install sqlx-cli \
+            --version=${{ env.SQLX_VERSION }} \
+            --features=${{ env.SQLX_FEATURES }} \
+            --no-default-features \
+            --locked
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5433 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+
+      - name: Run migrations
+        run: sqlx migrate run --database-url $DATABASE_URL
+
       - name: Install nextest
         uses: taiki-e/install-action@nextest
+
       - name: Run tests
         run: cargo nextest run --workspace --no-fail-fast
+
       - name: Run doc tests
         run: cargo test --doc --workspace
 
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    services:
+      postgres-test:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kapsel_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --tmpfs /var/lib/postgresql/data:size=2g
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
-        run: cargo install cargo-llvm-cov
+        run: |
+          cargo install cargo-llvm-cov
+          cargo install sqlx-cli \
+            --version=${{ env.SQLX_VERSION }} \
+            --features=${{ env.SQLX_FEATURES }} \
+            --no-default-features \
+            --locked
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5433 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+
+      - name: Run migrations
+        run: sqlx migrate run --database-url $DATABASE_URL
+
       - name: Install nextest
         uses: taiki-e/install-action@nextest
+
       - name: Generate coverage
         run: |
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+
       - name: Upload to codecov
         uses: codecov/codecov-action@v3
         with:
@@ -104,7 +177,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-machete
         run: cargo install cargo-machete
-
       - name: Check for unused dependencies
         run: cargo machete
 
@@ -123,10 +195,28 @@ jobs:
   sqlx-prepare:
     name: SQLx Prepare Check
     runs-on: ubuntu-latest
+    services:
+      postgres-test:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kapsel_test
+          POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --shm-size=1g
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
       - name: Install sqlx-cli
         run: |
           cargo install sqlx-cli \
@@ -134,6 +224,17 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5433 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+
+      - name: Run migrations
+        run: sqlx migrate run --database-url $DATABASE_URL
+
       - name: Check sqlx prepare
         run: cargo sqlx prepare --check --workspace
 

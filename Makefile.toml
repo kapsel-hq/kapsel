@@ -8,7 +8,7 @@ skip_core_tasks = false
 [env]
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 RUST_BACKTRACE = "short"
-DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5433/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
+DATABASE_URL = { value = "postgresql://postgres:postgres@localhost:5433/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
 SQLX_VERSION = "0.8.6"
 
 # Core development tasks
