@@ -167,6 +167,9 @@ impl DeliveryError {
     /// Returns `true` for network errors, timeouts, server errors (5xx), and
     /// rate limits. Returns `false` for client errors (4xx), circuit breaker
     /// states, configuration issues, and exhausted retries.
+    ///
+    /// Special cases: 408 Request Timeout and 425 Too Early are retryable
+    /// despite being 4xx codes, as they indicate temporary conditions.
     pub fn is_retryable(&self) -> bool {
         match self {
             // Retryable errors - temporary network/server issues
@@ -176,9 +179,13 @@ impl DeliveryError {
             | Self::RateLimited { .. }
             | Self::DatabaseError { .. } => true,
 
+            // Special case: 408 Request Timeout and 425 Too Early are retryable
+            Self::ClientError { status_code, .. } => {
+                matches!(*status_code, 408 | 425)
+            },
+
             // Non-retryable errors - client issues or circuit protection
-            Self::ClientError { .. }
-            | Self::CircuitOpen { .. }
+            Self::CircuitOpen { .. }
             | Self::RetriesExhausted { .. }
             | Self::ConfigurationError { .. }
             | Self::ShutdownRequested
@@ -269,8 +276,13 @@ mod tests {
         assert!(DeliveryError::rate_limited(60).is_retryable());
         assert!(DeliveryError::database("connection lost").is_retryable());
 
+        // Special case: 408 and 425 are retryable client errors
+        assert!(DeliveryError::client_error(408, "request timeout").is_retryable());
+        assert!(DeliveryError::client_error(425, "too early").is_retryable());
+
         // Non-retryable errors
         assert!(!DeliveryError::client_error(404, "not found").is_retryable());
+        assert!(!DeliveryError::client_error(400, "bad request").is_retryable());
         assert!(!DeliveryError::circuit_open("endpoint-123").is_retryable());
         assert!(!DeliveryError::retries_exhausted(5).is_retryable());
         assert!(!DeliveryError::configuration("invalid URL").is_retryable());

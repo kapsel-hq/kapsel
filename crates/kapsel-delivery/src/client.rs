@@ -313,7 +313,7 @@ mod tests {
 
     use super::*;
 
-    async fn create_test_request(url: String) -> DeliveryRequest {
+    fn create_test_request(url: String) -> DeliveryRequest {
         let mut headers = HashMap::new();
         headers.insert("X-Original-Header".to_string(), "test-value".to_string());
 
@@ -340,7 +340,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
@@ -361,7 +361,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
@@ -382,7 +382,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
@@ -407,7 +407,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
@@ -432,7 +432,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
@@ -449,7 +449,7 @@ mod tests {
             .await;
 
         let client = DeliveryClient::with_defaults().unwrap();
-        let request = create_test_request(format!("{}/webhook", mock_server.uri())).await;
+        let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
         assert!(result.is_ok());
