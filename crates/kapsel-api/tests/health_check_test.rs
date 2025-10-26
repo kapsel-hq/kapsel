@@ -15,7 +15,7 @@ use tower::ServiceExt;
 /// the database is accessible and all systems are operational.
 #[tokio::test]
 async fn health_check_returns_success_when_healthy() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
     let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()
@@ -54,7 +54,7 @@ async fn health_check_returns_success_when_healthy() {
 /// database connectivity and operational status.
 #[tokio::test]
 async fn health_check_includes_database_status() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
     let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()
@@ -89,7 +89,7 @@ async fn health_check_includes_database_status() {
 /// perform expensive operations that would slow down health monitoring.
 #[tokio::test]
 async fn health_check_responds_quickly() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
     let app = create_test_router(env.pool().clone());
 
     let start_time = std::time::Instant::now();
@@ -119,7 +119,7 @@ async fn health_check_responds_quickly() {
 /// properly without race conditions or resource contention.
 #[tokio::test]
 async fn health_check_handles_concurrent_requests() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Launch multiple concurrent health check requests
     let mut handles = Vec::new();
@@ -157,7 +157,7 @@ async fn health_check_handles_concurrent_requests() {
 /// HTTP methods and responds appropriately.
 #[tokio::test]
 async fn health_check_handles_http_methods() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Test GET method (should work)
     let app = create_test_router(env.pool().clone());
@@ -199,7 +199,7 @@ async fn health_check_handles_http_methods() {
 /// follows expected structure across multiple requests.
 #[tokio::test]
 async fn health_check_response_format_is_consistent() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Make multiple requests and verify consistent response format
     for _ in 0..5 {
@@ -250,7 +250,7 @@ async fn health_check_response_format_is_consistent() {
 /// for monitoring and debugging purposes.
 #[tokio::test]
 async fn health_check_includes_timestamp() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
     let app = create_test_router(env.pool().clone());
 
     let request = axum::http::Request::builder()

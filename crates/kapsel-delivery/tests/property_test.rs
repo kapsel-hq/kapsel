@@ -100,12 +100,12 @@ proptest! {
             attempt,
             error,
             Utc::now(),
-            policy.clone(),
+            policy,
         );
 
         if let kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } = context.decide_retry() {
             let delay = next_attempt_at.signed_duration_since(Utc::now());
-            let delay_secs = delay.num_seconds().max(0) as u64;
+            let delay_secs = u64::try_from(delay.num_seconds().max(0)).unwrap_or(0);
 
             // Delay should be at least 0 and at most max_delay (with some tolerance for jitter)
             prop_assert!(delay_secs <= max_delay_secs + 1); // Allow 1 second tolerance for jitter
@@ -122,8 +122,8 @@ proptest! {
     ) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let config = CircuitConfig {
-            failure_threshold: failure_threshold as u32,
-            success_threshold: success_threshold as u32,
+            failure_threshold: u32::try_from(failure_threshold).unwrap(),
+            success_threshold: u32::try_from(success_threshold).unwrap(),
             failure_rate_threshold,
             min_requests_for_rate: 5,
             open_timeout: Duration::from_secs(10),
@@ -158,7 +158,7 @@ proptest! {
             }
 
             // Failure count should match what we recorded
-            prop_assert_eq!(stats.consecutive_failures, consecutive_failures as u32);
+            prop_assert_eq!(stats.consecutive_failures, u32::try_from(consecutive_failures).unwrap());
             Ok(())
         })?;
     }
@@ -171,6 +171,7 @@ proptest! {
     ) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let failed_requests = failed_requests.min(total_requests);
+        #[allow(clippy::cast_precision_loss)]
         let expected_rate = failed_requests as f64 / total_requests as f64;
 
         rt.block_on(async {
@@ -190,8 +191,8 @@ proptest! {
 
             // Allow small floating point tolerance
             prop_assert!((calculated_rate - expected_rate).abs() < 0.001);
-            prop_assert_eq!(stats.total_requests, total_requests as u32);
-            prop_assert_eq!(stats.failed_requests, failed_requests as u32);
+            prop_assert_eq!(stats.total_requests, u32::try_from(total_requests).unwrap());
+            prop_assert_eq!(stats.failed_requests, u32::try_from(failed_requests).unwrap());
             Ok(())
         })?;
     }
@@ -202,10 +203,15 @@ proptest! {
         status_code in 400u16..600,
         timeout_seconds in 1u64..120
     ) {
-        // Client errors (4xx) should not be retryable
+        // Client errors (4xx) should not be retryable, except 408 and 425
         if (400..500).contains(&status_code) {
             let error = DeliveryError::client_error(status_code, "Client Error".to_string());
-            prop_assert!(!error.is_retryable());
+            // Special cases: 408 Request Timeout and 425 Too Early are retryable
+            if matches!(status_code, 408 | 425) {
+                prop_assert!(error.is_retryable());
+            } else {
+                prop_assert!(!error.is_retryable());
+            }
         }
 
         // Server errors (5xx) should be retryable
@@ -237,7 +243,7 @@ proptest! {
     fn fuzz_retry_calculation_edge_cases(
         attempt in 0u32..1000,
         base_delay_ms in 1u64..10000,
-        max_delay_ms in 1u64..86400000, // Up to 24 hours
+        max_delay_ms in 1u64..86_400_000, // Up to 24 hours
         jitter_factor in 0.0f64..1.0
     ) {
         let base_delay = Duration::from_millis(base_delay_ms);
@@ -268,7 +274,7 @@ proptest! {
                 // Delay should never be negative or significantly exceed max_delay
                 prop_assert!(delay.num_milliseconds() >= 0);
                 // Allow some tolerance for jitter and timing
-                let max_delay_ms = max_delay.as_millis() as i64;
+                let max_delay_ms = i64::try_from(max_delay.as_millis()).unwrap_or(i64::MAX);
                 prop_assert!(delay.num_milliseconds() <= max_delay_ms * 2); // Double tolerance for extreme jitter
             }
             kapsel_delivery::retry::RetryDecision::GiveUp { reason: _ } => {
@@ -286,8 +292,8 @@ proptest! {
         operations in prop::collection::vec(any::<bool>(), 1..100)
     ) {
         let config = CircuitConfig {
-            failure_threshold: failure_threshold as u32,
-            success_threshold: success_threshold as u32,
+            failure_threshold: u32::try_from(failure_threshold).unwrap(),
+            success_threshold: u32::try_from(success_threshold).unwrap(),
             failure_rate_threshold: 0.5,
             min_requests_for_rate: 5,
             open_timeout: Duration::from_secs(1),
@@ -303,7 +309,7 @@ proptest! {
             let mut consecutive_successes = 0;
             let mut expected_state = kapsel_delivery::circuit::CircuitState::Closed;
 
-            for success in operations.iter() {
+            for success in &operations {
                 if *success {
                     manager.record_success(endpoint_id).await;
                     consecutive_failures = 0;
@@ -341,10 +347,10 @@ proptest! {
                 ));
 
                 // Counters should never be negative
-                prop_assert!(stats.consecutive_failures <= operations.len() as u32);
-                prop_assert!(stats.consecutive_successes <= operations.len() as u32);
-                prop_assert!(stats.total_requests <= operations.len() as u32);
-                prop_assert!(stats.failed_requests <= operations.len() as u32);
+                prop_assert!(stats.consecutive_failures <= u32::try_from(operations.len()).unwrap());
+                prop_assert!(stats.consecutive_successes <= u32::try_from(operations.len()).unwrap());
+                prop_assert!(stats.total_requests <= u32::try_from(operations.len()).unwrap());
+                prop_assert!(stats.failed_requests <= u32::try_from(operations.len()).unwrap());
             }
             Ok(())
         })?;
@@ -439,17 +445,22 @@ proptest! {
         // Test HTTP status code categorization
         if (400..500).contains(&status_code) {
             let client_error = DeliveryError::client_error(status_code, message.clone());
-            prop_assert!(!client_error.is_retryable());
+            // Special cases: 408 Request Timeout and 425 Too Early are retryable
+            if matches!(status_code, 408 | 425) {
+                prop_assert!(client_error.is_retryable());
+            } else {
+                prop_assert!(!client_error.is_retryable());
+            }
         }
 
         if (500..600).contains(&status_code) {
-            let server_error = DeliveryError::server_error(status_code, message.clone());
+            let server_error = DeliveryError::server_error(status_code, message);
             prop_assert!(server_error.is_retryable());
         }
 
         // Error display should not panic with any input
-        let _ = format!("{}", network_error);
-        let _ = format!("{}", timeout_error);
-        let _ = format!("{}", rate_error);
+        let _ = format!("{network_error}");
+        let _ = format!("{timeout_error}");
+        let _ = format!("{rate_error}");
     }
 }

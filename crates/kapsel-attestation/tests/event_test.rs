@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 /// event-driven architecture correctly triggers attestation creation.
 #[tokio::test]
 async fn successful_delivery_events_create_attestation_leaves() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Create attestation infrastructure
     let signing_service = SigningService::ephemeral();
@@ -43,6 +43,7 @@ async fn successful_delivery_events_create_attestation_leaves() {
     // Verify attestation leaf was created
     let service = merkle_service.read().await;
     assert_eq!(service.pending_count(), 1, "Success event should create one attestation leaf");
+    drop(service);
 }
 
 /// Test that failed delivery events do not create attestation leaves.
@@ -51,7 +52,7 @@ async fn successful_delivery_events_create_attestation_leaves() {
 /// entries since there was no successful delivery to attest to.
 #[tokio::test]
 async fn failed_delivery_events_do_not_create_attestation_leaves() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service =
@@ -70,6 +71,37 @@ async fn failed_delivery_events_do_not_create_attestation_leaves() {
     // Verify no attestation leaf was created for failure
     let service = merkle_service.read().await;
     assert_eq!(service.pending_count(), 0, "Failure events should not create attestation leaves");
+    drop(service);
+}
+
+/// Test handling multiple successful delivery events sequentially.
+///
+/// Verifies that multiple delivery success events are all processed
+/// correctly and create the expected number of attestation leaves.
+#[tokio::test]
+async fn multiple_successful_delivery_events_create_multiple_leaves() {
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+
+    let signing_service = SigningService::ephemeral();
+    let merkle_service =
+        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
+
+    let mut tester = EventHandlerTester::new();
+    tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));
+
+    // Send multiple success events
+    for _ in 0..3 {
+        let success_event = test_events::create_delivery_succeeded_event();
+        tester.handle_event(success_event).await;
+    }
+
+    tester.wait_for_all_completions().await;
+
+    // Verify all attestation leaves were created
+    let service = merkle_service.read().await;
+    assert_eq!(service.pending_count(), 3, "All success events should create attestation leaves");
+    drop(service);
 }
 
 /// Test multicast dispatch to multiple attestation services.
@@ -79,7 +111,7 @@ async fn failed_delivery_events_do_not_create_attestation_leaves() {
 /// attestation strategies.
 #[tokio::test]
 async fn multicast_event_handling_with_multiple_attestation_services() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Create two independent attestation services
     let signing_service1 = SigningService::ephemeral();
@@ -114,13 +146,15 @@ async fn multicast_event_handling_with_multiple_attestation_services() {
         assert_eq!(
             service1.pending_count(),
             1,
-            "First attestation service should have one pending leaf"
+            "Each service should have its own attestation leaf count"
         );
         assert_eq!(
             service2.pending_count(),
             1,
-            "Second attestation service should have one pending leaf"
+            "Each service should have its own attestation leaf count"
         );
+        drop(service1);
+        drop(service2);
     }
 
     // Verify total completions
@@ -133,7 +167,7 @@ async fn multicast_event_handling_with_multiple_attestation_services() {
 /// delivery events without data races or lost attestations.
 #[tokio::test]
 async fn concurrent_delivery_events_create_correct_attestation_count() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service =
@@ -146,7 +180,9 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
     // Send multiple concurrent events
     let event_count = 5;
     for i in 0..event_count {
-        let event = test_events::create_delivery_succeeded_event_with_hash([i as u8; 32]);
+        let event = test_events::create_delivery_succeeded_event_with_hash(
+            [u8::try_from(i).unwrap_or(0); 32],
+        );
         tester.handle_event(event).await;
     }
 
@@ -158,8 +194,9 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
     assert_eq!(
         service.pending_count(),
         event_count,
-        "All success events should create attestation leaves"
+        "All concurrent events should create attestation leaves"
     );
+    drop(service);
 }
 
 /// Test mixed success and failure event processing.
@@ -168,7 +205,7 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
 /// creating attestations only for successful deliveries.
 #[tokio::test]
 async fn mixed_success_failure_events_create_correct_attestations() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service =
@@ -202,6 +239,7 @@ async fn mixed_success_failure_events_create_correct_attestations() {
     // Verify only success events created attestation leaves
     let service = merkle_service.read().await;
     assert_eq!(service.pending_count(), 3, "Only success events should create attestation leaves");
+    drop(service);
 
     // Verify event history captured all events
     let history = tester.event_history().await;
@@ -214,7 +252,7 @@ async fn mixed_success_failure_events_create_correct_attestations() {
 /// subscription pipeline without corruption or modification.
 #[tokio::test]
 async fn event_data_integrity_preserved_through_attestation() {
-    let env = TestEnv::new().await.expect("failed to create test environment");
+    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service =
@@ -239,6 +277,7 @@ async fn event_data_integrity_preserved_through_attestation() {
     // Verify data was processed
     let service = merkle_service.read().await;
     assert_eq!(service.pending_count(), 1, "Event should be processed");
+    drop(service);
 
     // Verify event was recorded in history with correct data
     let history = tester.event_history().await;

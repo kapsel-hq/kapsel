@@ -3,13 +3,17 @@
 //! Tests database table structure, constraints, and relationships
 //! for attestation components including Merkle leaves and signed tree heads.
 
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
+
 use kapsel_core::IdempotencyStrategy;
-use kapsel_testing::database::TestDatabase;
+use kapsel_testing::TestEnv;
 
 #[tokio::test]
 async fn attestation_tables_exist() {
-    let db = TestDatabase::new().await.unwrap();
-    let pool = db.pool();
+    let env = TestEnv::new().await.unwrap();
+    let pool = env.pool();
 
     // Verify all 4 attestation tables exist
     let count: i64 = sqlx::query_scalar(
@@ -26,8 +30,14 @@ async fn attestation_tables_exist() {
 
 #[tokio::test]
 async fn only_one_active_attestation_key_allowed() {
-    let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.pool().begin().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
+
+    // Deactivate any existing active keys within this transaction
+    sqlx::query("UPDATE attestation_keys SET is_active = FALSE WHERE is_active = TRUE")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
 
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
@@ -47,12 +57,15 @@ async fn only_one_active_attestation_key_allowed() {
             .await;
 
     assert!(result.is_err(), "Only one active key allowed");
+
+    // Rollback transaction to prevent connection leak
+    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
 async fn merkle_leaves_enforces_constraints() {
-    let db = TestDatabase::new().await.unwrap();
-    let mut tx = db.pool().begin().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
 
     // Create test delivery attempt
     let attempt_id = create_test_delivery_attempt(&mut tx).await;
@@ -97,6 +110,9 @@ async fn merkle_leaves_enforces_constraints() {
     .await;
 
     assert!(result.is_err(), "leaf_hash must be exactly 32 bytes");
+
+    // Rollback transaction to prevent connection leak
+    tx.rollback().await.unwrap();
 }
 
 async fn create_test_delivery_attempt(

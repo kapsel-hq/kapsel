@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// persistence, including proper event creation and status tracking.
 #[tokio::test]
 async fn ingest_webhook_succeeds_with_valid_request() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create tenant and endpoint
     let tenant_id = Uuid::new_v4();
@@ -30,7 +30,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     // Insert tenant
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
-        .bind("test-tenant")
+        .bind(format!("test-tenant-{tenant_id}"))
         .bind("enterprise")
         .execute(env.pool())
         .await
@@ -78,7 +78,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     let request = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .header("x-idempotency-key", "test-event-001")
         .body(Body::from(payload_bytes.clone()))
@@ -134,7 +134,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
 /// with appropriate error responses.
 #[tokio::test]
 async fn ingest_webhook_fails_with_invalid_auth() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
     let app = create_test_router(env.pool().clone());
 
     let endpoint_id = Uuid::new_v4();
@@ -143,7 +143,7 @@ async fn ingest_webhook_fails_with_invalid_auth() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
+        .uri(format!("/ingest/{endpoint_id}"))
         .header(AUTHORIZATION, "Bearer invalid-key")
         .header("content-type", "application/json")
         .body(Body::from(payload_bytes))
@@ -159,7 +159,7 @@ async fn ingest_webhook_fails_with_invalid_auth() {
 /// Verifies that requests without Authorization header are rejected.
 #[tokio::test]
 async fn ingest_webhook_fails_without_auth() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
     let app = create_test_router(env.pool().clone());
 
     let endpoint_id = Uuid::new_v4();
@@ -168,7 +168,7 @@ async fn ingest_webhook_fails_without_auth() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
+        .uri(format!("/ingest/{endpoint_id}"))
         .header("content-type", "application/json")
         .body(Body::from(payload_bytes))
         .expect("build request");
@@ -184,7 +184,7 @@ async fn ingest_webhook_fails_without_auth() {
 /// with 404 Not Found.
 #[tokio::test]
 async fn ingest_webhook_fails_with_nonexistent_endpoint() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create valid tenant and API key
     let tenant_id = Uuid::new_v4();
@@ -193,7 +193,7 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
 
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
-        .bind("test-tenant")
+        .bind(format!("test-tenant-{}", tenant_id))
         .bind("enterprise")
         .execute(env.pool())
         .await
@@ -216,8 +216,8 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .body(Body::from(payload_bytes))
         .expect("build request");
@@ -233,7 +233,7 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
 /// 413 Payload Too Large.
 #[tokio::test]
 async fn ingest_webhook_enforces_payload_size_limit() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create tenant, API key, and endpoint
     let tenant_id = Uuid::new_v4();
@@ -243,7 +243,7 @@ async fn ingest_webhook_enforces_payload_size_limit() {
 
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
-        .bind("test-tenant")
+        .bind(format!("test-tenant-{tenant_id}"))
         .bind("enterprise")
         .execute(env.pool())
         .await
@@ -280,8 +280,8 @@ async fn ingest_webhook_enforces_payload_size_limit() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/octet-stream")
         .body(Body::from(large_payload))
         .expect("build request");
@@ -297,7 +297,7 @@ async fn ingest_webhook_enforces_payload_size_limit() {
 /// return the same event ID without creating duplicates.
 #[tokio::test]
 async fn ingest_webhook_handles_idempotency_correctly() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create tenant, API key, and endpoint
     let tenant_id = Uuid::new_v4();
@@ -347,8 +347,8 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let app1 = create_test_router(env.pool().clone());
     let request1 = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .header("x-idempotency-key", "idempotent-test-001")
         .body(Body::from(payload_bytes.clone()))
@@ -369,8 +369,8 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let app2 = create_test_router(env.pool().clone());
     let request2 = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .header("x-idempotency-key", "idempotent-test-001")
         .body(Body::from(payload_bytes))
@@ -409,7 +409,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
 /// the content-type header is preserved.
 #[tokio::test]
 async fn ingest_webhook_handles_different_content_types() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create tenant, API key, and endpoint
     let tenant_id = Uuid::new_v4();
@@ -419,7 +419,7 @@ async fn ingest_webhook_handles_different_content_types() {
 
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
-        .bind("test-tenant")
+        .bind(format!("test-tenant-{tenant_id}"))
         .bind("enterprise")
         .execute(env.pool())
         .await
@@ -456,8 +456,8 @@ async fn ingest_webhook_handles_different_content_types() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .header("x-idempotency-key", "content-type-json")
         .body(Body::from(json_bytes.clone()))
@@ -482,8 +482,8 @@ async fn ingest_webhook_handles_different_content_types() {
 
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "text/plain")
         .header("x-idempotency-key", "content-type-text")
         .body(Body::from(text_payload))
@@ -509,7 +509,7 @@ async fn ingest_webhook_handles_different_content_types() {
 /// normally without deduplication.
 #[tokio::test]
 async fn ingest_webhook_without_idempotency_key() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
 
     // Create tenant, API key, and endpoint
     let tenant_id = Uuid::new_v4();
@@ -519,7 +519,7 @@ async fn ingest_webhook_without_idempotency_key() {
 
     sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
         .bind(tenant_id)
-        .bind("test-tenant")
+        .bind(format!("test-tenant-{tenant_id}"))
         .bind("enterprise")
         .execute(env.pool())
         .await
@@ -556,8 +556,8 @@ async fn ingest_webhook_without_idempotency_key() {
     let app1 = create_test_router(env.pool().clone());
     let request1 = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .body(Body::from(payload_bytes.clone()))
         .expect("build first request");
@@ -569,8 +569,8 @@ async fn ingest_webhook_without_idempotency_key() {
     let app2 = create_test_router(env.pool().clone());
     let request2 = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .uri(format!("/ingest/{endpoint_id}"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .body(Body::from(payload_bytes))
         .expect("build second request");

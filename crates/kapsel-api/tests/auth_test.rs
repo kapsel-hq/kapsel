@@ -24,28 +24,17 @@ use uuid::Uuid;
 /// tenant context is properly injected into the request.
 #[tokio::test]
 async fn authenticate_request_succeeds_with_valid_key() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let mut tx = env.pool().begin().await.expect("begin transaction");
 
-    // Insert test tenant and API key
-    let tenant_id = Uuid::new_v4();
-    let api_key = "test-key-valid-123";
-    let key_hash = sha256::digest(api_key.as_bytes());
+    // Create test data using transaction-aware methods
+    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
 
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(env.pool())
-        .await
-        .expect("insert tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut *tx, tenant_id, "test-key-valid").await.expect("create api key");
 
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
+    // Commit so API handlers can see the data
+    tx.commit().await.expect("commit transaction");
 
     // Create test app with auth middleware
     let app = create_test_app(env.pool().clone());
@@ -61,7 +50,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Verify response contains tenant ID
+    // Verify response body
     let body =
         axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body extraction");
     let body_json: serde_json::Value = serde_json::from_slice(&body).expect("json deserialization");
@@ -74,7 +63,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
 /// Verifies that invalid API keys are rejected with 401 Unauthorized.
 #[tokio::test]
 async fn authenticate_request_fails_with_invalid_key() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
     let app = create_test_app(env.pool().clone());
 
     let request = Request::builder()
@@ -94,13 +83,12 @@ async fn authenticate_request_fails_with_invalid_key() {
 /// with 401 Unauthorized.
 #[tokio::test]
 async fn authenticate_request_fails_without_auth_header() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
     let app = create_test_app(env.pool().clone());
 
     let request = Request::builder().uri("/test").body(Body::empty()).expect("request build");
 
     let response = app.oneshot(request).await.expect("request execution");
-
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -109,7 +97,7 @@ async fn authenticate_request_fails_without_auth_header() {
 /// Verifies that malformed Authorization headers are rejected properly.
 #[tokio::test]
 async fn authenticate_request_fails_with_malformed_header() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
     let app = create_test_app(env.pool().clone());
 
     // Test missing "Bearer " prefix
@@ -120,6 +108,7 @@ async fn authenticate_request_fails_with_malformed_header() {
         .expect("request build");
 
     let response = app.oneshot(request).await.expect("request execution");
+
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Test wrong authentication scheme
@@ -131,6 +120,7 @@ async fn authenticate_request_fails_with_malformed_header() {
         .expect("request build");
 
     let response = app.oneshot(request).await.expect("request execution");
+
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -140,30 +130,26 @@ async fn authenticate_request_fails_with_malformed_header() {
 /// previously valid.
 #[tokio::test]
 async fn authenticate_request_fails_with_revoked_key() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let mut tx = env.pool().begin().await.expect("begin transaction");
 
-    let tenant_id = Uuid::new_v4();
-    let api_key = "test-key-revoked-456";
-    let key_hash = sha256::digest(api_key.as_bytes());
+    // Create test data using transaction-aware methods
+    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
 
-    // Insert tenant and revoked API key
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(env.pool())
+    let (api_key, key_hash) = env
+        .create_api_key_tx(&mut *tx, tenant_id, "test-key-revoked")
         .await
-        .expect("insert tenant");
+        .expect("create api key");
 
-    sqlx::query(
-        "INSERT INTO api_keys (tenant_id, key_hash, name, revoked_at) VALUES ($1, $2, $3, NOW())",
-    )
-    .bind(tenant_id)
-    .bind(&key_hash)
-    .bind("revoked-key")
-    .execute(env.pool())
-    .await
-    .expect("insert revoked api key");
+    // Mark the key as revoked
+    sqlx::query("UPDATE api_keys SET revoked_at = NOW() WHERE key_hash = $1")
+        .bind(&key_hash)
+        .execute(&mut *tx)
+        .await
+        .expect("revoke api key");
+
+    // Commit so API handlers can see the data
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_app(env.pool().clone());
 
@@ -183,32 +169,28 @@ async fn authenticate_request_fails_with_revoked_key() {
 /// Verifies that expired API keys are rejected properly.
 #[tokio::test]
 async fn authenticate_request_fails_with_expired_key() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let mut tx = env.pool().begin().await.expect("begin transaction");
 
-    let tenant_id = Uuid::new_v4();
-    let api_key = "test-key-expired-789";
-    let key_hash = sha256::digest(api_key.as_bytes());
+    // Create test data using transaction-aware methods
+    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
 
-    // Insert tenant and expired API key
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(env.pool())
+    let (api_key, key_hash) = env
+        .create_api_key_tx(&mut *tx, tenant_id, "test-key-expired")
         .await
-        .expect("insert tenant");
+        .expect("create api key");
 
-    // Insert expired API key with created_at in past to satisfy constraint
+    // Mark the key as expired
     sqlx::query(
-        "INSERT INTO api_keys (tenant_id, key_hash, name, created_at, expires_at)
-         VALUES ($1, $2, $3, NOW() - INTERVAL '2 days', NOW() - INTERVAL '1 day')",
+        "UPDATE api_keys SET created_at = NOW() - INTERVAL '2 days', expires_at = NOW() - INTERVAL '1 day' WHERE key_hash = $1"
     )
-    .bind(tenant_id)
     .bind(&key_hash)
-    .bind("expired-key")
-    .execute(env.pool())
+    .execute(&mut *tx)
     .await
-    .expect("insert expired api key");
+    .expect("expire api key");
+
+    // Commit so API handlers can see the data
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_app(env.pool().clone());
 
@@ -229,28 +211,17 @@ async fn authenticate_request_fails_with_expired_key() {
 /// field for tracking API key usage.
 #[tokio::test]
 async fn authenticate_request_updates_last_used_timestamp() {
-    let env = TestEnv::new().await.expect("test env setup");
+    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let mut tx = env.pool().begin().await.expect("begin transaction");
 
-    let tenant_id = Uuid::new_v4();
-    let api_key = "test-key-usage-tracking";
-    let key_hash = sha256::digest(api_key.as_bytes());
+    // Create test data using transaction-aware methods
+    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
 
-    // Insert tenant and API key
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(env.pool())
-        .await
-        .expect("insert tenant");
+    let (api_key, key_hash) =
+        env.create_api_key_tx(&mut *tx, tenant_id, "test-key-usage").await.expect("create api key");
 
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("usage-tracking-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
+    // Commit so API handlers can see the data
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_app(env.pool().clone());
 

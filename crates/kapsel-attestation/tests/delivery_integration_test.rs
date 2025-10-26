@@ -6,22 +6,23 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use kapsel_attestation::{MerkleService, SigningService};
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
-use uuid::Uuid;
+use serial_test::serial;
 
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
     // Set up attestation service
-    let merkle_service = create_test_attestation_service(&mut env).await?;
+    let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service);
 
     // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "successful-delivery-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
         .tenant(tenant_id.0)
@@ -35,9 +36,9 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
     ScenarioBuilder::new("successful delivery attestation")
         // Configure mock to succeed
         .inject_http_success()
-        // Process delivery
+        // Process delivery (will emit attestation events)
         .run_delivery_cycle()
-        // Commit attestation leaves to database
+        // Commit pending attestation leaves to database
         .run_attestation_commitment()
         // Verify delivery succeeded
         .expect_status(event_id, "delivered")
@@ -51,14 +52,16 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
 
 #[tokio::test]
 async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let merkle_service = create_test_attestation_service(&mut env).await?;
+    let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service);
 
     // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "failed-delivery-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
         .tenant(tenant_id.0)
@@ -78,20 +81,27 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
         .await;
 
     ScenarioBuilder::new("failed delivery attestation")
-        // Process delivery (should fail)
+        // Process first delivery (should fail)
         .run_delivery_cycle()
-        // Verify delivery failed
+        // Commit any pending leaves (there should be none for failed delivery)
+        .run_attestation_commitment()
+        // Verify delivery failed and remains pending
         .expect_status(event_id, "pending") // Still pending for retry
         // Core invariant: failed deliveries do not create attestation leaves
         .expect_attestation_leaf_count(event_id, 0)
-        // Advance time and retry
+        // Verify first delivery attempt was recorded
+        .expect_delivery_attempts(event_id, 1)
+        // Advance time to trigger retry
         .advance_time(Duration::from_secs(2))
-        // Process retry (should succeed)
+        // Process retry (should succeed and emit attestation event)
         .run_delivery_cycle()
-        // Commit attestation leaves to database
+        // Commit the attestation leaf that was created
         .run_attestation_commitment()
-        // Now delivery should succeed and create leaf
+        // Now delivery should succeed
         .expect_status(event_id, "delivered")
+        // Verify total delivery attempts
+        .expect_delivery_attempts(event_id, 2)
+        // Verify attestation leaf was created
         .expect_attestation_leaf_count(event_id, 1)
         .expect_attestation_leaf_attempt_number(event_id, 2)
         .run(&mut env)
@@ -100,13 +110,15 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
 
 #[tokio::test]
 async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
     // No attestation service configured - attestation disabled
 
     // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "attestation-disabled-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
         .tenant(tenant_id.0)
@@ -131,14 +143,16 @@ async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
 
 #[tokio::test]
 async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let merkle_service = create_test_attestation_service(&mut env).await?;
+    let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service);
 
-    // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    // Create tenant and endpoint
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "idempotency-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     let source_id = "idempotency-test-001";
     let original = WebhookBuilder::new()
@@ -173,15 +187,18 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
     let mut env = TestEnv::new().await?;
 
-    let merkle_service = create_test_attestation_service(&mut env).await?;
+    let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service);
 
-    // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    // Create tenant and endpoint
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "concurrent-deliveries-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     // Create multiple concurrent webhooks
     let mut event_ids = Vec::new();
@@ -197,28 +214,39 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
         event_ids.push(event_id);
     }
 
-    ScenarioBuilder::new("concurrent attestation integrity")
-        .inject_http_success()
-        // Process all webhooks concurrently
-        .run_delivery_cycle()
-        // Commit attestation leaves to database
-        .run_attestation_commitment()
-        // Core invariant: each delivery creates exactly one leaf
-        .expect_concurrent_attestation_integrity(event_ids)
-        .run(&mut env)
-        .await
+    let mut scenario = ScenarioBuilder::new("concurrent deliveries maintain attestation integrity");
+
+    // Configure mock to succeed for all requests
+    scenario = scenario.inject_http_success();
+
+    // Process all deliveries
+    scenario = scenario.run_delivery_cycle();
+
+    // Commit attestation leaves
+    scenario = scenario.run_attestation_commitment();
+
+    // Verify each webhook was delivered successfully
+    for &event_id in &event_ids {
+        scenario = scenario.expect_status(event_id, "delivered");
+        scenario = scenario.expect_attestation_leaf_count(event_id, 1);
+        scenario = scenario.expect_attestation_leaf_exists(event_id);
+    }
+
+    scenario.run(&mut env).await
 }
 
 #[tokio::test]
 async fn attestation_batch_commitment_scenario() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
-    let merkle_service = create_test_attestation_service(&mut env).await?;
+    let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service);
 
-    // Create tenant and endpoint first
-    let tenant_id = env.create_tenant("test-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
+    // Create tenant and endpoint
+    let mut tx = env.pool().begin().await?;
+    let tenant_id = env.create_tenant_tx(&mut *tx, "batch-commitment-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    tx.commit().await?;
 
     // Create batch of webhooks
     let batch_size = 3;
@@ -238,33 +266,16 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
 
     ScenarioBuilder::new("attestation batch commitment")
         .inject_http_success()
-        // Deliver all webhooks
+        // Deliver all webhooks (will emit attestation events)
         .run_delivery_cycle()
         // Verify all delivered
         .expect_all_events_delivered(event_ids.clone())
-        // Trigger batch commitment
-        .advance_time(Duration::from_secs(10)) // Trigger commitment interval
+        // Capture baseline tree size before commitment
+        .capture_tree_size()
+        // Commit all pending attestation leaves as a batch
         .run_attestation_commitment()
-        // Core invariant: batch commitment creates signed tree head
+        // Core invariant: batch commitment creates signed tree head with expected growth
         .expect_signed_tree_head_with_size(batch_size)
         .run(&mut env)
         .await
-}
-
-async fn create_test_attestation_service(env: &TestEnv) -> Result<MerkleService> {
-    let signing_service = SigningService::ephemeral();
-    let public_key = signing_service.public_key_as_bytes();
-
-    // Store signing key in database
-    let key_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE) RETURNING id",
-    )
-    .bind(&public_key)
-    .fetch_one(env.pool())
-    .await?;
-
-    let signing_service = signing_service.with_key_id(key_id);
-    let merkle_service = MerkleService::new(env.pool().clone(), signing_service);
-
-    Ok(merkle_service)
 }

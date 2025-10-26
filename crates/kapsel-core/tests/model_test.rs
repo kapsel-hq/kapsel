@@ -47,7 +47,7 @@ fn webhook_event_model_creation_and_access() {
         received_at: now,
         delivered_at: None,
         failed_at: None,
-        payload_size: body_content.len() as i32,
+        payload_size: i32::try_from(body_content.len()).unwrap(),
         signature_valid: Some(true),
         signature_error: None,
     };
@@ -68,7 +68,7 @@ fn webhook_event_model_creation_and_access() {
     assert_eq!(webhook_event.received_at, now);
     assert_eq!(webhook_event.delivered_at, None);
     assert_eq!(webhook_event.failed_at, None);
-    assert_eq!(webhook_event.payload_size, body_content.len() as i32);
+    assert_eq!(webhook_event.payload_size, i32::try_from(body_content.len()).unwrap());
     assert_eq!(webhook_event.signature_valid, Some(true));
     assert_eq!(webhook_event.signature_error, None);
 }
@@ -101,7 +101,7 @@ fn webhook_event_serialization_roundtrip() {
         received_at: now,
         delivered_at: None,
         failed_at: None,
-        payload_size: body_content.len() as i32,
+        payload_size: i32::try_from(body_content.len()).unwrap(),
         signature_valid: Some(false),
         signature_error: Some("Invalid signature".to_string()),
     };
@@ -483,13 +483,13 @@ fn webhook_event_handles_complex_payload() {
         received_at: now,
         delivered_at: None,
         failed_at: None,
-        payload_size: json_bytes.len() as i32,
+        payload_size: i32::try_from(json_bytes.len()).unwrap(),
         signature_valid: None,
         signature_error: None,
     };
 
     assert_eq!(webhook_event.body, json_bytes);
-    assert_eq!(webhook_event.payload_size, json_bytes.len() as i32);
+    assert_eq!(webhook_event.payload_size, i32::try_from(json_bytes.len()).unwrap());
     assert_eq!(webhook_event.content_type, "application/json");
 
     // Test with binary payload
@@ -511,7 +511,7 @@ fn webhook_event_handles_complex_payload() {
         received_at: now,
         delivered_at: None,
         failed_at: None,
-        payload_size: binary_data.len() as i32,
+        payload_size: i32::try_from(binary_data.len()).unwrap(),
         signature_valid: Some(true),
         signature_error: None,
     };
@@ -546,7 +546,7 @@ fn model_field_constraints_and_validation() {
         received_at: now,
         delivered_at: None,
         failed_at: None,
-        payload_size: small_payload.len() as i32,
+        payload_size: i32::try_from(small_payload.len()).unwrap(),
         signature_valid: None,
         signature_error: None,
     };
@@ -616,7 +616,7 @@ fn webhook_event_new_enforces_business_rules() {
         "application/json".to_string(),
     );
 
-    assert_eq!(normal_event.payload_size, normal_body.len() as i32);
+    assert_eq!(normal_event.payload_size, i32::try_from(normal_body.len()).unwrap());
 
     // Test large payload handling
     let large_event = WebhookEvent::new(
@@ -1006,7 +1006,7 @@ fn domain_model_invariants_and_edge_cases() {
             let mut headers = HashMap::new();
             // Add many headers
             for i in 0..50 {
-                headers.insert(format!("x-custom-header-{}", i), format!("value-{}", i));
+                headers.insert(format!("x-custom-header-{i}"), format!("value-{i}"));
             }
             headers
         },
