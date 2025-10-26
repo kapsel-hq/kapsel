@@ -21,8 +21,8 @@ use rand::Rng;
 pub struct TestClock {
     /// Monotonic time in nanoseconds since start
     monotonic_ns: Arc<AtomicU64>,
-    /// System time as seconds since UNIX_EPOCH
-    system_secs: Arc<AtomicU64>,
+    /// System time as nanoseconds since UNIX_EPOCH
+    system_ns: Arc<AtomicU64>,
     /// Base instant for monotonic time calculations
     base_instant: Instant,
 }
@@ -35,7 +35,9 @@ impl TestClock {
 
         Self {
             monotonic_ns: Arc::new(AtomicU64::new(0)),
-            system_secs: Arc::new(AtomicU64::new(since_epoch.as_secs())),
+            system_ns: Arc::new(AtomicU64::new(
+                u64::try_from(since_epoch.as_nanos().min(u128::from(u64::MAX))).unwrap_or(0),
+            )),
             base_instant: Instant::now(),
         }
     }
@@ -46,7 +48,9 @@ impl TestClock {
 
         Self {
             monotonic_ns: Arc::new(AtomicU64::new(0)),
-            system_secs: Arc::new(AtomicU64::new(since_epoch.as_secs())),
+            system_ns: Arc::new(AtomicU64::new(
+                u64::try_from(since_epoch.as_nanos().min(u128::from(u64::MAX))).unwrap_or(0),
+            )),
             base_instant: Instant::now(),
         }
     }
@@ -59,31 +63,36 @@ impl TestClock {
 
     /// Returns the current system time.
     pub fn now_system(&self) -> SystemTime {
-        let secs = self.system_secs.load(Ordering::Acquire);
-        UNIX_EPOCH + Duration::from_secs(secs)
+        let ns = self.system_ns.load(Ordering::Acquire);
+        UNIX_EPOCH + Duration::from_nanos(ns)
     }
 
     /// Advances both clocks by the specified duration.
     pub fn advance(&self, duration: Duration) {
+        let duration_ns = u64::try_from(duration.as_nanos().min(u128::from(u64::MAX))).unwrap_or(0);
+
         // Update monotonic time and system time
-        self.monotonic_ns.fetch_add(
-            u64::try_from(duration.as_nanos().min(u128::from(u64::MAX))).unwrap_or(0),
-            Ordering::AcqRel,
-        );
-        self.system_secs.fetch_add(duration.as_secs(), Ordering::AcqRel);
+        self.monotonic_ns.fetch_add(duration_ns, Ordering::AcqRel);
+        self.system_ns.fetch_add(duration_ns, Ordering::AcqRel);
     }
 
     /// Jumps the clock to a specific system time.
     pub fn jump_to(&self, time: SystemTime) {
-        let target_secs = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let current_secs = self.system_secs.load(Ordering::Acquire);
+        let target_ns = u64::try_from(
+            time.duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+                .min(u128::from(u64::MAX)),
+        )
+        .unwrap_or(0);
+        let current_ns = self.system_ns.load(Ordering::Acquire);
 
-        if target_secs > current_secs {
-            let diff = target_secs - current_secs;
-            self.advance(Duration::from_secs(diff));
+        if target_ns > current_ns {
+            let diff_ns = target_ns - current_ns;
+            self.advance(Duration::from_nanos(diff_ns));
         } else {
             // System time is allowed to jump backwards (monotonic stays forward)
-            self.system_secs.store(target_secs, Ordering::Release);
+            self.system_ns.store(target_ns, Ordering::Release);
         }
     }
 
@@ -230,6 +239,33 @@ mod tests {
 
         clock.jump_to(target);
         assert_eq!(clock.now_system(), target);
+    }
+
+    #[test]
+    fn test_clock_advances_milliseconds() {
+        let clock = TestClock::new();
+        let start_time = clock.now_system();
+
+        // Advance by 10 milliseconds
+        clock.advance(Duration::from_millis(10));
+
+        let end_time = clock.now_system();
+        let elapsed = end_time.duration_since(start_time).unwrap();
+
+        assert_eq!(elapsed, Duration::from_millis(10), "Clock should advance by exactly 10ms");
+
+        // Test multiple small advances
+        for _ in 0..5 {
+            clock.advance(Duration::from_millis(5));
+        }
+
+        let final_time = clock.now_system();
+        let total_elapsed = final_time.duration_since(start_time).unwrap();
+        assert_eq!(
+            total_elapsed,
+            Duration::from_millis(35),
+            "Multiple small advances should accumulate"
+        );
     }
 
     #[tokio::test]

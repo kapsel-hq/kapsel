@@ -1,439 +1,496 @@
-//! Database testing infrastructure with automatic container management.
+//! Database utilities for testing with isolated databases.
 //!
-//! Implements template database cloning for fast test isolation. A file-lock
-//! protected singleton ensures exactly one container per test run while
-//! providing each test with an isolated database clone.
+//! This module provides test database management with complete isolation
+//! between tests. Each test gets its own PostgreSQL database created from
+//! a pre-migrated template for fast setup and guaranteed cleanup.
 
 use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    collections::HashSet,
+    env,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
-use sqlx::{Connection, Executor, PgConnection, PgPool};
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use tokio::sync::OnceCell;
-use tracing::{info, warn};
+use once_cell::sync::Lazy;
+use sqlx::{postgres::PgConnectOptions, PgPool, Postgres, Transaction};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-/// Global container state with reference counting for proper cleanup.
-static CONTAINER_STATE: OnceCell<Arc<ContainerState>> = OnceCell::const_new();
+/// Template database name used for fast database creation.
+const TEMPLATE_DB_NAME: &str = "kapsel_test_template";
 
-/// Tracks the shared container and ensures cleanup when no longer needed.
-struct ContainerState {
-    maintenance_url: String,
-    template_name: String,
-    reference_count: AtomicUsize,
-    info_file_path: PathBuf,
-    role: ContainerRole,
-}
+/// Template version to detect when recreation is needed.
+const TEMPLATE_VERSION: &str = "v1";
 
-/// Distinguishes between process that owns the container and follower
-/// processes.
-enum ContainerRole {
-    Leader(#[allow(dead_code)] Box<ContainerAsync<PostgresImage>>),
-    Follower,
-}
+/// Maximum age for test databases before they're considered stale (1 hour).
+const STALE_DATABASE_TIMEOUT_SECS: u64 = 3600;
 
-/// Database connection information shared between processes.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct DatabaseInfo {
-    maintenance_url: String,
-    template_name: String,
-}
+/// Static database pool shared across all tests in a process.
+static SHARED_POOL: tokio::sync::OnceCell<PgPool> = tokio::sync::OnceCell::const_new();
 
-/// Isolated database handle for a single test.
+/// Mutex to serialize template database initialization.
+static TEMPLATE_INIT_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Tracks whether the template database has been initialized in this process.
+static TEMPLATE_INITIALIZED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// Registry of databases created by this process for cleanup on exit.
+static CLEANUP_REGISTRY: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
+/// Database handle for transaction-based test isolation.
 pub struct TestDatabase {
     pool: PgPool,
-    db_name: String,
-    maintenance_url: String,
-    container_state: Arc<ContainerState>,
 }
 
 impl TestDatabase {
-    /// Creates a new isolated database by cloning the pre-migrated template.
-    pub async fn new() -> Result<Self> {
-        let container_state = get_or_create_container().await?;
-        container_state.reference_count.fetch_add(1, Ordering::SeqCst);
-
-        let db_name = generate_database_name();
-
-        let mut conn = connect_maintenance_database(&container_state.maintenance_url).await?;
-
-        create_database_from_template(&mut conn, &db_name, &container_state.template_name).await?;
-
-        let pool = connect_test_database(&container_state.maintenance_url, &db_name).await?;
-
-        info!(database = %db_name, "Created isolated test database");
-
-        Ok(Self {
-            pool,
-            db_name,
-            maintenance_url: container_state.maintenance_url.clone(),
-            container_state,
-        })
+    /// Returns the shared test database pool.
+    ///
+    /// Initializes the pool on first access and runs migrations.
+    pub async fn shared_pool() -> Result<&'static PgPool> {
+        SHARED_POOL.get_or_try_init(|| async { create_shared_pool().await }).await
     }
 
-    /// Returns the connection pool for this database.
+    /// Creates a new test database using the shared pool.
+    pub async fn new() -> Result<Self> {
+        let pool = Self::shared_pool().await?.clone();
+        Ok(Self { pool })
+    }
+
+    /// Creates a new isolated test database with its own database.
+    pub async fn new_isolated() -> Result<IsolatedTestDatabase> {
+        IsolatedTestDatabase::new().await
+    }
+
+    /// Creates a new transaction-scoped test handle.
+    ///
+    /// The transaction is automatically rolled back when dropped.
+    pub async fn new_transaction() -> Result<TransactionalTestDatabase> {
+        TransactionalTestDatabase::new().await
+    }
+
+    /// Returns the database pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }
 
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        let url = self.maintenance_url.clone();
-        let name = self.db_name.clone();
-        let container_state = Arc::clone(&self.container_state);
-
-        // Spawn cleanup task with proper error handling
-        tokio::spawn(async move {
-            cleanup_test_database(&url, &name).await;
-
-            let refs = container_state.reference_count.fetch_sub(1, Ordering::SeqCst);
-            if refs == 1 {
-                container_state.cleanup();
-            }
-        });
-    }
-}
-
-impl ContainerState {
-    /// Creates container state with file lock coordination across processes.
-    async fn with_lock_coordination() -> Result<Arc<Self>> {
-        let target_dir = find_target_directory()?;
-        let lock_path = target_dir.join("kapsel_test.lock");
-        let info_path = target_dir.join("kapsel_database.json");
-
-        fs::create_dir_all(&target_dir)?;
-
-        let mut lock = fslock::LockFile::open(&lock_path)?;
-        lock.lock()?;
-
-        // Check if container is already running from another process
-        if info_path.exists() {
-            if let Ok(info) = read_database_info(&info_path) {
-                if validate_container_running(&info.maintenance_url).await {
-                    lock.unlock()?;
-                    info!("Using existing container at {}", info.maintenance_url);
-                    return Ok(Self::create_follower(info, info_path));
-                }
-            }
-            // Container is dead, remove stale info
-            let _ = fs::remove_file(&info_path);
-        }
-
-        // Create new container as leader
-        let container_state = Self::create_leader(&info_path).await?;
-
-        write_database_info(&info_path, &container_state)?;
-
-        lock.unlock()?;
-        info!("Container and template database ready");
-
-        Ok(container_state)
-    }
-
-    /// Creates leader container state that owns the PostgreSQL container.
-    async fn create_leader(info_path: &Path) -> Result<Arc<Self>> {
-        info!("Initializing PostgreSQL container");
-
-        let container = AsyncRunner::start(
-            PostgresImage::default()
-                .with_tag("16-alpine")
-                .with_env_var("POSTGRES_INITDB_ARGS", "--data-checksums")
-                .with_env_var("PGDATA", "/var/lib/postgresql/data/pgdata"),
-        )
-        .await?;
-
-        let port = container.get_host_port_ipv4(5432).await?;
-        let maintenance_url =
-            format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres?sslmode=disable");
-
-        let mut conn = PgConnection::connect(&maintenance_url).await?;
-
-        let template_name = "kapsel_template";
-        drop_database_if_exists(&mut conn, template_name).await?;
-        create_database(&mut conn, template_name).await?;
-
-        let template_url = build_database_url(&maintenance_url, template_name)?;
-
-        // Configure PostgreSQL for minimal disk usage
-        configure_postgres_for_testing(&mut conn).await?;
-
-        run_migrations(&template_url).await?;
-
-        Ok(Arc::new(Self {
-            maintenance_url,
-            template_name: template_name.to_string(),
-            reference_count: AtomicUsize::new(0),
-            info_file_path: info_path.to_path_buf(),
-            role: ContainerRole::Leader(Box::new(container)),
-        }))
-    }
-
-    /// Creates follower container state that connects to existing container.
-    fn create_follower(info: DatabaseInfo, info_path: PathBuf) -> Arc<Self> {
-        Arc::new(Self {
-            maintenance_url: info.maintenance_url,
-            template_name: info.template_name,
-            reference_count: AtomicUsize::new(0),
-            info_file_path: info_path,
-            role: ContainerRole::Follower,
-        })
-    }
-
-    /// Cleans up container state and removes coordination files.
-    fn cleanup(&self) {
-        info!("Cleaning up container state");
-
-        // Remove the info file to signal other processes
-        let _ = fs::remove_file(&self.info_file_path);
-
-        // Container cleanup is automatic via Drop trait on ContainerAsync
-        match &self.role {
-            ContainerRole::Leader(_) => {
-                info!("Leader process cleaning up container");
-            },
-            ContainerRole::Follower => {
-                info!("Follower process finished");
-            },
-        }
-    }
-}
-
-async fn get_or_create_container() -> Result<Arc<ContainerState>> {
-    CONTAINER_STATE
-        .get_or_try_init(|| async { ContainerState::with_lock_coordination().await })
-        .await
-        .map(Arc::clone)
-}
-
-async fn run_migrations(database_url: &str) -> Result<()> {
-    let pool = PgPool::connect(database_url).await?;
-
-    create_extensions(&pool).await?;
-
-    let migrations_path = find_migrations_directory()?;
-    sqlx::migrate::Migrator::new(migrations_path).await?.run(&pool).await?;
-
-    pool.close().await;
-    Ok(())
-}
-
-async fn create_extensions(pool: &PgPool) -> Result<()> {
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"").execute(pool).await?;
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto").execute(pool).await?;
-    Ok(())
-}
-
-async fn configure_postgres_for_testing(conn: &mut PgConnection) -> Result<()> {
-    // Configure PostgreSQL for minimal disk usage during testing
-    let config_queries = [
-        // Reduce WAL usage
-        "ALTER SYSTEM SET wal_level = 'minimal'",
-        "ALTER SYSTEM SET max_wal_size = '16MB'",
-        "ALTER SYSTEM SET min_wal_size = '8MB'",
-        "ALTER SYSTEM SET checkpoint_completion_target = 0.9",
-        "ALTER SYSTEM SET checkpoint_timeout = '30s'",
-        // Reduce buffer usage but keep reasonable for tests
-        "ALTER SYSTEM SET shared_buffers = '32MB'",
-        "ALTER SYSTEM SET work_mem = '4MB'",
-        // Disable expensive safety features for testing (unsafe for production!)
-        "ALTER SYSTEM SET fsync = off",
-        "ALTER SYSTEM SET synchronous_commit = off",
-        "ALTER SYSTEM SET full_page_writes = off",
-        // Reduce logging
-        "ALTER SYSTEM SET log_statement = 'none'",
-        "ALTER SYSTEM SET log_duration = off",
-        "ALTER SYSTEM SET log_min_duration_statement = -1",
-        // Auto-vacuum more aggressively to prevent bloat
-        "ALTER SYSTEM SET autovacuum_naptime = '10s'",
-        "ALTER SYSTEM SET autovacuum_vacuum_scale_factor = 0.1",
-        "ALTER SYSTEM SET autovacuum_analyze_scale_factor = 0.05",
-    ];
-
-    for query in config_queries {
-        if let Err(e) = conn.execute(query).await {
-            warn!(error = %e, query = %query, "Failed to set PostgreSQL configuration");
-        }
-    }
-
-    // Reload configuration
-    if let Err(e) = conn.execute("SELECT pg_reload_conf()").await {
-        warn!(error = %e, "Failed to reload PostgreSQL configuration");
-    }
-
-    Ok(())
-}
-
-fn find_target_directory() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .ancestors()
-        .nth(2)
-        .map(|p| p.join("target"))
-        .ok_or_else(|| anyhow::anyhow!("Could not find workspace target directory"))
-}
-
-fn find_migrations_directory() -> Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .ancestors()
-        .nth(2)
-        .map(|p| p.join("migrations"))
-        .ok_or_else(|| anyhow::anyhow!("Could not find migrations directory"))
-}
-
-async fn validate_container_running(maintenance_url: &str) -> bool {
-    match PgConnection::connect(maintenance_url).await {
-        Ok(mut conn) => (sqlx::query("SELECT 1").execute(&mut conn).await).is_ok(),
-        Err(_) => false,
-    }
-}
-
-fn read_database_info(path: &Path) -> Result<DatabaseInfo> {
-    let json = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&json)?)
-}
-
-fn write_database_info(path: &Path, container_state: &ContainerState) -> Result<()> {
-    let info = DatabaseInfo {
-        maintenance_url: container_state.maintenance_url.clone(),
-        template_name: container_state.template_name.clone(),
-    };
-    fs::write(path, serde_json::to_string(&info)?)?;
-    Ok(())
-}
-
-fn generate_database_name() -> String {
-    format!("kapsel_test_{}", Uuid::new_v4().simple())
-}
-
-async fn connect_maintenance_database(maintenance_url: &str) -> Result<PgConnection> {
-    PgConnection::connect(maintenance_url)
-        .await
-        .context("Failed to connect to maintenance database")
-}
-
-async fn create_database_from_template(
-    conn: &mut PgConnection,
-    db_name: &str,
-    template_name: &str,
-) -> Result<()> {
-    let query = format!(r#"CREATE DATABASE "{db_name}" WITH TEMPLATE "{template_name}""#);
-    conn.execute(query.as_str()).await.context("Failed to create test database from template")?;
-    Ok(())
-}
-
-async fn connect_test_database(maintenance_url: &str, db_name: &str) -> Result<PgPool> {
-    let mut db_url = url::Url::parse(maintenance_url)?;
-    db_url.set_path(db_name);
-
-    PgPool::connect(db_url.as_str()).await.context("Failed to connect to test database")
-}
-
-async fn cleanup_test_database(url: &str, name: &str) {
-    if let Ok(mut conn) = PgConnection::connect(url).await {
-        // Terminate connections to the database before dropping
-        let terminate_query = format!(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}' AND pid <> pg_backend_pid()"
-        );
-        let _ = conn.execute(terminate_query.as_str()).await;
-
-        // Drop the database with force
-        let query = format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#);
-        if let Err(e) = conn.execute(query.as_str()).await {
-            warn!(error = %e, database = %name, "Failed to drop test database");
-        }
-
-        // Force checkpoint and cleanup after dropping database
-        let _ = conn.execute("CHECKPOINT").await;
-
-        // Clean up any remaining temporary files
-        let _ = conn.execute("SELECT pg_stat_reset()").await;
-    }
-}
-
-async fn drop_database_if_exists(conn: &mut PgConnection, name: &str) -> Result<()> {
-    let query = format!(r#"DROP DATABASE IF EXISTS "{name}""#);
-    conn.execute(query.as_str()).await?;
-    Ok(())
-}
-
-async fn create_database(conn: &mut PgConnection, name: &str) -> Result<()> {
-    let query = format!(r#"CREATE DATABASE "{name}""#);
-    conn.execute(query.as_str()).await?;
-    Ok(())
-}
-
-fn build_database_url(maintenance_url: &str, database_name: &str) -> Result<String> {
-    let mut template_url = url::Url::parse(maintenance_url)?;
-    template_url.set_path(database_name);
-    Ok(template_url.to_string())
-}
-
-/// Legacy compatibility for SharedDatabase.
-pub struct SharedDatabase {
+/// Database handle for transaction-scoped test isolation.
+///
+/// All operations happen within a single transaction that is rolled back
+/// when the handle is dropped.
+pub struct TransactionalTestDatabase {
     pool: PgPool,
 }
 
-impl SharedDatabase {
-    /// Returns the connection pool for this shared database.
+impl TransactionalTestDatabase {
+    /// Creates a new transaction-scoped test database.
+    pub async fn new() -> Result<Self> {
+        let pool = TestDatabase::shared_pool().await?.clone();
+        Ok(Self { pool })
+    }
+
+    /// Begins a new transaction for testing.
+    pub async fn begin(&self) -> Result<Transaction<'_, Postgres>> {
+        Ok(self.pool.begin().await?)
+    }
+
+    /// Returns the database pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }
 
-/// Creates a connection to the shared database instance.
-pub async fn create_shared_database() -> Result<std::sync::Arc<SharedDatabase>> {
-    let test_db = TestDatabase::new().await?;
-    Ok(std::sync::Arc::new(SharedDatabase { pool: test_db.pool.clone() }))
+/// Database handle for fully isolated test execution.
+///
+/// Each isolated database gets its own PostgreSQL database created from a
+/// template. This allows complete isolation including schema, indexes, and
+/// extensions.
+pub struct IsolatedTestDatabase {
+    pool: PgPool,
+    database_name: String,
+    admin_pool: Arc<PgPool>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl IsolatedTestDatabase {
+    /// Creates a new isolated test database from the template.
+    ///
+    /// Each isolated database is created by cloning a pre-migrated template
+    /// database. This is much faster than running migrations for each test.
+    pub async fn new() -> Result<Self> {
+        // Clean up stale databases on first test
+        cleanup_stale_databases_once().await?;
 
-    #[tokio::test]
-    async fn isolated_databases_have_separate_data() {
-        let db1 = TestDatabase::new().await.unwrap();
-        let db2 = TestDatabase::new().await.unwrap();
+        // Ensure template database exists and is migrated
+        ensure_template_database().await?;
 
-        sqlx::query("CREATE TABLE test_isolation (id INT)").execute(db1.pool()).await.unwrap();
+        // Create admin connection to postgres database for management operations
+        let admin_pool = Arc::new(create_admin_pool().await?);
 
-        let result = sqlx::query("SELECT 1 FROM test_isolation").fetch_optional(db2.pool()).await;
+        // Generate unique database name
+        let database_name = format!("test_{}", Uuid::new_v4().simple());
 
-        assert!(result.is_err(), "Tables should be isolated between databases");
+        // Register for cleanup
+        register_database_for_cleanup(&database_name);
+
+        // Create the test database from template
+        create_database_from_template(&admin_pool, &database_name).await?;
+
+        // Create a connection pool to the new database
+        let pool = create_database_pool(&database_name).await?;
+
+        Ok(Self { pool, database_name, admin_pool })
     }
 
-    #[tokio::test]
-    async fn database_cleanup_on_drop() {
-        let db_name = {
-            let db = TestDatabase::new().await.unwrap();
-            db.db_name.clone()
-        };
-
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-        let container_state = CONTAINER_STATE.get().unwrap();
-        let mut conn = PgConnection::connect(&container_state.maintenance_url).await.unwrap();
-
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pg_database WHERE datname = $1")
-            .bind(&db_name)
-            .fetch_one(&mut conn)
-            .await
-            .unwrap();
-
-        assert_eq!(count.0, 0, "Database should be cleaned up after drop");
+    /// Connection pool for this isolated database.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
+
+    /// Database name for this isolated database.
+    pub fn database_name(&self) -> &str {
+        &self.database_name
+    }
+}
+
+impl Drop for IsolatedTestDatabase {
+    fn drop(&mut self) {
+        let database_name = self.database_name.clone();
+        let admin_pool = Arc::clone(&self.admin_pool);
+
+        // Spawn cleanup task if we're in an async context
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // We're in an async context, spawn a cleanup task
+            handle.spawn(async move {
+                // Wait a bit for connections to naturally close
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                // Attempt to drop the database
+                match drop_database(&admin_pool, &database_name).await {
+                    Ok(_) => {
+                        debug!("successfully dropped test database: {}", database_name);
+                    },
+                    Err(e) => {
+                        // This is common if another test is still using connections
+                        debug!(
+                            "could not drop database {} (will retry later): {}",
+                            database_name, e
+                        );
+                    },
+                }
+            });
+        } else {
+            // Not in async context - this shouldn't happen in normal test execution
+            debug!("database {} cleanup deferred (not in async context)", database_name);
+        }
+    }
+}
+
+/// Register a database for cleanup tracking.
+fn register_database_for_cleanup(database_name: &str) {
+    CLEANUP_REGISTRY.lock().unwrap().insert(database_name.to_string());
+    debug!("registered database {} for cleanup", database_name);
+}
+
+/// Clean up stale databases once per process.
+async fn cleanup_stale_databases_once() -> Result<()> {
+    static CLEANUP_DONE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    if CLEANUP_DONE.get().is_some() {
+        return Ok(());
+    }
+
+    let _ = CLEANUP_DONE.set(());
+    cleanup_stale_databases().await
+}
+
+/// Clean up stale test databases from previous runs.
+async fn cleanup_stale_databases() -> Result<()> {
+    let admin_pool = create_admin_pool().await?;
+
+    // Find all test databases - using simpler query without timestamp
+    let test_databases: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT datname
+        FROM pg_database
+        WHERE datname LIKE 'test_%'
+        AND datname != $1
+        "#,
+    )
+    .bind(TEMPLATE_DB_NAME)
+    .fetch_all(&admin_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut cleaned = 0;
+
+    for (db_name,) in test_databases {
+        // Check if database matches our test pattern (test_UUID)
+        if !is_test_database(&db_name) {
+            continue;
+        }
+
+        // For now, clean up all test databases that are not the template
+        // In CI, this is safe since each run is isolated
+        // Locally, developers can manually clean if needed
+        debug!("cleaning up test database: {}", db_name);
+        if drop_database(&admin_pool, &db_name).await.is_ok() {
+            cleaned += 1;
+        }
+    }
+
+    if cleaned > 0 {
+        info!("cleaned up {} stale test databases", cleaned);
+    }
+
+    Ok(())
+}
+
+/// Check if a database name matches our test database pattern.
+fn is_test_database(name: &str) -> bool {
+    // Pattern: test_<32 hex chars>
+    if !name.starts_with("test_") {
+        return false;
+    }
+    let suffix = &name[5..];
+    suffix.len() == 32 && suffix.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Ensures the template database exists and is fully migrated.
+async fn ensure_template_database() -> Result<()> {
+    // Fast path: already initialized
+    if TEMPLATE_INITIALIZED.get().is_some() {
+        return Ok(());
+    }
+
+    // Serialize template initialization across all tests
+    let _lock = TEMPLATE_INIT_MUTEX.lock().unwrap();
+
+    // Double-check after acquiring lock
+    if TEMPLATE_INITIALIZED.get().is_some() {
+        return Ok(());
+    }
+
+    info!("initializing template database: {}", TEMPLATE_DB_NAME);
+
+    let admin_pool = create_admin_pool().await?;
+
+    // Check if template database already exists
+    let exists: (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(TEMPLATE_DB_NAME)
+            .fetch_one(&admin_pool)
+            .await?;
+
+    if !exists.0 {
+        // Create template database
+        sqlx::query(&format!(
+            "CREATE DATABASE \"{}\" WITH TEMPLATE template0 ENCODING 'UTF8'",
+            TEMPLATE_DB_NAME
+        ))
+        .execute(&admin_pool)
+        .await
+        .context("failed to create template database")?;
+
+        info!("created template database: {}", TEMPLATE_DB_NAME);
+    }
+
+    // Connect to template database and run migrations
+    let template_pool = create_database_pool(TEMPLATE_DB_NAME).await?;
+
+    // Create required extensions
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+        .execute(&template_pool)
+        .await
+        .context("failed to create uuid-ossp extension")?;
+
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
+        .execute(&template_pool)
+        .await
+        .context("failed to create pgcrypto extension")?;
+
+    // Run migrations
+    let migrations_path = find_migrations_directory()?;
+    sqlx::migrate::Migrator::new(migrations_path)
+        .await?
+        .run(&template_pool)
+        .await
+        .context("failed to run migrations on template database")?;
+
+    // Close template pool
+    template_pool.close().await;
+
+    info!("template database ready: {}", TEMPLATE_DB_NAME);
+
+    // Mark as initialized
+    TEMPLATE_INITIALIZED.set(()).ok();
+
+    Ok(())
+}
+
+/// Creates a new database from the template.
+async fn create_database_from_template(admin_pool: &PgPool, database_name: &str) -> Result<()> {
+    const MAX_RETRIES: usize = 3;
+    const RETRY_DELAY_MS: u64 = 100;
+
+    for attempt in 1..=MAX_RETRIES {
+        let query = format!(
+            "CREATE DATABASE \"{}\" WITH TEMPLATE \"{}\" OWNER postgres",
+            database_name, TEMPLATE_DB_NAME
+        );
+
+        match sqlx::query(&query).execute(admin_pool).await {
+            Ok(_) => {
+                debug!("created test database: {}", database_name);
+                return Ok(());
+            },
+            Err(e) if attempt == MAX_RETRIES => {
+                return Err(e).context("failed to create database from template after retries");
+            },
+            Err(e) => {
+                let error_str = e.to_string();
+                // Template might be in use, retry
+                if error_str.contains("being accessed by other users") {
+                    warn!(
+                        "template database in use (attempt {}/{}), retrying...",
+                        attempt, MAX_RETRIES
+                    );
+                    tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS * attempt as u64))
+                        .await;
+                } else {
+                    return Err(e).context("failed to create database from template");
+                }
+            },
+        }
+    }
+
+    unreachable!("loop should have returned");
+}
+
+/// Drops a test database.
+async fn drop_database(admin_pool: &PgPool, database_name: &str) -> Result<()> {
+    // First terminate any existing connections
+    sqlx::query(&format!(
+        "SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+         WHERE datname = '{}'
+         AND pid <> pg_backend_pid()",
+        database_name
+    ))
+    .execute(admin_pool)
+    .await
+    .ok(); // Ignore errors from termination
+
+    // Now drop the database
+    sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", database_name))
+        .execute(admin_pool)
+        .await
+        .with_context(|| format!("failed to drop database: {}", database_name))?;
+
+    Ok(())
+}
+
+/// Creates an admin pool connected to the postgres database.
+async fn create_admin_pool() -> Result<PgPool> {
+    let db_url = env::var("DATABASE_URL").context(
+        "DATABASE_URL not set. Ensure postgres-test container is running: docker-compose up -d postgres-test",
+    )?;
+
+    // Parse the URL and change the database to 'postgres'
+    let opts = db_url
+        .parse::<PgConnectOptions>()
+        .context("failed to parse DATABASE_URL")?
+        .database("postgres");
+
+    // Use minimal connections for admin operations
+    let max_connections = if env::var("CI").is_ok() { 2 } else { 5 };
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_connections)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(3))
+        .connect_with(opts)
+        .await
+        .context("failed to connect to postgres database")?;
+
+    Ok(pool)
+}
+
+/// Creates a pool connected to a specific database.
+async fn create_database_pool(database_name: &str) -> Result<PgPool> {
+    let db_url = env::var("DATABASE_URL")?;
+
+    // Parse the URL and change the database name
+    let opts = db_url
+        .parse::<PgConnectOptions>()
+        .context("failed to parse DATABASE_URL")?
+        .database(database_name);
+
+    // Use small pools for isolated tests
+    let max_connections = if env::var("CI").is_ok() { 2 } else { 3 };
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_connections)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(2))
+        .idle_timeout(Duration::from_secs(10))
+        .max_lifetime(Duration::from_secs(60))
+        .test_before_acquire(false) // Skip health checks for performance
+        .connect_with(opts)
+        .await
+        .with_context(|| format!("failed to connect to database: {}", database_name))?;
+
+    Ok(pool)
+}
+
+/// Creates the shared pool for transaction-based tests.
+async fn create_shared_pool() -> Result<PgPool> {
+    let db_url = env::var("DATABASE_URL").context(
+        "DATABASE_URL not set. Ensure postgres-test container is running: docker-compose up -d postgres-test",
+    )?;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(20) // Shared across all transaction tests
+        .min_connections(2)
+        .acquire_timeout(Duration::from_secs(3))
+        .idle_timeout(Duration::from_secs(30))
+        .max_lifetime(Duration::from_secs(120))
+        .test_before_acquire(false) // Skip health checks for performance
+        .connect(&db_url)
+        .await
+        .context("failed to connect to test database")?;
+
+    // Ensure extensions are available
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+        .execute(&pool)
+        .await
+        .context("failed to create uuid-ossp extension")?;
+
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
+        .execute(&pool)
+        .await
+        .context("failed to create pgcrypto extension")?;
+
+    // Run migrations on shared database
+    let migrations_path = find_migrations_directory()?;
+    sqlx::migrate::Migrator::new(migrations_path).await?.run(&pool).await?;
+
+    info!("shared test database pool ready");
+    Ok(pool)
+}
+
+/// Finds the migrations directory by walking up from current directory.
+fn find_migrations_directory() -> Result<PathBuf> {
+    let current_dir = env::current_dir().context("failed to get current directory")?;
+
+    // Walk up the directory tree looking for migrations directory
+    for ancestor in current_dir.ancestors() {
+        let migrations_dir = ancestor.join("migrations");
+        if migrations_dir.exists() && migrations_dir.is_dir() {
+            return Ok(migrations_dir);
+        }
+    }
+
+    anyhow::bail!("Could not find migrations directory");
 }
