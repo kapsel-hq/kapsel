@@ -3,6 +3,8 @@
 //! Validates API keys from Authorization headers, performs database lookup
 //! with SHA256 hashing, and injects tenant context for downstream handlers.
 
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::State,
@@ -10,7 +12,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use sqlx::PgPool;
+use kapsel_core::storage::Storage;
 use uuid::Uuid;
 
 /// Extracts API key from Authorization header.
@@ -24,32 +26,16 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Validates API key and returns tenant ID.
-async fn validate_api_key(db: &PgPool, api_key: &str) -> Result<Uuid, AuthError> {
+async fn validate_api_key(storage: &Storage, api_key: &str) -> Result<Uuid, AuthError> {
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        r"
-        SELECT tenant_id
-        FROM api_keys
-        WHERE key_hash = $1
-          AND revoked_at IS NULL
-          AND (expires_at IS NULL OR expires_at > NOW())
-        ",
-    )
-    .bind(&key_hash)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| AuthError::Database(e.to_string()))?;
-
-    match row {
-        Some((tenant_id,)) => {
-            let _ = sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1")
-                .bind(&key_hash)
-                .execute(db)
-                .await;
-
-            Ok(tenant_id)
-        },
+    match storage
+        .api_keys
+        .validate(&key_hash)
+        .await
+        .map_err(|e| AuthError::Database(e.to_string()))?
+    {
+        Some(tenant_id) => Ok(tenant_id.0),
         None => Err(AuthError::InvalidApiKey),
     }
 }
@@ -79,7 +65,7 @@ impl IntoResponse for AuthError {
 
 /// Axum middleware that authenticates requests using API keys.
 pub async fn auth_middleware(
-    State(db): State<PgPool>,
+    State(storage): State<Arc<Storage>>,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, AuthError> {
@@ -87,7 +73,7 @@ pub async fn auth_middleware(
 
     let api_key = extract_api_key(headers).ok_or(AuthError::MissingHeader)?;
 
-    let tenant_id = validate_api_key(&db, &api_key).await?;
+    let tenant_id = validate_api_key(&storage, &api_key).await?;
 
     req.extensions_mut().insert(tenant_id);
 

@@ -3,6 +3,8 @@
 //! Provides liveness, readiness, and health endpoints with database
 //! connectivity checks for orchestration systems like Kubernetes.
 
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     http::StatusCode,
@@ -10,8 +12,8 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use kapsel_core::storage::Storage;
 use serde::Serialize;
-use sqlx::PgPool;
 use tracing::{debug, error, instrument};
 
 /// Health check response structure.
@@ -76,14 +78,14 @@ pub enum ComponentStatus {
 ///
 /// This endpoint is designed to be called frequently by orchestration
 /// systems and load balancers, so it avoids expensive operations.
-#[instrument(name = "health_check", skip(db))]
-pub async fn health_check(State(db): State<PgPool>) -> Response {
+#[instrument(name = "health_check", skip(storage))]
+pub async fn health_check(State(storage): State<Arc<Storage>>) -> Response {
     debug!("Performing health check");
 
     let timestamp = Utc::now();
     let start_time = std::time::Instant::now();
 
-    let db_health = check_database_health(&db).await;
+    let db_health = check_database_health(&storage).await;
     let db_duration = start_time.elapsed();
 
     let overall_status = match db_health.status {
@@ -122,23 +124,16 @@ pub async fn health_check(State(db): State<PgPool>) -> Response {
 ///
 /// Executes a lightweight query to verify the database connection
 /// is working properly. Does not perform expensive operations.
-pub async fn check_database_health(db: &PgPool) -> DatabaseHealth {
+pub async fn check_database_health(storage: &Storage) -> DatabaseHealth {
     let _start_time = std::time::Instant::now();
 
-    match sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(db).await {
-        Ok(1) => {
+    match storage.health_check().await {
+        Ok(()) => {
             debug!("Database health check passed");
             DatabaseHealth { status: ComponentStatus::Up, message: None }
         },
-        Ok(_) => {
-            error!("Database health check returned unexpected result");
-            DatabaseHealth {
-                status: ComponentStatus::Down,
-                message: Some("Database query returned unexpected result".to_string()),
-            }
-        },
         Err(e) => {
-            error!(error = %e, "Database health check failed");
+            error!("Database health check failed: {}", e);
             DatabaseHealth {
                 status: ComponentStatus::Down,
                 message: Some(format!("Database connection failed: {e}")),
@@ -162,9 +157,9 @@ pub struct DatabaseHealth {
 ///
 /// TODO: Currently identical to health check but could
 /// include additional startup-specific checks in the future.
-#[instrument(name = "readiness_check", skip(db))]
-pub async fn readiness_check(State(db): State<PgPool>) -> Response {
-    health_check(State(db)).await
+#[instrument(name = "readiness_check", skip(storage))]
+pub async fn readiness_check(State(storage): State<Arc<Storage>>) -> Response {
+    health_check(State(storage)).await
 }
 
 /// Liveness check endpoint for Kubernetes probes.

@@ -3,7 +3,7 @@
 //! Accepts incoming webhooks, validates signatures and payload constraints,
 //! and persists to database with idempotency protection.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{Path, State},
@@ -12,13 +12,11 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
-use chrono::Utc;
 use kapsel_core::{
-    error::CoreError, EndpointId, EventId, EventStatus, IdempotencyStrategy, KapselError, Result,
-    TenantId,
+    error::CoreError, storage::Storage, EndpointId, EventId, EventStatus, IdempotencyStrategy,
+    KapselError, Result, SignatureConfig, TenantId, WebhookEvent,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
@@ -73,7 +71,7 @@ pub struct ErrorDetail {
 /// - 500: Database or internal errors
 #[instrument(
     name = "ingest_webhook",
-    skip(db, headers, body),
+    skip(storage, headers, body),
     fields(
         endpoint_id = %endpoint_id,
         content_length = headers.get("content-length").and_then(|v| v.to_str().ok()).unwrap_or("unknown"),
@@ -83,7 +81,7 @@ pub struct ErrorDetail {
 #[allow(clippy::too_many_lines)]
 pub async fn ingest_webhook(
     Path(endpoint_id): Path<Uuid>,
-    State(db): State<PgPool>,
+    State(storage): State<Arc<Storage>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -99,7 +97,7 @@ pub async fn ingest_webhook(
     }
 
     let endpoint_id = EndpointId::from(endpoint_id);
-    let endpoint_result = fetch_endpoint(&db, endpoint_id).await;
+    let endpoint_result = fetch_endpoint(&storage, endpoint_id).await;
 
     let tenant_id = match endpoint_result {
         Ok(tenant_id) => tenant_id,
@@ -120,7 +118,7 @@ pub async fn ingest_webhook(
         .to_string();
 
     if !idempotency_key.is_empty() {
-        match check_duplicate(&db, &idempotency_key, endpoint_id).await {
+        match check_duplicate(&storage, &idempotency_key, endpoint_id).await {
             Ok(Some(existing_id)) => {
                 info!(
                     existing_event_id = %existing_id,
@@ -142,14 +140,14 @@ pub async fn ingest_webhook(
                 error!(error = %e, "Failed to check for duplicates");
                 return create_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &KapselError::Database(e),
+                    &KapselError::Other(anyhow::anyhow!("Failed to check for duplicates: {}", e)),
                 );
             },
         }
     }
 
     let (signature_valid, signature_error) =
-        match validate_webhook_signature(&db, endpoint_id, &headers, &body).await {
+        match validate_webhook_signature(&storage, endpoint_id, &headers, &body).await {
             Ok(validation_result) => {
                 (Some(validation_result.is_valid), validation_result.error_message)
             },
@@ -192,13 +190,13 @@ pub async fn ingest_webhook(
         .to_string();
 
     let insert_result = persist_event(
-        &db,
+        &storage,
         event_id,
         tenant_id,
         endpoint_id,
         idempotency_key,
         headers_json,
-        body,
+        body.clone(),
         content_type,
         signature_valid,
         signature_error,
@@ -219,51 +217,41 @@ pub async fn ingest_webhook(
         },
         Err(e) => {
             error!(error = %e, "Failed to persist webhook event");
-            create_error_response(StatusCode::INTERNAL_SERVER_ERROR, &KapselError::Database(e))
+            create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &KapselError::Other(anyhow::anyhow!("Failed to persist webhook event: {}", e)),
+            )
         },
     }
 }
 
 /// Fetches an endpoint and returns its tenant ID.
-async fn fetch_endpoint(db: &PgPool, endpoint_id: EndpointId) -> Result<TenantId> {
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT tenant_id FROM endpoints WHERE id = $1")
-        .bind(endpoint_id.0)
-        .fetch_optional(db)
-        .await?;
+async fn fetch_endpoint(storage: &Storage, endpoint_id: EndpointId) -> Result<TenantId> {
+    let endpoint = storage
+        .endpoints
+        .find_by_id(endpoint_id)
+        .await?
+        .ok_or_else(|| CoreError::NotFound(format!("endpoint {} not found", endpoint_id.0)))?;
 
-    match row {
-        Some((tenant_id,)) => Ok(TenantId::from(tenant_id)),
-        None => Err(CoreError::NotFound(format!("endpoint {} not found", endpoint_id.0))),
-    }
+    Ok(endpoint.tenant_id)
 }
 
 /// Checks for duplicate events based on idempotency key.
 async fn check_duplicate(
-    db: &PgPool,
+    storage: &Storage,
     idempotency_key: &str,
     endpoint_id: EndpointId,
-) -> sqlx::Result<Option<EventId>> {
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        r"
-        SELECT id
-        FROM webhook_events
-        WHERE source_event_id = $1
-          AND endpoint_id = $2
-          AND received_at > NOW() - INTERVAL '24 hours'
-        ",
-    )
-    .bind(idempotency_key)
-    .bind(endpoint_id.0)
-    .fetch_optional(db)
-    .await?;
+) -> Result<Option<EventId>> {
+    let duplicate_event =
+        storage.webhook_events.find_duplicate(endpoint_id, idempotency_key).await?;
 
-    Ok(row.map(|(id,)| EventId::from(id)))
+    Ok(duplicate_event.map(|event| event.id))
 }
 
 /// Persists a webhook event to the database.
 #[allow(clippy::too_many_arguments)]
 async fn persist_event(
-    db: &PgPool,
+    storage: &Storage,
     event_id: EventId,
     tenant_id: TenantId,
     endpoint_id: EndpointId,
@@ -273,36 +261,38 @@ async fn persist_event(
     content_type: String,
     signature_valid: Option<bool>,
     signature_error: Option<String>,
-) -> sqlx::Result<()> {
+) -> Result<()> {
     let payload_size = i32::try_from(body.len()).unwrap_or(i32::MAX).max(1);
 
-    sqlx::query(
-        r"
-        INSERT INTO webhook_events (
-            id, tenant_id, endpoint_id, source_event_id,
-            idempotency_strategy, status, headers, body,
-            content_type, payload_size, signature_valid, signature_error,
-            received_at, failure_count
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0)
-        "
-    )
-    .bind(event_id.0)
-    .bind(tenant_id.0)
-    .bind(endpoint_id.0)
-    .bind(if idempotency_key.is_empty() { event_id.0.to_string() } else { idempotency_key })
-    .bind(IdempotencyStrategy::Header) // Using header-based idempotency for now
-    .bind(EventStatus::Received.to_string())
-    .bind(headers)
-    .bind(body.as_ref())
-    .bind(content_type)
-    .bind(payload_size)
-    .bind(signature_valid)
-    .bind(signature_error)
-    .bind(Utc::now())
-    .execute(db)
-    .await?;
+    let event = WebhookEvent {
+        id: event_id,
+        tenant_id,
+        endpoint_id,
+        source_event_id: idempotency_key,
+        idempotency_strategy: IdempotencyStrategy::SourceId,
+        status: EventStatus::Pending,
+        failure_count: 0,
+        last_attempt_at: None,
+        next_retry_at: None,
+        headers: sqlx::types::Json(
+            headers
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect(),
+        ),
+        body: body.to_vec(),
+        content_type,
+        received_at: chrono::Utc::now(),
+        delivered_at: None,
+        failed_at: None,
+        payload_size,
+        signature_valid,
+        signature_error,
+    };
 
+    storage.webhook_events.create(&event).await?;
     Ok(())
 }
 
@@ -325,19 +315,21 @@ fn extract_headers(headers: &HeaderMap) -> HashMap<String, String> {
 ///
 /// Returns error if endpoint lookup fails or signature verification fails.
 async fn validate_webhook_signature(
-    db: &PgPool,
+    storage: &Storage,
     endpoint_id: EndpointId,
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<ValidationResult> {
-    let signature_config = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT signing_secret, signature_header FROM endpoints WHERE id = $1",
-    )
-    .bind(endpoint_id.0)
-    .fetch_one(db)
-    .await?;
+    let endpoint = storage
+        .endpoints
+        .find_by_id(endpoint_id)
+        .await?
+        .ok_or_else(|| CoreError::NotFound(format!("endpoint {} not found", endpoint_id.0)))?;
 
-    let (signing_secret, signature_header) = signature_config;
+    let (signing_secret, signature_header) = match endpoint.signature_config {
+        SignatureConfig::None => (None, None),
+        SignatureConfig::HmacSha256 { secret, header } => (Some(secret), Some(header)),
+    };
 
     let Some(signing_secret) = signing_secret else { return Ok(ValidationResult::valid()) };
 

@@ -498,7 +498,7 @@ impl Repository {
         sqlx::query(
             r#"
             UPDATE endpoints
-            SET deleted_at = NULL, updated_at = NOW()
+            SET deleted_at = NULL, is_active = true, updated_at = NOW()
             WHERE id = $1 AND deleted_at IS NOT NULL
             "#,
         )

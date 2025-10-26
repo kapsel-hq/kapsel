@@ -1,9 +1,9 @@
 //! Core TestEnv implementation - basic environment setup and management
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use kapsel_core::Clock;
+use kapsel_core::{storage::Storage, Clock};
 use uuid::Uuid;
 
 use crate::{database::TestDatabase, http, time, TestEnv};
@@ -26,11 +26,13 @@ impl TestEnv {
 
         let http_mock = http::MockServer::start().await;
         let clock = time::TestClock::new();
+        let storage = Arc::new(Storage::new(database.clone()));
 
         Ok(Self {
             http_mock,
             clock,
             database,
+            storage,
             attestation_service: None,
             test_run_id,
             is_isolated: false,
@@ -59,11 +61,13 @@ impl TestEnv {
 
         let http_mock = http::MockServer::start().await;
         let clock = time::TestClock::new();
+        let storage = Arc::new(Storage::new(database.clone()));
 
         Ok(Self {
             http_mock,
             clock,
             database,
+            storage,
             attestation_service: None,
             test_run_id,
             is_isolated: true,
@@ -134,6 +138,14 @@ impl TestEnv {
     /// so changes in one test never affect another test.
     pub fn pool(&self) -> &sqlx::PgPool {
         &self.database
+    }
+
+    /// Returns access to the storage layer repositories.
+    ///
+    /// This provides access to the production storage repositories,
+    /// ensuring tests exercise the same code paths that run in production.
+    pub fn storage(&self) -> Arc<Storage> {
+        self.storage.clone()
     }
 
     /// Create a new connection pool for components that manage their own

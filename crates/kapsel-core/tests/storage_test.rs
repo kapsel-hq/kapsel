@@ -30,7 +30,7 @@ async fn tenant_repository_crud_operations() {
     let mut tx = env.pool().begin().await.unwrap();
 
     // Create tenant using the repository
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -65,9 +65,9 @@ async fn endpoint_repository_crud_operations() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -127,13 +127,13 @@ async fn webhook_event_repository_crud_operations() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     // Create a webhook event using fixtures
     let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -177,9 +177,9 @@ async fn webhook_event_claim_and_delivery_flow() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     // Create multiple events
     let mut event_ids = Vec::new();
@@ -189,7 +189,7 @@ async fn webhook_event_claim_and_delivery_flow() {
             endpoint_id,
             &format!("{{\"message\": \"test{}\"}}", i),
         );
-        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
+        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
         event_ids.push(event_id);
     }
 
@@ -245,9 +245,9 @@ async fn concurrent_event_claiming() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     // Create 5 events
     for i in 0..5 {
@@ -256,7 +256,7 @@ async fn concurrent_event_claiming() {
             endpoint_id,
             &format!("{{\"message\": \"concurrent{}\"}}", i),
         );
-        env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
+        env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
     }
 
     tx.commit().await.unwrap();
@@ -293,12 +293,12 @@ async fn delivery_attempt_repository_operations() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -400,7 +400,7 @@ async fn transactional_operations_rollback() {
     // Create tenant in a transaction that will be rolled back
     let tenant_id = {
         let mut tx = env.pool().begin().await.unwrap();
-        let tenant_id = env.create_tenant_tx(&mut *tx, "rollback-test-tenant").await.unwrap();
+        let tenant_id = env.create_tenant_tx(&mut tx, "rollback-test-tenant").await.unwrap();
 
         // Explicitly rollback the transaction
         tx.rollback().await.unwrap();
@@ -419,7 +419,7 @@ async fn constraint_violation_handling() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "constraint-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "constraint-tenant").await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -462,16 +462,16 @@ async fn storage_repository_isolation() {
 
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant1_id = env.create_tenant_tx(&mut *tx, "tenant1").await.unwrap();
-    let tenant2_id = env.create_tenant_tx(&mut *tx, "tenant2").await.unwrap();
+    let tenant1_id = env.create_tenant_tx(&mut tx, "tenant1").await.unwrap();
+    let tenant2_id = env.create_tenant_tx(&mut tx, "tenant2").await.unwrap();
 
     tx.commit().await.unwrap();
 
     let mut tx2 = env.pool().begin().await.unwrap();
     let endpoint1_id =
-        env.create_endpoint_tx(&mut *tx2, tenant1_id, "https://tenant1.com").await.unwrap();
+        env.create_endpoint_tx(&mut tx2, tenant1_id, "https://tenant1.com").await.unwrap();
     let endpoint2_id =
-        env.create_endpoint_tx(&mut *tx2, tenant2_id, "https://tenant2.com").await.unwrap();
+        env.create_endpoint_tx(&mut tx2, tenant2_id, "https://tenant2.com").await.unwrap();
 
     tx2.commit().await.unwrap();
 
@@ -487,4 +487,490 @@ async fn storage_repository_isolation() {
     // Cross-tenant queries should return empty results
     assert!(tenant1_endpoints.iter().all(|e| e.tenant_id == tenant1_id));
     assert!(tenant2_endpoints.iter().all(|e| e.tenant_id == tenant2_id));
+}
+
+/// Tests the complete dead-letter queue workflow.
+///
+/// Verifies that events can be moved to dead-letter status, retrieved,
+/// and retried correctly. This is critical for reliability.
+#[tokio::test]
+async fn webhook_events_dead_letter_queue_workflow() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "dlq-tenant").await.unwrap();
+    let endpoint_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
+
+    // Create a webhook event using fixtures
+    let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Step 1: Move event to failed state first
+    storage.webhook_events.mark_failed(event_id, 3, None).await.unwrap();
+
+    // Verify it's failed
+    let event = storage.webhook_events.find_by_id(event_id).await.unwrap().unwrap();
+    assert_eq!(event.status, EventStatus::Failed);
+
+    // Step 2: Move to dead letter
+    storage.webhook_events.move_to_dead_letter(event_id).await.unwrap();
+
+    // Verify status changed to dead_letter
+    let event = storage.webhook_events.find_by_id(event_id).await.unwrap().unwrap();
+    assert_eq!(event.status, EventStatus::DeadLetter);
+
+    // Step 3: Find dead letter by tenant
+    let dead_letters =
+        storage.webhook_events.find_dead_letter_by_tenant(tenant_id, None).await.unwrap();
+    assert_eq!(dead_letters.len(), 1);
+    assert_eq!(dead_letters[0].id, event_id);
+    assert_eq!(dead_letters[0].status, EventStatus::DeadLetter);
+
+    // Step 4: Retry dead letter (moves back to pending)
+    storage.webhook_events.retry_dead_letter(event_id).await.unwrap();
+
+    // Verify it's back to pending
+    let event = storage.webhook_events.find_by_id(event_id).await.unwrap().unwrap();
+    assert_eq!(event.status, EventStatus::Pending);
+
+    // Dead letter query should now be empty
+    let dead_letters =
+        storage.webhook_events.find_dead_letter_by_tenant(tenant_id, None).await.unwrap();
+    assert_eq!(dead_letters.len(), 0);
+}
+
+/// Tests bulk deletion of events by tenant.
+///
+/// This is important for data cleanup and GDPR "Right to be Forgotten".
+#[tokio::test]
+async fn webhook_events_delete_by_tenant() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant1_id = env.create_tenant_tx(&mut tx, "delete-tenant-1").await.unwrap();
+    let tenant2_id = env.create_tenant_tx(&mut tx, "delete-tenant-2").await.unwrap();
+    let endpoint1_id =
+        env.create_endpoint_tx(&mut tx, tenant1_id, "https://tenant1.example.com").await.unwrap();
+    let endpoint2_id =
+        env.create_endpoint_tx(&mut tx, tenant2_id, "https://tenant2.example.com").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Create events for both tenants
+    let webhook1 = test_events::create_test_webhook(tenant1_id, endpoint1_id);
+    let webhook2 = test_events::create_test_webhook(tenant1_id, endpoint1_id);
+    let webhook3 = test_events::create_test_webhook(tenant2_id, endpoint2_id);
+
+    let mut tx = env.pool().begin().await.unwrap();
+    env.ingest_webhook_tx(&mut tx, &webhook1).await.unwrap();
+    env.ingest_webhook_tx(&mut tx, &webhook2).await.unwrap();
+    env.ingest_webhook_tx(&mut tx, &webhook3).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Verify events exist
+    assert_eq!(storage.webhook_events.count_by_tenant(tenant1_id).await.unwrap(), 2);
+    assert_eq!(storage.webhook_events.count_by_tenant(tenant2_id).await.unwrap(), 1);
+
+    // Delete all events for tenant1
+    let deleted_count = storage.webhook_events.delete_by_tenant(tenant1_id).await.unwrap();
+    assert_eq!(deleted_count, 2);
+
+    // Verify tenant1 events are gone, tenant2 events remain
+    assert_eq!(storage.webhook_events.count_by_tenant(tenant1_id).await.unwrap(), 0);
+    assert_eq!(storage.webhook_events.count_by_tenant(tenant2_id).await.unwrap(), 1);
+}
+
+/// Tests endpoint soft delete and recovery lifecycle.
+///
+/// Verifies that endpoints can be soft-deleted and recovered without
+/// losing associated data.
+#[tokio::test]
+async fn endpoint_soft_delete_and_recovery() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "endpoint-lifecycle-tenant").await.unwrap();
+    let endpoint_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/lifecycle").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Verify endpoint exists and is active
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert!(endpoint.is_active);
+    assert!(endpoint.deleted_at.is_none());
+
+    // Active endpoints query should include it
+    let active_endpoints = storage.endpoints.find_active_by_tenant(tenant_id).await.unwrap();
+    assert_eq!(active_endpoints.len(), 1);
+
+    // Soft delete the endpoint
+    storage.endpoints.soft_delete(endpoint_id).await.unwrap();
+
+    // Endpoint should still exist but be marked as deleted
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert!(!endpoint.is_active);
+    assert!(endpoint.deleted_at.is_some());
+
+    // Active endpoints query should not include it
+    let active_endpoints = storage.endpoints.find_active_by_tenant(tenant_id).await.unwrap();
+    assert_eq!(active_endpoints.len(), 0);
+
+    // Recover the endpoint
+    storage.endpoints.recover(endpoint_id).await.unwrap();
+
+    // Endpoint should be active again
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert!(endpoint.is_active);
+    assert!(endpoint.deleted_at.is_none());
+
+    // Active endpoints query should include it again
+    let active_endpoints = storage.endpoints.find_active_by_tenant(tenant_id).await.unwrap();
+    assert_eq!(active_endpoints.len(), 1);
+}
+
+/// Tests endpoint statistics increment functionality.
+///
+/// This is critical for monitoring and analytics.
+#[tokio::test]
+async fn endpoint_statistics_increment() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "stats-tenant").await.unwrap();
+    let endpoint_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/stats").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Initial stats should be zero
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.total_events_received, 0);
+    assert_eq!(endpoint.total_events_delivered, 0);
+    assert_eq!(endpoint.total_events_failed, 0);
+
+    // Increment received events
+    storage
+        .endpoints
+        .increment_stats(
+            endpoint_id,
+            1, // events_received
+            0, // events_delivered
+            0, // events_failed
+        )
+        .await
+        .unwrap();
+
+    // Verify increment
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.total_events_received, 1);
+    assert_eq!(endpoint.total_events_delivered, 0);
+    assert_eq!(endpoint.total_events_failed, 0);
+
+    // Increment delivered events
+    storage
+        .endpoints
+        .increment_stats(
+            endpoint_id,
+            2, // events_received
+            1, // events_delivered
+            0, // events_failed
+        )
+        .await
+        .unwrap();
+
+    // Verify cumulative increments
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.total_events_received, 3);
+    assert_eq!(endpoint.total_events_delivered, 1);
+    assert_eq!(endpoint.total_events_failed, 0);
+
+    // Increment failed events
+    storage
+        .endpoints
+        .increment_stats(
+            endpoint_id,
+            0, // events_received
+            0, // events_delivered
+            2, // events_failed
+        )
+        .await
+        .unwrap();
+
+    // Verify all counters
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.total_events_received, 3);
+    assert_eq!(endpoint.total_events_delivered, 1);
+    assert_eq!(endpoint.total_events_failed, 2);
+}
+
+/// Tests finding endpoints with open circuit breakers.
+///
+/// This monitoring query is essential for operational visibility.
+#[tokio::test]
+async fn endpoint_find_with_open_circuits() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "circuit-tenant").await.unwrap();
+    let endpoint1_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/circuit1").await.unwrap();
+    let endpoint2_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/circuit2").await.unwrap();
+    let endpoint3_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/circuit3").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Initially no endpoints have open circuits
+    let open_circuits = storage.endpoints.find_with_open_circuits(None).await.unwrap();
+    assert_eq!(open_circuits.len(), 0);
+
+    // Set circuit breaker states
+    storage
+        .endpoints
+        .update_circuit_state(endpoint1_id, CircuitState::Open, 0, 0, None, None)
+        .await
+        .unwrap();
+    storage
+        .endpoints
+        .update_circuit_state(endpoint2_id, CircuitState::Closed, 0, 0, None, None)
+        .await
+        .unwrap();
+    storage
+        .endpoints
+        .update_circuit_state(endpoint3_id, CircuitState::Open, 0, 0, None, None)
+        .await
+        .unwrap();
+
+    // Find endpoints with open circuits
+    let open_circuits = storage.endpoints.find_with_open_circuits(None).await.unwrap();
+    assert_eq!(open_circuits.len(), 2);
+
+    let open_ids: Vec<_> = open_circuits.iter().map(|e| e.id).collect();
+    assert!(open_ids.contains(&endpoint1_id));
+    assert!(open_ids.contains(&endpoint3_id));
+    assert!(!open_ids.contains(&endpoint2_id));
+
+    // Test with limit
+    let limited = storage.endpoints.find_with_open_circuits(Some(1)).await.unwrap();
+    assert_eq!(limited.len(), 1);
+    assert!(limited[0].circuit_state == CircuitState::Open);
+}
+
+/// Tests manual circuit breaker reset functionality.
+///
+/// This is important for operational recovery procedures.
+#[tokio::test]
+async fn endpoint_reset_circuit_breaker() {
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "reset-tenant").await.unwrap();
+    let endpoint_id =
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/reset").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Set circuit to open
+    storage
+        .endpoints
+        .update_circuit_state(endpoint_id, CircuitState::Open, 0, 0, None, None)
+        .await
+        .unwrap();
+
+    // Verify it's open
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.circuit_state, CircuitState::Open);
+
+    // Reset circuit breaker
+    storage.endpoints.reset_circuit_breaker(endpoint_id).await.unwrap();
+
+    // Verify it's closed
+    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    assert_eq!(endpoint.circuit_state, CircuitState::Closed);
+}
+
+/// Tests API key lifecycle management for tenants.
+///
+/// Covers listing, counting, and deleting API keys per tenant.
+#[tokio::test]
+async fn api_key_tenant_lifecycle_management() {
+    use chrono::{Duration, Utc};
+    use kapsel_core::storage::api_keys::ApiKey;
+
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+
+    let tenant1_id = env.create_tenant_tx(&mut tx, "api-tenant-1").await.unwrap();
+    let tenant2_id = env.create_tenant_tx(&mut tx, "api-tenant-2").await.unwrap();
+
+    tx.commit().await.unwrap();
+
+    let now = Utc::now();
+    let future = now + Duration::hours(24);
+
+    // Create API keys for tenant1
+    let key1 = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "hash1".to_string(),
+        tenant_id: tenant1_id,
+        name: "Key 1".to_string(),
+        created_at: now,
+        expires_at: Some(future),
+        revoked_at: None,
+        last_used_at: None,
+    };
+
+    let key2 = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "hash2".to_string(),
+        tenant_id: tenant1_id,
+        name: "Key 2".to_string(),
+        created_at: now,
+        expires_at: Some(future),
+        revoked_at: Some(now + Duration::seconds(1)), // This key is revoked
+        last_used_at: None,
+    };
+
+    // Create API key for tenant2
+    let key3 = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "hash3".to_string(),
+        tenant_id: tenant2_id,
+        name: "Key 3".to_string(),
+        created_at: now,
+        expires_at: Some(future),
+        revoked_at: None,
+        last_used_at: None,
+    };
+
+    storage.api_keys.create(&key1).await.unwrap();
+    storage.api_keys.create(&key2).await.unwrap();
+    storage.api_keys.create(&key3).await.unwrap();
+
+    // Test find_by_tenant (excluding revoked by default)
+    let tenant1_keys = storage.api_keys.find_by_tenant(tenant1_id, false).await.unwrap();
+    assert_eq!(tenant1_keys.len(), 1);
+    assert_eq!(tenant1_keys[0].key_hash, "hash1");
+
+    // Test find_by_tenant (including revoked)
+    let tenant1_all_keys = storage.api_keys.find_by_tenant(tenant1_id, true).await.unwrap();
+    assert_eq!(tenant1_all_keys.len(), 2);
+
+    // Test tenant isolation
+    let tenant2_keys = storage.api_keys.find_by_tenant(tenant2_id, false).await.unwrap();
+    assert_eq!(tenant2_keys.len(), 1);
+    assert_eq!(tenant2_keys[0].key_hash, "hash3");
+
+    // Test count_by_tenant (excluding revoked)
+    let tenant1_count = storage.api_keys.count_by_tenant(tenant1_id, false).await.unwrap();
+    assert_eq!(tenant1_count, 1);
+
+    // Test count_by_tenant (including revoked)
+    let tenant1_all_count = storage.api_keys.count_by_tenant(tenant1_id, true).await.unwrap();
+    assert_eq!(tenant1_all_count, 2);
+
+    // Test delete
+    storage.api_keys.delete("hash1").await.unwrap();
+
+    // Verify deletion
+    let tenant1_keys_after = storage.api_keys.find_by_tenant(tenant1_id, true).await.unwrap();
+    assert_eq!(tenant1_keys_after.len(), 1); // Only revoked key remains
+    assert_eq!(tenant1_keys_after[0].key_hash, "hash2");
+
+    // Other tenant should be unaffected
+    let tenant2_keys_after = storage.api_keys.find_by_tenant(tenant2_id, false).await.unwrap();
+    assert_eq!(tenant2_keys_after.len(), 1);
+}
+
+/// Tests cleanup of expired API keys.
+///
+/// This is essential for maintenance jobs to prevent key accumulation.
+#[tokio::test]
+async fn api_key_cleanup_expired() {
+    use chrono::{Duration, Utc};
+    use kapsel_core::storage::api_keys::ApiKey;
+
+    let env = TestEnv::new_isolated().await.unwrap();
+    let storage = Storage::new(env.pool().clone());
+
+    let mut tx = env.pool().begin().await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "cleanup-tenant").await.unwrap();
+    tx.commit().await.unwrap();
+
+    let now = Utc::now();
+    let past = now - Duration::hours(1);
+    let future = now + Duration::hours(1);
+
+    // Create keys with different expiration states
+    let expired_key = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "expired".to_string(),
+        tenant_id,
+        name: "Expired Key".to_string(),
+        created_at: past - Duration::hours(2), // Created before expiry
+        expires_at: Some(past),                // Already expired
+        revoked_at: None,
+        last_used_at: None,
+    };
+
+    let valid_key = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "valid".to_string(),
+        tenant_id,
+        name: "Valid Key".to_string(),
+        created_at: now,
+        expires_at: Some(future), // Not expired
+        revoked_at: None,
+        last_used_at: None,
+    };
+
+    let no_expiry_key = ApiKey {
+        id: Uuid::new_v4(),
+        key_hash: "no_expiry".to_string(),
+        tenant_id,
+        name: "No Expiry Key".to_string(),
+        created_at: now,
+        expires_at: None, // Never expires
+        revoked_at: None,
+        last_used_at: None,
+    };
+
+    storage.api_keys.create(&expired_key).await.unwrap();
+    storage.api_keys.create(&valid_key).await.unwrap();
+    storage.api_keys.create(&no_expiry_key).await.unwrap();
+
+    // Verify all keys exist
+    assert_eq!(storage.api_keys.count_by_tenant(tenant_id, true).await.unwrap(), 3);
+
+    // Cleanup expired keys
+    let cleaned_count = storage.api_keys.cleanup_expired().await.unwrap();
+    assert_eq!(cleaned_count, 1); // Only expired key should be removed
+
+    // Verify only expired key was removed
+    let remaining_keys = storage.api_keys.find_by_tenant(tenant_id, true).await.unwrap();
+    assert_eq!(remaining_keys.len(), 2);
+
+    let remaining_hashes: Vec<_> = remaining_keys.iter().map(|k| &k.key_hash).collect();
+    assert!(remaining_hashes.contains(&&"valid".to_string()));
+    assert!(remaining_hashes.contains(&&"no_expiry".to_string()));
+    assert!(!remaining_hashes.contains(&&"expired".to_string()));
 }

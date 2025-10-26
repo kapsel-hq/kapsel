@@ -32,6 +32,7 @@ pub use http::{MockEndpoint, MockResponse, MockServer};
 pub use invariants::{assertions as invariant_assertions, strategies, EventStatus, Invariants};
 pub use kapsel_core::{
     models::{EndpointId, EventId, TenantId},
+    storage::Storage,
     Clock,
 };
 pub use scenario::{FailureKind, ScenarioBuilder};
@@ -77,6 +78,8 @@ pub struct TestEnv {
     pub clock: time::TestClock,
     /// Database handle for this test environment
     database: PgPool,
+    /// Storage layer providing repository access
+    storage: Arc<Storage>,
     /// Optional attestation service for testing delivery capture
     attestation_service: Option<Arc<RwLock<kapsel_attestation::MerkleService>>>,
     /// Unique identifier for this test run to ensure data isolation
