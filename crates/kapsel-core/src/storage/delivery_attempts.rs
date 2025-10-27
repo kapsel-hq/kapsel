@@ -234,9 +234,9 @@ impl Repository {
                    da.response_status, da.response_headers, da.response_body,
                    da.error_message, da.succeeded, da.attempted_at
             FROM delivery_attempts da
-            WHERE da.attempted_at >= $1 AND da.attempted_at < $2
-            ORDER BY da.attempted_at ASC
-            LIMIT $3
+            WHERE da.endpoint_id = $1
+            ORDER BY da.attempted_at DESC
+            LIMIT $2
             ",
         )
         .bind(endpoint_id.0)
@@ -270,6 +270,7 @@ impl Repository {
             FROM delivery_attempts da
             WHERE da.endpoint_id = $1
               AND da.attempted_at >= $2
+              AND da.succeeded = false
             ORDER BY da.attempted_at DESC
             LIMIT $3
             ",

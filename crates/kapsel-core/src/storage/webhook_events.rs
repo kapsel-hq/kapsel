@@ -248,7 +248,8 @@ impl Repository {
             UPDATE webhook_events
             SET status = $1,
                 failure_count = $2,
-                next_retry_at = $3
+                next_retry_at = $3,
+                failed_at = CASE WHEN $3 IS NULL THEN NOW() ELSE NULL END
             WHERE id = $4
             ",
         )
