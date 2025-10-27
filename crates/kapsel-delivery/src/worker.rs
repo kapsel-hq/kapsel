@@ -186,6 +186,38 @@ impl DeliveryEngine {
         self.stats.read().await.clone()
     }
 
+    /// Processes exactly one batch of pending events synchronously.
+    ///
+    /// This method is designed for testing and controlled batch processing.
+    /// Unlike `start()` which spawns persistent workers, this method:
+    /// 1. Claims one batch of pending events
+    /// 2. Processes them synchronously
+    /// 3. Returns when complete
+    /// 4. Does not start persistent background workers
+    ///
+    /// # Errors
+    ///
+    /// Returns error if batch processing fails.
+    pub async fn process_batch(&self) -> Result<usize> {
+        let storage = Arc::new(Storage::with_clock(self.pool.clone(), self.clock.clone()));
+
+        // Create a temporary worker for this batch
+        let worker = DeliveryWorker::new(
+            0, // worker_id
+            storage,
+            self.config.clone(),
+            self.client.clone(),
+            self.circuit_manager.clone(),
+            self.stats.clone(),
+            self.cancellation_token.clone(),
+            self.event_handler.clone(),
+            self.clock.clone(),
+        );
+
+        // Process exactly one batch synchronously
+        worker.process_batch().await
+    }
+
     /// Forces a specific circuit breaker state for testing.
     #[cfg(test)]
     pub async fn force_circuit_state(

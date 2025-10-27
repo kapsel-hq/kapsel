@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use chrono::Utc;
 use kapsel_core::{
     models::{
@@ -222,7 +223,7 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if database query fails or event not found.
-    pub async fn find_webhook_status(&self, event_id: EventId) -> Result<String> {
+    pub async fn find_webhook_status(&self, event_id: EventId) -> Result<EventStatus> {
         // Add timeout to prevent hanging
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -236,7 +237,7 @@ impl TestEnv {
         })?;
 
         match event {
-            Some(webhook_event) => Ok(webhook_event.status.to_string()),
+            Some(webhook_event) => Ok(webhook_event.status),
             None => Err(anyhow::anyhow!("webhook event {} not found", event_id.0)),
         }
     }
@@ -256,7 +257,7 @@ impl TestEnv {
     pub async fn wait_for_event_status(
         &self,
         event_id: EventId,
-        expected_status: &str,
+        expected_status: EventStatus,
         timeout: Duration,
     ) -> Result<()> {
         let start = std::time::Instant::now();
@@ -276,13 +277,11 @@ impl TestEnv {
 
             if start.elapsed() > timeout {
                 // Get current status for better error message
-                let current = self
-                    .find_webhook_status(event_id)
-                    .await
-                    .unwrap_or_else(|_| "NOT_FOUND".to_string());
+                let current =
+                    self.find_webhook_status(event_id).await.unwrap_or(EventStatus::Failed); // Default to Failed for error reporting
 
                 anyhow::bail!(
-                    "Timeout waiting for event {} to reach status '{}'. Current status: '{}'",
+                    "Timeout waiting for event {} to reach status '{:?}'. Current status: '{:?}'",
                     event_id.0,
                     expected_status,
                     current
@@ -292,6 +291,81 @@ impl TestEnv {
             // Short sleep to avoid hammering the database
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// Create tenant directly (convenience method).
+    ///
+    /// This is a convenience wrapper around `create_tenant_tx` that handles
+    /// the transaction automatically.
+    pub async fn create_tenant(&self, name: &str) -> Result<TenantId> {
+        let mut tx = self.pool().begin().await?;
+        let tenant_id = self.create_tenant_tx(&mut tx, name).await?;
+        tx.commit().await?;
+        Ok(tenant_id)
+    }
+
+    /// Create endpoint directly (convenience method).
+    ///
+    /// This is a convenience wrapper around `create_endpoint_tx` that handles
+    /// the transaction automatically.
+    pub async fn create_endpoint(&self, tenant_id: TenantId, url: &str) -> Result<EndpointId> {
+        let mut tx = self.pool().begin().await?;
+        let endpoint_id = self.create_endpoint_tx(&mut tx, tenant_id, url).await?;
+        tx.commit().await?;
+        Ok(endpoint_id)
+    }
+
+    /// Get the current status of a webhook event (convenience method).
+    ///
+    /// This is an alias for `find_webhook_status` for better test readability.
+    pub async fn event_status(&self, event_id: EventId) -> Result<EventStatus> {
+        self.find_webhook_status(event_id).await
+    }
+
+    /// Create API key directly (convenience method).
+    ///
+    /// This is a convenience wrapper around `create_api_key_tx` that handles
+    /// the transaction automatically.
+    pub async fn create_api_key(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<(String, String)> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.create_api_key_tx(&mut tx, tenant_id, name).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Ingest webhook with endpoint and payload (convenience method).
+    ///
+    /// Creates a TestWebhook from the endpoint and payload, then ingests it.
+    pub async fn ingest_webhook_simple(
+        &self,
+        endpoint_id: EndpointId,
+        payload: &[u8],
+    ) -> Result<EventId> {
+        use std::collections::HashMap;
+
+        // Get tenant_id from endpoint
+        let endpoint = self
+            .storage()
+            .endpoints
+            .find_by_id(endpoint_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("endpoint not found: {}", endpoint_id.0))?;
+
+        let webhook = TestWebhook {
+            tenant_id: endpoint.tenant_id.0,
+            endpoint_id: endpoint_id.0,
+            source_event_id: uuid::Uuid::new_v4().to_string(),
+            idempotency_strategy: "source_id".to_string(),
+            headers: HashMap::new(),
+            body: Bytes::copy_from_slice(payload),
+            content_type: "application/json".to_string(),
+        };
+
+        self.ingest_webhook(&webhook).await
     }
 
     /// Counts the number of delivery attempts for a webhook event.
@@ -419,7 +493,7 @@ impl TestEnv {
                 endpoint_id: e.endpoint_id.0,
                 source_event_id: e.source_event_id,
                 idempotency_strategy: e.idempotency_strategy.to_string(),
-                status: e.status.to_string(),
+                status: e.status,
                 failure_count: e.failure_count,
                 last_attempt_at: e.last_attempt_at,
                 next_retry_at: e.next_retry_at,
@@ -435,5 +509,30 @@ impl TestEnv {
             })
             .collect();
         Ok(events)
+    }
+
+    /// Create endpoint with custom retry configuration.
+    ///
+    /// This creates an endpoint with specified max_retries, useful for testing
+    /// retry exhaustion scenarios.
+    pub async fn create_endpoint_with_retries(
+        &self,
+        tenant_id: TenantId,
+        url: &str,
+        max_retries: i32,
+    ) -> Result<EndpointId> {
+        let mut tx = self.pool().begin().await.context("failed to begin transaction")?;
+        let endpoint_id = self
+            .create_endpoint_with_config_tx(
+                &mut tx,
+                tenant_id,
+                url,
+                "test-endpoint",
+                max_retries,
+                30,
+            )
+            .await?;
+        tx.commit().await.context("failed to commit endpoint creation")?;
+        Ok(endpoint_id)
     }
 }

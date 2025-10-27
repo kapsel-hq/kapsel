@@ -6,6 +6,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
+use kapsel_core::models::EventStatus;
 
 use crate::{http, AssertionFn, EventId, InvariantCheckFn, TestEnv, TestWebhook};
 
@@ -26,7 +27,7 @@ enum Step {
     InjectHttpFailure(http::MockResponse),
     InjectHttpSuccess,
     AssertState(AssertionFn),
-    ExpectStatus(EventId, String),
+    ExpectStatus(EventId, EventStatus),
     ExpectDeliveryAttempts(EventId, i64),
     RunAttestationCommitment,
     ExpectAttestationLeafCount(EventId, i64),
@@ -154,8 +155,8 @@ impl ScenarioBuilder {
 
     /// Expect a webhook to have a specific status.
     #[must_use]
-    pub fn expect_status(mut self, event_id: EventId, expected_status: impl Into<String>) -> Self {
-        self.steps.push(Step::ExpectStatus(event_id, expected_status.into()));
+    pub fn expect_status(mut self, event_id: EventId, expected_status: EventStatus) -> Self {
+        self.steps.push(Step::ExpectStatus(event_id, expected_status));
         self
     }
 
@@ -241,19 +242,11 @@ impl ScenarioBuilder {
             Box::pin(async move {
                 let events = env.get_all_events().await?;
                 for event in events {
-                    // Verify state is valid
-                    anyhow::ensure!(
-                        matches!(
-                            event.status.as_str(),
-                            "pending" | "delivering" | "delivered" | "failed" | "dead_letter"
-                        ),
-                        "Event {} has invalid status: {}",
-                        event.id.0,
-                        event.status
-                    );
-
                     // Verify terminal states don't have future retries scheduled
-                    if matches!(event.status.as_str(), "delivered" | "failed" | "dead_letter") {
+                    if matches!(
+                        event.status,
+                        EventStatus::Delivered | EventStatus::Failed | EventStatus::DeadLetter
+                    ) {
                         anyhow::ensure!(
                             event.next_retry_at.is_none(),
                             "Terminal event {} has scheduled retry",
@@ -399,7 +392,7 @@ impl ScenarioBuilder {
                 },
                 Step::RunDeliveryCycle => {
                     tracing::debug!("running test-isolated delivery cycle");
-                    env.run_test_isolated_delivery_cycle().await?;
+                    env.run_delivery_cycle().await?;
                 },
                 Step::AdvanceTime(duration) => {
                     env.advance_time(duration);
@@ -425,10 +418,10 @@ impl ScenarioBuilder {
                     assertion(env).context("state assertion failed")?;
                 },
                 Step::ExpectStatus(event_id, expected) => {
-                    let actual = env.find_webhook_status(event_id).await?;
+                    let actual = env.event_status(event_id).await?;
                     assert_eq!(
                         actual, expected,
-                        "Webhook status mismatch for event {}: expected '{}', got '{}'",
+                        "Webhook status mismatch for event {}: expected '{:?}', got '{:?}'",
                         event_id.0, expected, actual
                     );
                 },
@@ -519,8 +512,13 @@ impl ScenarioBuilder {
                 },
                 Step::ExpectAllEventsDelivered(event_ids) => {
                     for &event_id in &event_ids {
-                        let status = env.find_webhook_status(event_id).await?;
-                        assert_eq!(status, "delivered", "Event {} must be delivered", event_id.0);
+                        let status = env.event_status(event_id).await?;
+                        assert_eq!(
+                            status,
+                            EventStatus::Delivered,
+                            "Event {} must be delivered",
+                            event_id.0
+                        );
                     }
                 },
                 Step::ExpectSignedTreeHeadWithSize(expected_size) => {

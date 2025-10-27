@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
 
@@ -46,31 +47,31 @@ async fn intermittent_endpoint_failures() -> Result<()> {
         // First attempt: 503 failure
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 1)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(1))
 
         // Second attempt: 408 timeout
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 2)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(2))
 
         // Third attempt: 500 error
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 3)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(4))
 
         // Fourth attempt: Another 503
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 4)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(8))
 
         // Fifth attempt: Finally succeeds
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 5)
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
 
         // Verify system maintained correct backoff timing despite chaos
         .assert_state(|env| {
@@ -135,31 +136,31 @@ async fn permanent_endpoint_failure() -> Result<()> {
         // Attempt 1: Fail
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 1)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(1))
 
         // Attempt 2: Fail
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 2)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(2))
 
         // Attempt 3: Fail
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 3)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(4))
 
         // Attempt 4: Fail
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 4)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(8))
 
         // Attempt 5: Final attempt - should mark as failed immediately after exhausting retries
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 5)
-        .expect_status(event_id, "failed")
+        .expect_status(event_id, EventStatus::Failed)
 
         .run(&mut env)
         .await?;
@@ -174,7 +175,7 @@ async fn permanent_endpoint_failure() -> Result<()> {
 /// webhooks simultaneously with varying endpoint reliability.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let pool = env.pool().clone();
     let mut tx = pool.begin().await?;
 
@@ -243,7 +244,8 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
 
         // Check final status based on mock response pattern
         let status = env.find_webhook_status(*event_id).await?;
-        let expected_status = if i % 2 == 0 { "delivered" } else { "pending" };
+        let expected_status =
+            if i % 2 == 0 { EventStatus::Delivered } else { EventStatus::Pending };
         assert_eq!(
             status, expected_status,
             "Event {} should have status '{}' but got '{}'",
@@ -304,7 +306,7 @@ async fn idempotency_under_chaos() -> Result<()> {
         // Process original webhook successfully
         .run_delivery_cycle()
         .expect_delivery_attempts(original_event_id, 1)
-        .expect_status(original_event_id, "delivered")
+        .expect_status(original_event_id, EventStatus::Delivered)
 
         .run(&mut env)
         .await?;
@@ -329,7 +331,7 @@ async fn idempotency_under_chaos() -> Result<()> {
     ScenarioBuilder::new("idempotency verification")
         .run_delivery_cycle()
         .expect_delivery_attempts(original_event_id, 1) // Still only 1 attempt
-        .expect_status(original_event_id, "delivered")
+        .expect_status(original_event_id, EventStatus::Delivered)
 
         .run(&mut env)
         .await?;
@@ -364,12 +366,12 @@ async fn database_transaction_chaos() -> Result<()> {
 
     ScenarioBuilder::new("database transaction chaos")
         // Verify webhook was ingested in transaction
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
 
         // Process webhook - this commits the transaction
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 1)
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
 
         .run(&mut env)
         .await?;

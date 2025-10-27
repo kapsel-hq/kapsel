@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::Result;
+use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, http::MockResponse, ScenarioBuilder, TestEnv};
 
 #[tokio::test]
@@ -87,7 +88,7 @@ async fn scenario_builder_invariant_failure_caught() -> Result<()> {
 
 #[tokio::test]
 async fn scenario_builder_snapshot_integration() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "scenario-snapshot").await?;
@@ -125,14 +126,14 @@ async fn scenario_builder_snapshot_integration() -> Result<()> {
 
     // Verify final state
     let status = env.find_webhook_status(event_id).await?;
-    assert_eq!(status, "delivered", "Event should be delivered");
+    assert_eq!(status, EventStatus::Delivered, "Event should be delivered");
 
     Ok(())
 }
 
 #[tokio::test]
 async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "scenario-comprehensive").await?;
@@ -171,7 +172,7 @@ async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
     // Verify final state
     let events = env.get_all_events().await?;
     assert_eq!(events.len(), 1, "Should have processed exactly one webhook");
-    assert_eq!(events[0].status, "delivered", "Webhook should be delivered");
+    assert_eq!(events[0].status, EventStatus::Delivered, "Webhook should be delivered");
     assert_eq!(events[0].attempt_count(), 1, "Should have one attempt");
 
     Ok(())
@@ -209,7 +210,7 @@ async fn scenario_builder_with_retries() -> Result<()> {
         .run_delivery_cycle()
         .advance_time(Duration::from_secs(5))
         .run_delivery_cycle()
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
         .expect_delivery_attempts(event_id, 2);
 
     scenario.run(&mut env).await?;

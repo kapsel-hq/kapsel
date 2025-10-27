@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use http::StatusCode;
-use kapsel_core::Clock;
+use kapsel_core::{models::EventStatus, Clock};
 use kapsel_delivery::worker::{DeliveryConfig, DeliveryEngine};
 use kapsel_testing::{http::MockResponse, TestEnv};
 
 #[tokio::test]
 async fn delivery_engine_processes_pending_events() {
-    let env = TestEnv::new_isolated().await.expect("test environment setup failed");
+    let mut env = TestEnv::new_isolated().await.expect("test environment setup failed");
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
@@ -47,11 +47,11 @@ async fn delivery_engine_processes_pending_events() {
     // Use test harness delivery cycle instead of engine to avoid tokio runtime
     // conflicts This still tests the core delivery logic but avoids engine
     // threading issues
-    env.run_test_isolated_delivery_cycle().await.expect("delivery cycle should succeed");
+    env.run_delivery_cycle().await.expect("delivery cycle should succeed");
 
     // Verify event was processed
-    let status = env.find_webhook_status(event_id).await.expect("find webhook status");
-    assert_eq!(status, "delivered", "webhook should be delivered");
+    let status = env.event_status(event_id).await.expect("find webhook status");
+    assert_eq!(status, EventStatus::Delivered, "webhook should be delivered");
 }
 
 /// Test delivery engine starts with configured number of workers.

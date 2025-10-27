@@ -4,13 +4,78 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use kapsel_core::{storage::Storage, Clock};
+use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
 use uuid::Uuid;
 
 use crate::{database::TestDatabase, http, time, TestEnv};
 
-impl TestEnv {
-    /// Create test environment with shared database and transaction isolation.
-    pub async fn new() -> Result<Self> {
+/// Builder for configuring TestEnv with production engines.
+pub struct TestEnvBuilder {
+    worker_count: usize,
+    batch_size: usize,
+    poll_interval: Duration,
+    shutdown_timeout: Duration,
+    enable_delivery_engine: bool,
+    is_isolated: bool,
+}
+
+impl Default for TestEnvBuilder {
+    fn default() -> Self {
+        Self {
+            worker_count: 1, // Single worker for determinism
+            batch_size: 10,
+            poll_interval: Duration::from_millis(100),
+            shutdown_timeout: Duration::from_secs(5),
+            enable_delivery_engine: true,
+            is_isolated: false,
+        }
+    }
+}
+
+impl TestEnvBuilder {
+    /// Creates a new builder with default configuration.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the number of delivery workers (default: 1 for determinism).
+    pub fn worker_count(mut self, count: usize) -> Self {
+        self.worker_count = count;
+        self
+    }
+
+    /// Sets the batch size for claiming events (default: 10).
+    pub fn batch_size(mut self, size: usize) -> Self {
+        self.batch_size = size;
+        self
+    }
+
+    /// Sets the poll interval for workers (default: 100ms).
+    pub fn poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self
+    }
+
+    /// Sets the shutdown timeout for graceful termination (default: 5s).
+    pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
+        self
+    }
+
+    /// Disables the production delivery engine for tests that don't need it.
+    pub fn without_delivery_engine(mut self) -> Self {
+        self.enable_delivery_engine = false;
+        self
+    }
+
+    /// Use isolated database for this test environment.
+    pub fn isolated(mut self) -> Self {
+        self.is_isolated = true;
+        self
+    }
+
+    /// Builds the test environment with configured production engines.
+    pub async fn build(self) -> Result<TestEnv> {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
@@ -19,59 +84,84 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
-        let database =
-            TestDatabase::new().await.context("failed to create test database")?.pool().clone();
+        let database = if self.is_isolated {
+            TestDatabase::new_isolated()
+                .await
+                .context("failed to create isolated test database")?
+                .pool()
+                .clone()
+        } else {
+            TestDatabase::new().await.context("failed to create test database")?.pool().clone()
+        };
 
         let test_run_id = Uuid::new_v4().simple().to_string();
-
         let http_mock = http::MockServer::start().await;
         let clock = time::TestClock::new();
-        let storage = Arc::new(Storage::new(database.clone()));
+        let storage = Arc::new(Storage::with_clock(database.clone(), Arc::new(clock.clone())));
 
-        Ok(Self {
+        let delivery_engine = if self.enable_delivery_engine {
+            let delivery_config = DeliveryConfig {
+                worker_count: self.worker_count,
+                batch_size: self.batch_size,
+                poll_interval: self.poll_interval,
+                shutdown_timeout: self.shutdown_timeout,
+                ..Default::default()
+            };
+
+            let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
+            Some(
+                DeliveryEngine::new(database.clone(), delivery_config, clock_arc)
+                    .context("failed to create delivery engine")?,
+            )
+        } else {
+            None
+        };
+
+        Ok(TestEnv {
             http_mock,
             clock,
             database,
             storage,
             attestation_service: None,
             test_run_id,
-            is_isolated: false,
+            is_isolated: self.is_isolated,
+            delivery_engine,
         })
+    }
+}
+
+impl TestEnv {
+    /// Create test environment with shared database and transaction isolation.
+    pub async fn new() -> Result<Self> {
+        TestEnvBuilder::new().build().await
     }
 
     /// Create test environment with isolated database for tests requiring
     /// committed data.
     pub async fn new_isolated() -> Result<Self> {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
-            )
-            .with_test_writer()
-            .try_init();
+        TestEnvBuilder::new().isolated().build().await
+    }
 
-        let database = TestDatabase::new_isolated()
-            .await
-            .context("failed to create isolated test database")?
-            .pool()
-            .clone();
-
-        // Generate unique test run ID for data isolation
-        let test_run_id = Uuid::new_v4().simple().to_string();
-
-        let http_mock = http::MockServer::start().await;
-        let clock = time::TestClock::new();
-        let storage = Arc::new(Storage::new(database.clone()));
-
-        Ok(Self {
-            http_mock,
-            clock,
-            database,
-            storage,
-            attestation_service: None,
-            test_run_id,
-            is_isolated: true,
-        })
+    /// Creates a builder for advanced TestEnv configuration.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use kapsel_testing::TestEnv;
+    /// # use std::time::Duration;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let env = TestEnv::builder()
+    ///     .worker_count(2)
+    ///     .batch_size(20)
+    ///     .poll_interval(Duration::from_millis(50))
+    ///     .isolated()
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn builder() -> TestEnvBuilder {
+        TestEnvBuilder::new()
     }
 
     /// Verify database connection is healthy and schema is correctly set.
@@ -243,5 +333,16 @@ impl TestEnv {
         use tokio::sync::RwLock;
 
         self.attestation_service = Some(Arc::new(RwLock::new(service)));
+    }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        // Note: We can't do async cleanup in Drop. The production delivery
+        // engine will cancel its workers when dropped, providing basic cleanup.
+        // process_batch() handles proper graceful shutdown after each batch.
+        if let Some(ref _engine) = self.delivery_engine {
+            tracing::debug!("TestEnv dropped - delivery engine will cancel workers");
+        }
     }
 }

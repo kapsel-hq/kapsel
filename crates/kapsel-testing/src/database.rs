@@ -414,8 +414,9 @@ async fn create_database_pool(database_name: &str) -> Result<PgPool> {
         .context("failed to parse DATABASE_URL")?
         .database(database_name);
 
-    // Use small pools for isolated tests
-    let max_connections = if env::var("CI").is_ok() { 2 } else { 3 };
+    // Use sufficient connections for isolated tests with production engines
+    // Must handle both TestEnv operations and DeliveryEngine workers
+    let max_connections = if env::var("CI").is_ok() { 8 } else { 10 };
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(max_connections)

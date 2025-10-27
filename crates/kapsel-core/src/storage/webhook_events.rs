@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     error::Result,
     models::{EndpointId, EventId, EventStatus, TenantId, WebhookEvent},
+    Clock,
 };
 
 /// Repository for webhook event database operations.
@@ -20,12 +21,13 @@ use crate::{
 /// status updates, and lock-free claiming for concurrent processing.
 pub struct Repository {
     pool: Arc<PgPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Repository {
     /// Creates a new repository instance.
-    pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<PgPool>, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Returns a reference to the database pool.
@@ -46,7 +48,7 @@ impl Repository {
     ///
     /// Returns error if database transaction fails.
     pub async fn claim_pending(&self, batch_size: usize) -> Result<Vec<WebhookEvent>> {
-        let now = Utc::now();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
 
         // Use transaction for atomic claim operation
         let mut tx = self.pool.begin().await?;

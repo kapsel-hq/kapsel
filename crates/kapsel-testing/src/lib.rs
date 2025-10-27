@@ -12,6 +12,7 @@ use std::{collections::HashMap, sync::Arc};
 
 // External crate imports
 use anyhow::Result;
+use kapsel_core::EventStatus;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -27,14 +28,16 @@ pub mod scenario;
 pub mod time;
 
 pub use database::TestDatabase;
+pub use env_core::TestEnvBuilder;
 pub use fixtures::{EndpointBuilder, TestEndpoint, TestWebhook, WebhookBuilder};
 pub use http::{MockEndpoint, MockResponse, MockServer};
-pub use invariants::{assertions as invariant_assertions, strategies, EventStatus, Invariants};
+pub use invariants::{assertions as invariant_assertions, strategies, Invariants};
 pub use kapsel_core::{
     models::{EndpointId, EventId, TenantId},
     storage::{merkle_leaves::AttestationLeafInfo, signed_tree_heads::SignedTreeHeadInfo, Storage},
     Clock,
 };
+use kapsel_delivery::DeliveryEngine;
 pub use scenario::{FailureKind, ScenarioBuilder};
 pub use time::TestClock;
 
@@ -93,6 +96,8 @@ pub struct TestEnv {
     test_run_id: String,
     /// Flag to distinguish isolated vs shared database tests
     is_isolated: bool,
+    /// Production delivery engine for integration testing
+    delivery_engine: Option<DeliveryEngine>,
 }
 
 /// Simplified webhook event data for invariant checking.
@@ -109,7 +114,7 @@ pub struct WebhookEventData {
     /// Idempotency strategy used
     pub idempotency_strategy: String,
     /// Current event status
-    pub status: String,
+    pub status: EventStatus,
     /// Number of failed delivery attempts
     pub failure_count: i32,
     /// Last delivery attempt time
@@ -142,31 +147,4 @@ impl WebhookEventData {
     pub fn attempt_count(&self) -> u32 {
         u32::try_from(self.failure_count + 1).unwrap_or(1)
     }
-}
-
-/// Webhook ready for delivery with all required fields.
-#[derive(Debug)]
-struct ReadyWebhook {
-    event_id: EventId,
-    endpoint_id: Uuid,
-    url: String,
-    body: Vec<u8>,
-    failure_count: i32,
-    _endpoint_name: String,
-    max_retries: i32,
-}
-
-impl ReadyWebhook {
-    /// Returns the endpoint ID for this webhook.
-    fn endpoint_id(&self) -> EndpointId {
-        EndpointId(self.endpoint_id)
-    }
-}
-
-/// Result of attempting webhook delivery.
-#[derive(Debug)]
-struct DeliveryResult {
-    status_code: Option<i32>,
-    response_body: Option<String>,
-    error_type: Option<String>,
 }

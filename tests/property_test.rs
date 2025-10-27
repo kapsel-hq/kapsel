@@ -9,9 +9,10 @@ use std::{
     time::Duration,
 };
 
+use kapsel_core::models::EventStatus;
 use kapsel_testing::{
     fixtures::WebhookBuilder,
-    invariants::{strategies, CircuitState, EventStatus, WebhookEvent},
+    invariants::{strategies, CircuitState, WebhookEvent},
     time::backoff::deterministic_webhook_backoff,
     ScenarioBuilder, TestEnv,
 };
@@ -568,7 +569,7 @@ fn property_webhook_delivery_retry_scenarios() {
                     scenario = scenario
                         .run_delivery_cycle()
                         .expect_delivery_attempts(event_id, (i + 1) as i32)
-                        .expect_status(event_id, "pending")
+                        .expect_status(event_id, EventStatus::Pending)
                         .advance_time(backoff_duration);
                 }
 
@@ -576,7 +577,7 @@ fn property_webhook_delivery_retry_scenarios() {
                 scenario = scenario
                     .run_delivery_cycle()
                     .expect_delivery_attempts(event_id, (num_failures + 1) as i32)
-                    .expect_status(event_id, "delivered");
+                    .expect_status(event_id, EventStatus::Delivered);
 
                 // Execute the scenario
                 scenario.run(&mut env).await.unwrap();
@@ -834,7 +835,7 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let env = TestEnv::new_isolated().await.unwrap();
+                    let mut env = TestEnv::new_isolated().await.unwrap();
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "fifo-tenant";

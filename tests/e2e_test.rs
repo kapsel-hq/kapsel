@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
 
@@ -55,25 +56,25 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
         // First attempt - fails with 503, backoff 1s
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 1)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(1))
 
         // Second attempt - fails with 503, backoff 2s
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 2)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(2))
 
         // Third attempt - fails with 503, backoff 4s
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 3)
-        .expect_status(event_id, "pending")
+        .expect_status(event_id, EventStatus::Pending)
         .advance_time(Duration::from_secs(4))
 
         // Fourth attempt - succeeds with 200
         .run_delivery_cycle()
         .expect_delivery_attempts(event_id, 4)
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
 
         // Verify total processing time
         .assert_state(|env| {
@@ -128,7 +129,7 @@ async fn verify_idempotency_scenario(
 /// Basic batch processing test (circuit breaker logic not yet implemented).
 #[tokio::test]
 async fn batch_webhook_processing() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
@@ -180,7 +181,7 @@ async fn batch_webhook_processing() -> Result<()> {
         // Verify status based on mock responses (first 3 fail with 503, last 2 succeed
         // with 200)
         let status = env.find_webhook_status(*event_id).await?;
-        let expected_status = if i < 3 { "pending" } else { "delivered" };
+        let expected_status = if i > 3 { EventStatus::Delivered } else { EventStatus::Pending };
         assert_eq!(
             status, expected_status,
             "Event {} should have status '{}' but got '{}'",

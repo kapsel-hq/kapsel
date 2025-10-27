@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use kapsel_attestation::AttestationEventSubscriber;
+use kapsel_core::models::EventStatus;
 use kapsel_testing::{
     events::{test_events, EventHandlerTester},
     TestEnv,
@@ -25,7 +26,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// between delivery and attestation systems.
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf_via_events() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let mut env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Setup mock webhook destination
     let mock_server = MockServer::start().await;
@@ -67,11 +68,11 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
     let event_id = env.ingest_webhook(&webhook).await.expect("failed to ingest webhook");
 
     // Process delivery (should succeed and trigger attestation event)
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
 
     // Verify webhook was delivered successfully
-    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
-    assert_eq!(status, "delivered");
+    let status = env.event_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, EventStatus::Delivered);
 
     // For this test, we need to manually emit the success event since the actual
     // integration between DeliveryEngine and event handlers isn't implemented yet
@@ -99,7 +100,7 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
 /// leaf, maintaining a 1:1 mapping between deliveries and attestations.
 #[tokio::test]
 async fn multiple_deliveries_create_multiple_attestation_leaves() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let mut env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Setup mock server that accepts all requests
     let mock_server = MockServer::start().await;
@@ -146,13 +147,12 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
     }
 
     // Process all deliveries
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
 
     // Verify all webhooks were delivered
     for event_id in &event_ids {
-        let status =
-            env.find_webhook_status(*event_id).await.expect("failed to find webhook status");
-        assert_eq!(status, "delivered", "All webhooks should be delivered");
+        let status = env.event_status(*event_id).await.expect("failed to find webhook status");
+        assert_eq!(status, EventStatus::Delivered, "all webhooks should be delivered");
     }
 
     // Manually emit success events for each delivery
@@ -183,7 +183,7 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
 /// ensuring attestations only represent actual successful deliveries.
 #[tokio::test]
 async fn failed_delivery_does_not_create_attestation_leaf() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let mut env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     // Setup mock server that always returns 500 (failure)
     let mock_server = MockServer::start().await;
@@ -233,27 +233,31 @@ async fn failed_delivery_does_not_create_attestation_leaf() {
     // marks events as failed
 
     // Attempt 1 (initial): Should fail and remain pending
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
-    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
-    assert_eq!(status, "pending", "First attempt should leave webhook pending");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.event_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, EventStatus::Pending, "First attempt should leave webhook pending");
 
     // Advance time and attempt 2 (retry 1): Should fail and remain pending
     env.advance_time(std::time::Duration::from_secs(1));
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
-    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
-    assert_eq!(status, "pending", "Second attempt should leave webhook pending");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.event_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, EventStatus::Pending, "Second attempt should leave webhook pending");
 
     // Advance time and attempt 3 (retry 2): Should fail and remain pending
     env.advance_time(std::time::Duration::from_secs(2));
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
-    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
-    assert_eq!(status, "pending", "Third attempt should leave webhook pending");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.event_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(status, EventStatus::Pending, "Third attempt should leave webhook pending");
 
     // Advance time and attempt 4 (retry 3 - final): Should fail and mark as failed
     env.advance_time(std::time::Duration::from_secs(4));
-    env.run_test_isolated_delivery_cycle().await.expect("failed to run delivery cycle");
-    let status = env.find_webhook_status(event_id).await.expect("failed to find webhook status");
-    assert_eq!(status, "failed", "Webhook should be failed after exhausting max retries");
+    env.run_delivery_cycle().await.expect("failed to run delivery cycle");
+    let status = env.event_status(event_id).await.expect("failed to find webhook status");
+    assert_eq!(
+        status,
+        EventStatus::Failed,
+        "Webhook should be failed after exhausting max retries"
+    );
 
     // Manually emit failure event to test that failures don't create attestations
     let failure_event = test_events::create_delivery_failed_event();

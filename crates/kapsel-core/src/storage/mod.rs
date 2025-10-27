@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+use crate::{time::RealClock, Clock};
+
 pub mod api_keys;
 pub mod attestation_keys;
 pub mod delivery_attempts;
@@ -58,13 +60,23 @@ pub struct Storage {
 impl Storage {
     /// Creates a new storage instance with the given connection pool.
     ///
-    /// All repositories share the same pool with Arc for efficient resource
-    /// usage.
+    /// Uses the system clock for time-dependent operations like retry
+    /// scheduling. For tests requiring deterministic time, use
+    /// `with_clock()` instead.
     pub fn new(pool: PgPool) -> Self {
+        Self::with_clock(pool, Arc::new(RealClock::new()))
+    }
+
+    /// Creates a new storage instance with the given connection pool and clock.
+    ///
+    /// All repositories share the same pool with Arc for efficient resource
+    /// usage. The clock is used for time-dependent operations like retry
+    /// scheduling.
+    pub fn with_clock(pool: PgPool, clock: Arc<dyn Clock>) -> Self {
         let pool = Arc::new(pool);
 
         Self {
-            webhook_events: Arc::new(webhook_events::Repository::new(pool.clone())),
+            webhook_events: Arc::new(webhook_events::Repository::new(pool.clone(), clock)),
             delivery_attempts: Arc::new(delivery_attempts::Repository::new(pool.clone())),
             endpoints: Arc::new(endpoints::Repository::new(pool.clone())),
             tenants: Arc::new(tenants::Repository::new(pool.clone())),

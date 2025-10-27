@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, http::MockResponse, TestEnv};
 
 #[tokio::test]
@@ -37,7 +38,7 @@ async fn snapshot_events_table_works() -> Result<()> {
 
 #[tokio::test]
 async fn snapshot_delivery_attempts_works() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     // Setup successful delivery within transaction
@@ -85,7 +86,7 @@ async fn snapshot_database_schema_works() -> Result<()> {
 
 #[tokio::test]
 async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     // Testing complete snapshot functionality with transaction isolation
@@ -135,7 +136,7 @@ async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
 
     // Verify event was processed successfully
     let status = env.find_webhook_status(event_id).await?;
-    assert_eq!(status, "delivered", "Event should have correct status after delivery");
+    assert_eq!(status, EventStatus::Delivered, "Event should have correct status after delivery");
 
     // Verify delivery attempts were recorded (first fails with 503, second succeeds
     // with 200)
@@ -147,7 +148,7 @@ async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
 
 #[tokio::test]
 async fn validation_first_snapshot_test() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "validation").await?;
@@ -188,7 +189,7 @@ async fn validation_first_snapshot_test() -> Result<()> {
 
     env.run_delivery_cycle().await?;
     let status = env.find_webhook_status(event_id).await?;
-    assert_eq!(status, "delivered", "Event should be delivered");
+    assert_eq!(status, EventStatus::Delivered, "Event should be delivered");
 
     let attempt_count = env.count_delivery_attempts(event_id).await?;
     assert_eq!(attempt_count, 1, "Should have exactly one delivery attempt");
@@ -198,7 +199,7 @@ async fn validation_first_snapshot_test() -> Result<()> {
 
 #[tokio::test]
 async fn snapshot_with_multiple_tenants() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     // Create multiple tenants with webhooks
@@ -242,8 +243,8 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
     // Verify both events were delivered
     let status1 = env.find_webhook_status(event1).await?;
     let status2 = env.find_webhook_status(event2).await?;
-    assert_eq!(status1, "delivered");
-    assert_eq!(status2, "delivered");
+    assert_eq!(status1, EventStatus::Delivered);
+    assert_eq!(status2, EventStatus::Delivered);
 
     // Test snapshot captures both tenants
     let snapshot = env.snapshot_events_table().await?;
@@ -255,7 +256,7 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
 
 #[tokio::test]
 async fn snapshot_with_failed_attempts() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "failure-snapshot").await?;
@@ -281,7 +282,7 @@ async fn snapshot_with_failed_attempts() -> Result<()> {
 
     // Verify webhook is still pending
     let status = env.find_webhook_status(event_id).await?;
-    assert_eq!(status, "pending", "Webhook should remain pending after failure");
+    assert_eq!(status, EventStatus::Pending, "Webhook should remain pending after failure");
 
     // Snapshot should show failed attempt
     let snapshot = env.snapshot_delivery_attempts().await?;

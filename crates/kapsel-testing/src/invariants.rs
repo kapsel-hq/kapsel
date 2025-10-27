@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{ensure, Context, Result};
+use kapsel_core::EventStatus;
 use uuid::Uuid;
 
 /// Core system invariants that must always hold.
@@ -213,7 +214,9 @@ impl Invariants {
             EventStatus::Received => 1,
             EventStatus::Pending => 2,
             EventStatus::Delivering => 2 + event.attempt_count as usize,
-            EventStatus::Delivered | EventStatus::Failed => 3 + event.attempt_count as usize,
+            EventStatus::Delivered | EventStatus::Failed | EventStatus::DeadLetter => {
+                3 + event.attempt_count as usize
+            },
         };
 
         ensure!(
@@ -298,24 +301,6 @@ impl WebhookEvent {
     pub fn is_terminal_state(&self) -> bool {
         matches!(self.status, EventStatus::Delivered | EventStatus::Failed)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Processing status of a webhook event in the delivery pipeline.
-///
-/// Events transition through these states as they are processed, with
-/// terminal states indicating completion (success or failure).
-pub enum EventStatus {
-    /// Event has been received and validated but not yet queued
-    Received,
-    /// Event is queued and waiting for delivery attempt
-    Pending,
-    /// Event is currently being delivered to the target endpoint
-    Delivering,
-    /// Event was successfully delivered (terminal state)
-    Delivered,
-    /// Event failed delivery after all retry attempts (terminal state)
-    Failed,
 }
 
 #[derive(Debug, Clone)]

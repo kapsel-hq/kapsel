@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
 use serial_test::serial;
@@ -41,7 +42,7 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
         // Commit pending attestation leaves to database
         .run_attestation_commitment()
         // Verify delivery succeeded
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
         // Core invariant: successful delivery creates exactly one leaf
         .expect_attestation_leaf_count(event_id, 1)
         // Verify leaf contains accurate metadata
@@ -86,7 +87,7 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
         // Commit any pending leaves (there should be none for failed delivery)
         .run_attestation_commitment()
         // Verify delivery failed and remains pending
-        .expect_status(event_id, "pending") // Still pending for retry
+        .expect_status(event_id, EventStatus::Pending) // Still pending for retry
         // Core invariant: failed deliveries do not create attestation leaves
         .expect_attestation_leaf_count(event_id, 0)
         // Verify first delivery attempt was recorded
@@ -98,7 +99,7 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
         // Commit the attestation leaf that was created
         .run_attestation_commitment()
         // Now delivery should succeed
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
         // Verify total delivery attempts
         .expect_delivery_attempts(event_id, 2)
         // Verify attestation leaf was created
@@ -133,7 +134,7 @@ async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
         .inject_http_success()
         .run_delivery_cycle()
         // Core invariant: delivery works normally when attestation is disabled
-        .expect_status(event_id, "delivered")
+        .expect_status(event_id, EventStatus::Delivered)
         .expect_attestation_leaf_count(event_id, 0)
         // Verify delivery attempt was still recorded for audit
         .expect_delivery_attempts(event_id, 1)
@@ -179,7 +180,7 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
         .run_delivery_cycle()
         // Commit attestation leaves to database
         .run_attestation_commitment()
-        .expect_status(original_event_id, "delivered")
+        .expect_status(original_event_id, EventStatus::Delivered)
         // Core invariant: only one attestation leaf for idempotent events
         .expect_attestation_leaf_count(original_event_id, 1)
         .run(&mut env)
@@ -227,7 +228,7 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
 
     // Verify each webhook was delivered successfully
     for &event_id in &event_ids {
-        scenario = scenario.expect_status(event_id, "delivered");
+        scenario = scenario.expect_status(event_id, EventStatus::Delivered);
         scenario = scenario.expect_attestation_leaf_count(event_id, 1);
         scenario = scenario.expect_attestation_leaf_exists(event_id);
     }
