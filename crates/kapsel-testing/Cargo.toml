@@ -18,7 +18,6 @@ async-trait = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "migrate"] }
 wiremock = { workspace = true }
 uuid = { workspace = true }
-url = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
@@ -33,7 +32,6 @@ proptest = { workspace = true }
 reqwest = { workspace = true }
 http = "1.0"
 anyhow = { workspace = true }
-futures = { workspace = true }
 
 [lints]
 workspace = true

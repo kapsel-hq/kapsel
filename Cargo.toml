@@ -129,8 +129,6 @@ proptest = "1.4"
 arbitrary = { version = "1.3", features = ["derive"] }
 criterion = { version = "0.7", features = ["async_tokio"] }
 insta = { version = "1.34", features = ["yaml", "json"] }
-testcontainers = "0.25"
-testcontainers-modules = { version = "0.13", features = ["postgres"] }
 
 [package]
 name = "kapsel-workspace"
@@ -169,8 +167,6 @@ kapsel-delivery = { path = "crates/kapsel-delivery" }
 criterion = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
-testcontainers = { workspace = true }
-testcontainers-modules = { workspace = true }
 wiremock = { workspace = true }
 
 # HTTP and networking
