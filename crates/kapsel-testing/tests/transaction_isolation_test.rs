@@ -2,7 +2,6 @@
 
 use anyhow::Result;
 use kapsel_testing::TestEnv;
-use sqlx::Acquire;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -29,7 +28,6 @@ async fn test_transactions_provide_isolation() -> Result<()> {
         .bind(tenant_id1)
         .fetch_one(&mut *tx2)
         .await?;
-
     assert_eq!(count, 0, "tx2 should not see uncommitted data from tx1");
 
     // Explicit rollback to prevent connection leaks
@@ -88,7 +86,6 @@ async fn test_helper_methods_work_with_transactions() -> Result<()> {
         .bind(tenant_id)
         .fetch_one(&mut *tx)
         .await?;
-
     assert_eq!(count, 1);
 
     // Explicit rollback to prevent connection leak
@@ -111,8 +108,8 @@ async fn test_transaction_aware_helpers() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Use the transaction-aware helper methods
-    let tenant_id = env.create_tenant_tx(&mut *tx, "tx-helper-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "tx-helper-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
     // Verify data exists within the transaction
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -147,13 +144,14 @@ async fn test_transaction_aware_helpers() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_transaction_aware_helpers_with_pool() -> Result<()> {
+async fn test_transaction_aware_helpers_with_transaction() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
-    // Transaction-aware helpers should also work with pool directly
+    // Transaction-aware helpers work with transactions
+    let mut tx = env.pool().begin().await?;
     let unique_name = format!("pool-tenant-{}", Uuid::new_v4().simple());
-    let tenant_id = env.create_tenant_tx(env.pool(), &unique_name).await?;
-    let endpoint_id = env.create_endpoint_tx(env.pool(), tenant_id, "https://example.com").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, &unique_name).await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
     // Verify data exists (not in a transaction, so it persists)
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -187,7 +185,7 @@ async fn test_transaction_rollback_isolation() -> Result<()> {
         let mut tx = env.pool().begin().await?;
 
         let tenant_id =
-            env.create_tenant_with_plan_tx(&mut *tx, "rollback-test", "enterprise").await?;
+            env.create_tenant_with_plan_tx(&mut tx, "rollback-test", "enterprise").await?;
 
         // Verify data exists within transaction
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -219,24 +217,23 @@ async fn test_nested_transactions() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Create tenant in main transaction
-    let tenant_id = env.create_tenant_tx(&mut *tx, "main-tx-tenant").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "main-tx-tenant").await?;
 
-    // Create savepoint using acquire
-    let conn = tx.acquire().await?;
-    let mut sp = conn.begin().await?;
+    // Create savepoint using raw SQL
+    sqlx::query("SAVEPOINT test_savepoint").execute(&mut *tx).await?;
 
     // Create endpoint in savepoint
-    let endpoint_id = env.create_endpoint_tx(&mut *sp, tenant_id, "https://example.com").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
     // Verify both exist in savepoint
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
         .bind(endpoint_id.0)
-        .fetch_one(&mut *sp)
+        .fetch_one(&mut *tx)
         .await?;
     assert_eq!(count, 1);
 
-    // Rollback savepoint
-    sp.rollback().await?;
+    // Rollback savepoint - this should remove endpoint but keep tenant
+    sqlx::query("ROLLBACK TO SAVEPOINT test_savepoint").execute(&mut *tx).await?;
 
     // Tenant should still exist in main transaction
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -267,8 +264,8 @@ async fn test_concurrent_transactions_on_same_pool() -> Result<()> {
     let mut tx2 = env.pool().begin().await?;
 
     // Each transaction creates its own tenant
-    let tenant1 = env.create_tenant_tx(&mut *tx1, "tx1-tenant").await?;
-    let tenant2 = env.create_tenant_tx(&mut *tx2, "tx2-tenant").await?;
+    let tenant1 = env.create_tenant_tx(&mut tx1, "tx1-tenant").await?;
+    let tenant2 = env.create_tenant_tx(&mut tx2, "tx2-tenant").await?;
 
     // Neither transaction can see the other's uncommitted data
     let count1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -320,8 +317,8 @@ async fn test_transaction_with_webhook_ingestion() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Create test data within transaction
-    let tenant_id = env.create_tenant_tx(&mut *tx, "webhook-tx-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "webhook-tx-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
     // Create and ingest webhook within transaction
     let webhook = WebhookBuilder::new()
@@ -331,7 +328,7 @@ async fn test_transaction_with_webhook_ingestion() -> Result<()> {
         .body(b"transaction test".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Verify webhook exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")

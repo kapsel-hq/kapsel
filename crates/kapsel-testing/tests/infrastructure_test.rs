@@ -291,7 +291,7 @@ async fn example_transaction_based_test() {
 
     // Test data created in transaction
     let tenant_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO tenants (id, name, tier) VALUES ($1, $2, $3)")
         .bind(tenant_id)
         .bind("example-tenant")
         .bind("free")

@@ -214,12 +214,19 @@ impl TestEnv {
 
     /// Debug helper to list all webhook events in the database.
     pub async fn debug_list_events(&self) -> Result<Vec<(Uuid, String, String)>> {
-        let events: Vec<(Uuid, String, String)> = sqlx::query_as(
-            "SELECT id, source_event_id, status FROM webhook_events ORDER BY received_at DESC LIMIT 20"
-        )
-        .fetch_all(self.pool())
-        .await
-        .context("failed to list webhook events")?;
+        let events = self
+            .storage()
+            .webhook_events
+            .list_all()
+            .await
+            .context("failed to list webhook events")?;
+
+        let events: Vec<(Uuid, String, String)> = events
+            .into_iter()
+            .rev() // Reverse to match DESC order
+            .take(20) // Limit to 20 events
+            .map(|e| (e.id.0, e.source_event_id, e.status.to_string()))
+            .collect();
 
         tracing::debug!("Found {} webhook events in database", events.len());
         for (id, source, status) in &events {

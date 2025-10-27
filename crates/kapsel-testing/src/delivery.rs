@@ -1,8 +1,10 @@
 //! Webhook delivery simulation methods for TestEnv
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use kapsel_core::models::{DeliveryAttempt, EndpointId};
 use kapsel_delivery::{
     error::DeliveryError,
     retry::{BackoffStrategy, RetryContext, RetryPolicy},
@@ -146,22 +148,17 @@ impl TestEnv {
             .send()
             .await;
 
-        let (status_code, response_body, duration_ms, error_type) = match response_result {
+        let (status_code, response_body, error_type) = match response_result {
             Ok(response) => {
                 let status = i32::from(response.status().as_u16());
                 let body = response.text().await.unwrap_or_default();
                 let error_type = if status >= 400 { Some("http_error") } else { None };
-                (Some(status), Some(body), 75i32, error_type)
+                (Some(status), Some(body), error_type)
             },
-            Err(_) => (None, None, 1000i32, Some("network")),
+            Err(_) => (None, None, Some("network")),
         };
 
-        Ok(DeliveryResult {
-            status_code,
-            response_body,
-            duration_ms,
-            error_type: error_type.map(String::from),
-        })
+        Ok(DeliveryResult { status_code, response_body, error_type: error_type.map(String::from) })
     }
 
     async fn process_delivery_result(
@@ -188,27 +185,31 @@ impl TestEnv {
         attempt_number: i32,
     ) -> Result<Uuid> {
         let attempt_id = Uuid::new_v4();
-        let attempted_at = chrono::DateTime::<chrono::Utc>::from(self.now_system());
+        let attempted_at = DateTime::<Utc>::from(self.now_system());
 
-        sqlx::query(
-            "INSERT INTO delivery_attempts
-             (id, event_id, attempt_number, request_url, request_headers,
-              response_status, response_body, attempted_at, duration_ms, error_type)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        )
-        .bind(attempt_id)
-        .bind(webhook.event_id.0)
-        .bind(attempt_number)
-        .bind(&webhook.url)
-        .bind(serde_json::json!({"X-Kapsel-Event-Id": webhook.event_id.0.to_string()}))
-        .bind(result.status_code)
-        .bind(&result.response_body)
-        .bind(attempted_at)
-        .bind(result.duration_ms)
-        .bind(&result.error_type)
-        .execute(self.pool())
-        .await
-        .context("failed to record delivery attempt")?;
+        let mut request_headers = HashMap::new();
+        request_headers.insert("X-Kapsel-Event-Id".to_string(), webhook.event_id.0.to_string());
+
+        let attempt = DeliveryAttempt {
+            id: attempt_id,
+            event_id: webhook.event_id,
+            attempt_number: attempt_number.max(1) as u32,
+            endpoint_id: EndpointId(webhook._endpoint_id),
+            request_headers,
+            request_body: vec![], // Test delivery doesn't store request body
+            response_status: result.status_code,
+            response_headers: None,
+            response_body: result.response_body.as_ref().map(|s| s.as_bytes().to_vec()),
+            attempted_at,
+            succeeded: result.status_code.map_or(false, |code| (200..300).contains(&code)),
+            error_message: result.error_type.clone(),
+        };
+
+        self.storage()
+            .delivery_attempts
+            .create(&attempt)
+            .await
+            .context("failed to record delivery attempt")?;
 
         Ok(attempt_id)
     }
@@ -219,21 +220,11 @@ impl TestEnv {
         attempt_id: Uuid,
         attempt_number: i32,
     ) -> Result<()> {
-        let attempted_at = chrono::DateTime::<chrono::Utc>::from(self.now_system());
-
-        sqlx::query(
-            "UPDATE webhook_events
-             SET status = $1, delivered_at = $2, failure_count = $3, last_attempt_at = $4
-             WHERE id = $5",
-        )
-        .bind("delivered")
-        .bind(attempted_at)
-        .bind(webhook.failure_count)
-        .bind(attempted_at)
-        .bind(webhook.event_id.0)
-        .execute(self.pool())
-        .await
-        .context("failed to update event status after delivery")?;
+        self.storage()
+            .webhook_events
+            .mark_delivered(webhook.event_id)
+            .await
+            .context("failed to update event status after delivery")?;
 
         // Always emit attestation event if service is configured
         // This ensures proper integration between delivery and attestation systems
@@ -244,6 +235,7 @@ impl TestEnv {
                 attempt_number = attempt_number,
                 "emitting delivery success event for attestation"
             );
+            let attempted_at = DateTime::<Utc>::from(self.now_system());
             self.emit_attestation_event(webhook, attempt_id, attempt_number, attempted_at).await?;
         } else {
             tracing::debug!(
@@ -261,7 +253,7 @@ impl TestEnv {
         attempt_number: i32,
         result: &DeliveryResult,
     ) -> Result<()> {
-        let attempted_at = chrono::DateTime::<chrono::Utc>::from(self.now_system());
+        let _attempted_at = chrono::DateTime::<chrono::Utc>::from(self.now_system());
 
         // Create DeliveryError from result to match production behavior
         let error = match result.status_code {
@@ -325,19 +317,11 @@ impl TestEnv {
                         reason = %reason,
                         "webhook has exhausted retries, marking as failed immediately"
                     );
-                    sqlx::query(
-                        "UPDATE webhook_events
-                         SET status = $1, failure_count = $2, last_attempt_at = $3, failed_at = $4
-                         WHERE id = $5",
-                    )
-                    .bind("failed")
-                    .bind(attempt_number)
-                    .bind(attempted_at)
-                    .bind(attempted_at)
-                    .bind(webhook.event_id.0)
-                    .execute(self.pool())
-                    .await
-                    .context("failed to mark webhook as failed after exhausting retries")?;
+                    self.storage()
+                        .webhook_events
+                        .mark_failed(webhook.event_id, attempt_number, None)
+                        .await
+                        .context("failed to mark webhook as failed after exhausting retries")?;
                 },
                 kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } => {
                     // Schedule retry using production-calculated timing
@@ -346,19 +330,11 @@ impl TestEnv {
                         next_attempt_at = %next_attempt_at,
                         "scheduling webhook retry"
                     );
-                    sqlx::query(
-                        "UPDATE webhook_events
-                         SET status = $1, failure_count = $2, last_attempt_at = $3, next_retry_at = $4
-                         WHERE id = $5",
-                    )
-                    .bind("pending")
-                    .bind(attempt_number)
-                    .bind(attempted_at)
-                    .bind(next_attempt_at)
-                    .bind(webhook.event_id.0)
-                    .execute(self.pool())
-                    .await
-                    .context("failed to schedule webhook retry")?;
+                    self.storage()
+                        .webhook_events
+                        .mark_failed(webhook.event_id, attempt_number, Some(next_attempt_at))
+                        .await
+                        .context("failed to schedule webhook retry")?;
                 },
             }
         } else {
@@ -369,19 +345,11 @@ impl TestEnv {
                 error = %error,
                 "non-retryable error, marking webhook as failed immediately"
             );
-            sqlx::query(
-                "UPDATE webhook_events
-                 SET status = $1, failure_count = $2, last_attempt_at = $3, failed_at = $4
-                 WHERE id = $5",
-            )
-            .bind("failed")
-            .bind(attempt_number)
-            .bind(attempted_at)
-            .bind(attempted_at)
-            .bind(webhook.event_id.0)
-            .execute(self.pool())
-            .await
-            .context("failed to mark webhook as failed for non-retryable error")?;
+            self.storage()
+                .webhook_events
+                .mark_failed(webhook.event_id, attempt_number, None)
+                .await
+                .context("failed to mark webhook as failed for non-retryable error")?;
         }
 
         Ok(())
@@ -395,12 +363,16 @@ impl TestEnv {
         attempted_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         // Fetch full webhook event details for the attestation event
-        let (tenant_id, payload_size): (uuid::Uuid, i32) =
-            sqlx::query_as("SELECT tenant_id, payload_size FROM webhook_events WHERE id = $1")
-                .bind(webhook.event_id.0)
-                .fetch_one(self.pool())
-                .await
-                .context("failed to fetch webhook event for attestation")?;
+        let webhook_event = self
+            .storage()
+            .webhook_events
+            .find_by_id(webhook.event_id)
+            .await
+            .context("failed to fetch webhook event for attestation")?
+            .ok_or_else(|| anyhow::anyhow!("webhook event not found for attestation"))?;
+
+        let tenant_id = webhook_event.tenant_id.0;
+        let payload_size = webhook_event.payload_size;
 
         // Calculate payload hash from the actual body
         let payload_hash = {

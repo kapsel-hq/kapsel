@@ -16,8 +16,12 @@ async fn common_invariants_work() -> Result<()> {
         sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events").fetch_one(&mut *tx).await?;
     assert_eq!(event_count, 0, "Transaction should start with clean state");
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "invariant-tenant").await?;
-    let _endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com").await?;
+    // Also verify using repository (tests both SQL and repository layer)
+    let repo_count = env.storage().webhook_events.count_all().await?;
+    assert_eq!(repo_count, 0, "Repository should also show clean state");
+
+    let tenant_id = env.create_tenant_tx(&mut tx, "invariant-tenant").await?;
+    let _endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
     // Verify data exists within transaction
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -25,6 +29,10 @@ async fn common_invariants_work() -> Result<()> {
         .fetch_one(&mut *tx)
         .await?;
     assert_eq!(tenant_count, 1, "Tenant should exist within transaction");
+
+    // Also verify using repository (tests both SQL and repository layer)
+    let tenant = env.storage().tenants.find_by_id(tenant_id).await?;
+    assert!(tenant.is_some(), "Repository should also find tenant within transaction");
 
     // Transaction rollback ensures no data leaks
     tx.rollback().await?;
@@ -37,8 +45,8 @@ async fn invariant_validation_during_webhook_processing() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Setup test data within transaction
-    let tenant_id = env.create_tenant_tx(&mut *tx, "invariant-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "invariant-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Configure HTTP mock for successful delivery
     env.http_mock
@@ -56,7 +64,7 @@ async fn invariant_validation_during_webhook_processing() -> Result<()> {
         .body(b"test webhook payload".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Verify data exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -64,6 +72,10 @@ async fn invariant_validation_during_webhook_processing() -> Result<()> {
         .fetch_one(&mut *tx)
         .await?;
     assert_eq!(count, 1, "Event should exist within transaction");
+
+    // Also verify using repository (tests both SQL and repository layer)
+    let event_exists = env.storage().webhook_events.exists(event_id).await?;
+    assert!(event_exists, "Repository should also find event within transaction");
 
     // Commit for delivery testing
     tx.commit().await?;
@@ -86,9 +98,9 @@ async fn invariant_catches_retry_bound_violation() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Create webhook data directly in database to simulate retry bound violation
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "http://example.com/webhook").await?;
+        env.create_endpoint_tx(&mut tx, tenant_id, "http://example.com/webhook").await?;
     tx.commit().await?;
 
     // Insert event with excessive failure count
@@ -133,8 +145,8 @@ async fn invariant_checks_delivery_state_transitions() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "state-invariant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "state-invariant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup mock for failure then success
     env.http_mock
@@ -151,7 +163,7 @@ async fn invariant_checks_delivery_state_transitions() -> Result<()> {
         .body(b"state transition test".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
     tx.commit().await?;
 
     // First delivery attempt - should fail
@@ -179,8 +191,8 @@ async fn invariant_validates_idempotency_keys() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "idempotency-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "idempotency-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Configure mock for success
     env.http_mock
@@ -200,7 +212,7 @@ async fn invariant_validates_idempotency_keys() -> Result<()> {
         .body(b"first webhook".to_vec())
         .build();
 
-    let event_id1 = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id1 = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Try to create duplicate with same idempotency key
     let duplicate = WebhookBuilder::new()
@@ -211,7 +223,7 @@ async fn invariant_validates_idempotency_keys() -> Result<()> {
         .body(b"duplicate webhook".to_vec())
         .build();
 
-    let event_id2 = env.ingest_webhook_tx(&mut *tx, &duplicate).await?;
+    let event_id2 = env.ingest_webhook_tx(&mut tx, &duplicate).await?;
 
     // Should return the same event ID due to idempotency
     assert_eq!(event_id1, event_id2, "Idempotent requests should return same event ID");
@@ -231,8 +243,8 @@ async fn invariant_checks_concurrent_delivery_attempts() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "concurrent-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "concurrent-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup slow response to simulate concurrent attempts
     env.http_mock
@@ -252,7 +264,7 @@ async fn invariant_checks_concurrent_delivery_attempts() -> Result<()> {
             .body(format!("webhook {}", i).into_bytes())
             .build();
 
-        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
         event_ids.push(event_id);
     }
 

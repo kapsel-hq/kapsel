@@ -12,24 +12,14 @@ async fn store_and_load_signing_key() {
     // Generate test key
     let public_key = vec![1u8; 32];
 
-    // Store key as active
-    sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&public_key)
-    .execute(env.pool())
-    .await
-    .unwrap();
+    // Store key as active using repository
+    let _key_id =
+        env.storage().attestation_keys.create_and_activate(public_key.clone()).await.unwrap();
 
-    // Load active key
-    let loaded: (Vec<u8>,) =
-        sqlx::query_as("SELECT public_key FROM attestation_keys WHERE is_active = TRUE")
-            .fetch_one(env.pool())
-            .await
-            .unwrap();
+    // Load key using repository
+    let active_key = env.storage().attestation_keys.find_active().await.unwrap().unwrap();
 
-    assert_eq!(loaded.0, public_key, "Loaded key should match stored key");
+    assert_eq!(active_key.public_key, public_key);
 }
 
 #[tokio::test]
@@ -39,24 +29,11 @@ async fn only_one_active_key_at_a_time() {
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
 
-    // Insert first active key
-    sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&key1)
-    .execute(env.pool())
-    .await
-    .unwrap();
+    // Insert first active key using repository
+    let _key1_id = env.storage().attestation_keys.create_and_activate(key1).await.unwrap();
 
-    // Attempt to insert second active key should fail due to unique constraint
-    let result: Result<_, sqlx::Error> = sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&key2)
-    .execute(env.pool())
-    .await;
+    // Attempt to create second active key should fail due to unique constraint
+    let result = env.storage().attestation_keys.create_and_activate(key2).await;
 
     assert!(result.is_err(), "Should not allow multiple active keys");
 
@@ -76,45 +53,19 @@ async fn deactivate_old_key_when_rotating() {
     let old_key = vec![1u8; 32];
     let new_key = vec![2u8; 32];
 
-    // Insert first active key
-    sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&old_key)
-    .execute(env.pool())
-    .await
-    .unwrap();
+    // Insert first active key using repository
+    let _old_key_id = env.storage().attestation_keys.create_and_activate(old_key).await.unwrap();
 
-    // Deactivate old key and insert new key in transaction
-    let mut tx = env.pool().begin().await.unwrap();
-
-    sqlx::query("UPDATE attestation_keys SET is_active = FALSE WHERE public_key = $1")
-        .bind(&old_key)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-
-    sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&new_key)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-
-    tx.commit().await.unwrap();
+    // Rotate to new key atomically using repository
+    let _new_key_id =
+        env.storage().attestation_keys.create_and_activate(new_key.clone()).await.unwrap();
 
     // Verify only new key is active
-    let active_keys: Vec<(Vec<u8>,)> =
-        sqlx::query_as("SELECT public_key FROM attestation_keys WHERE is_active = TRUE")
-            .fetch_all(env.pool())
-            .await
-            .unwrap();
+    let active_key = env.storage().attestation_keys.find_active().await.unwrap().unwrap();
+    let active_count = env.storage().attestation_keys.count_active().await.unwrap();
 
-    assert_eq!(active_keys.len(), 1, "Should have exactly one active key");
-    assert_eq!(active_keys[0].0, new_key, "New key should be active");
+    assert_eq!(active_count, 1);
+    assert_eq!(active_key.public_key, new_key);
 }
 
 #[tokio::test]
@@ -123,26 +74,11 @@ async fn load_active_key_returns_most_recent() {
 
     let key = vec![1u8; 32];
 
-    // Insert key
-    sqlx::query(
-        "INSERT INTO attestation_keys (public_key, is_active, created_at)
-         VALUES ($1, TRUE, NOW())",
-    )
-    .bind(&key)
-    .execute(env.pool())
-    .await
-    .unwrap();
+    // Insert key using repository
+    let _key_id = env.storage().attestation_keys.create_and_activate(key.clone()).await.unwrap();
 
-    // Load active key with proper ordering
-    let loaded: (Vec<u8>,) = sqlx::query_as(
-        "SELECT public_key FROM attestation_keys
-         WHERE is_active = TRUE
-         ORDER BY created_at DESC
-         LIMIT 1",
-    )
-    .fetch_one(env.pool())
-    .await
-    .unwrap();
+    // Load active key using repository (already handles proper ordering)
+    let active_key = env.storage().attestation_keys.find_active().await.unwrap().unwrap();
 
-    assert_eq!(loaded.0, key, "Should load the most recently created active key");
+    assert_eq!(active_key.public_key, key);
 }

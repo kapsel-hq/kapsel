@@ -90,8 +90,8 @@ async fn scenario_builder_snapshot_integration() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "scenario-snapshot").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "scenario-snapshot").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup HTTP mock for success
     env.http_mock
@@ -108,7 +108,7 @@ async fn scenario_builder_snapshot_integration() -> Result<()> {
         .body(b"scenario integration test payload".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Verify data exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -135,8 +135,8 @@ async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "scenario-comprehensive").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "scenario-comprehensive").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup HTTP mock for success
     env.http_mock
@@ -153,7 +153,7 @@ async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
         .body(b"scenario integration test payload".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Verify data exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -182,8 +182,8 @@ async fn scenario_builder_with_retries() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "retry-scenario").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "retry-scenario").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup HTTP responses: fail -> succeed pattern
     env.http_mock
@@ -200,7 +200,7 @@ async fn scenario_builder_with_retries() -> Result<()> {
         .body(b"retry test payload".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
     tx.commit().await?;
 
     // Build scenario with retry checks

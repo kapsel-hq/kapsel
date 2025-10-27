@@ -3,6 +3,8 @@
 //! Tests API key validation, tenant context injection, and error responses
 //! through HTTP request scenarios.
 
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::Extension,
@@ -13,6 +15,7 @@ use axum::{
     Router,
 };
 use kapsel_api::middleware::auth::auth_middleware;
+use kapsel_core::storage::Storage;
 use kapsel_testing::TestEnv;
 use serde_json::json;
 use tower::ServiceExt;
@@ -28,10 +31,10 @@ async fn authenticate_request_succeeds_with_valid_key() {
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
 
     let (api_key, _key_hash) =
-        env.create_api_key_tx(&mut *tx, tenant_id, "test-key-valid").await.expect("create api key");
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key-valid").await.expect("create api key");
 
     // Commit so API handlers can see the data
     tx.commit().await.expect("commit transaction");
@@ -134,22 +137,18 @@ async fn authenticate_request_fails_with_revoked_key() {
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
 
     let (api_key, key_hash) = env
-        .create_api_key_tx(&mut *tx, tenant_id, "test-key-revoked")
+        .create_api_key_tx(&mut tx, tenant_id, "test-key-revoked")
         .await
         .expect("create api key");
 
-    // Mark the key as revoked
-    sqlx::query("UPDATE api_keys SET revoked_at = NOW() WHERE key_hash = $1")
-        .bind(&key_hash)
-        .execute(&mut *tx)
-        .await
-        .expect("revoke api key");
-
-    // Commit so API handlers can see the data
+    // Commit first so we can use the revoke method
     tx.commit().await.expect("commit transaction");
+
+    // Mark the key as revoked
+    env.storage().api_keys.revoke(&key_hash).await.expect("revoke key");
 
     let app = create_test_app(env.pool().clone());
 
@@ -173,24 +172,23 @@ async fn authenticate_request_fails_with_expired_key() {
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
 
     let (api_key, key_hash) = env
-        .create_api_key_tx(&mut *tx, tenant_id, "test-key-expired")
+        .create_api_key_tx(&mut tx, tenant_id, "test-key-expired")
         .await
         .expect("create api key");
 
-    // Mark the key as expired
-    sqlx::query(
-        "UPDATE api_keys SET created_at = NOW() - INTERVAL '2 days', expires_at = NOW() - INTERVAL '1 day' WHERE key_hash = $1"
-    )
-    .bind(&key_hash)
-    .execute(&mut *tx)
-    .await
-    .expect("expire api key");
-
-    // Commit so API handlers can see the data
+    // Commit first so we can use the set_expiration method
     tx.commit().await.expect("commit transaction");
+
+    // Mark the key as expired
+    let expired_at = chrono::Utc::now() - chrono::Duration::days(1);
+    env.storage()
+        .api_keys
+        .set_expiration(&key_hash, Some(expired_at))
+        .await
+        .expect("set expiration");
 
     let app = create_test_app(env.pool().clone());
 
@@ -215,10 +213,10 @@ async fn authenticate_request_updates_last_used_timestamp() {
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
 
     let (api_key, key_hash) =
-        env.create_api_key_tx(&mut *tx, tenant_id, "test-key-usage").await.expect("create api key");
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key-usage").await.expect("create api key");
 
     // Commit so API handlers can see the data
     tx.commit().await.expect("commit transaction");
@@ -226,12 +224,14 @@ async fn authenticate_request_updates_last_used_timestamp() {
     let app = create_test_app(env.pool().clone());
 
     // Check that last_used_at is initially NULL
-    let initial_usage: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT last_used_at FROM api_keys WHERE key_hash = $1")
-            .bind(&key_hash)
-            .fetch_one(env.pool())
-            .await
-            .expect("fetch initial last_used_at");
+    let initial_usage = env
+        .storage()
+        .api_keys
+        .find_by_hash(&key_hash)
+        .await
+        .expect("find api key")
+        .expect("api key exists")
+        .last_used_at;
 
     assert!(initial_usage.is_none());
 
@@ -246,12 +246,14 @@ async fn authenticate_request_updates_last_used_timestamp() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Check that last_used_at has been updated
-    let updated_usage: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT last_used_at FROM api_keys WHERE key_hash = $1")
-            .bind(&key_hash)
-            .fetch_one(env.pool())
-            .await
-            .expect("fetch updated last_used_at");
+    let updated_usage = env
+        .storage()
+        .api_keys
+        .find_by_hash(&key_hash)
+        .await
+        .expect("find api key")
+        .expect("api key exists")
+        .last_used_at;
 
     assert!(updated_usage.is_some());
 }
@@ -260,7 +262,10 @@ async fn authenticate_request_updates_last_used_timestamp() {
 fn create_test_app(pool: sqlx::PgPool) -> Router {
     Router::new()
         .route("/test", get(test_handler))
-        .layer(middleware::from_fn_with_state(pool.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Storage::new(pool.clone())),
+            auth_middleware,
+        ))
         .with_state(pool)
 }
 

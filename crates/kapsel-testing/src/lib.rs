@@ -32,11 +32,18 @@ pub use http::{MockEndpoint, MockResponse, MockServer};
 pub use invariants::{assertions as invariant_assertions, strategies, EventStatus, Invariants};
 pub use kapsel_core::{
     models::{EndpointId, EventId, TenantId},
-    storage::Storage,
+    storage::{merkle_leaves::AttestationLeafInfo, signed_tree_heads::SignedTreeHeadInfo, Storage},
     Clock,
 };
 pub use scenario::{FailureKind, ScenarioBuilder};
 pub use time::TestClock;
+
+// These implementation modules extend TestEnv with various methods
+mod attestation;
+mod database_helpers;
+mod delivery;
+mod env_core;
+mod snapshots;
 
 type InvariantCheckFn = Box<
     dyn for<'a> Fn(
@@ -154,43 +161,5 @@ struct ReadyWebhook {
 struct DeliveryResult {
     status_code: Option<i32>,
     response_body: Option<String>,
-    duration_ms: i32,
     error_type: Option<String>,
 }
-
-/// Attestation leaf information for testing.
-#[derive(Debug, Clone)]
-pub struct AttestationLeafInfo {
-    /// Unique identifier for the delivery attempt
-    pub delivery_attempt_id: Uuid,
-    /// Target endpoint URL where the webhook was delivered
-    pub endpoint_url: String,
-    /// Sequential attempt number for this delivery
-    pub attempt_number: i32,
-    /// HTTP response status code (None if delivery failed before response)
-    pub response_status: Option<i32>,
-    /// SHA-256 hash of the Merkle tree leaf content
-    pub leaf_hash: Vec<u8>,
-}
-
-/// Signed tree head information for testing.
-#[derive(Debug, Clone)]
-pub struct SignedTreeHeadInfo {
-    /// Total number of leaves in the Merkle tree
-    pub tree_size: i64,
-    /// SHA-256 hash of the Merkle tree root
-    pub root_hash: Vec<u8>,
-    /// Unix timestamp in milliseconds when the tree head was signed
-    pub timestamp_ms: i64,
-    /// Ed25519 signature over the tree head data
-    pub signature: Vec<u8>,
-    /// Number of leaves in the batch that created this tree head
-    pub batch_size: i32,
-}
-
-// These implementation modules extend TestEnv with various methods
-mod attestation;
-mod database_helpers;
-mod delivery;
-mod env_core;
-mod snapshots;

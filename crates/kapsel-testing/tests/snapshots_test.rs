@@ -11,8 +11,8 @@ async fn snapshot_events_table_works() -> Result<()> {
 
     // Create test data within transaction
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "snapshot-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "snapshot-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     let webhook = WebhookBuilder::new()
         .tenant(tenant_id.0)
@@ -21,7 +21,7 @@ async fn snapshot_events_table_works() -> Result<()> {
         .body(b"snapshot test data".to_vec())
         .build();
 
-    let _event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let _event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Commit for snapshot testing
     tx.commit().await?;
@@ -41,8 +41,8 @@ async fn snapshot_delivery_attempts_works() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Setup successful delivery within transaction
-    let tenant_id = env.create_tenant_tx(&mut *tx, "delivery-snapshot").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "delivery-snapshot").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     env.http_mock
         .mock_simple("/", MockResponse::Success {
@@ -57,7 +57,7 @@ async fn snapshot_delivery_attempts_works() -> Result<()> {
         .source_event("delivery-snap-001")
         .build();
 
-    let _event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let _event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Commit for delivery testing
     tx.commit().await?;
@@ -89,8 +89,8 @@ async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Testing complete snapshot functionality with transaction isolation
-    let tenant_id = env.create_tenant_tx(&mut *tx, "e2e-snapshot").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "e2e-snapshot").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // TEST 1: Verify clean transaction state
     let event_count: i64 =
@@ -113,7 +113,7 @@ async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
         .body(b"comprehensive test payload".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     // Verify event exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -150,8 +150,8 @@ async fn validation_first_snapshot_test() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "validation").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "validation").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Setup HTTP behavior
     env.http_mock
@@ -174,7 +174,7 @@ async fn validation_first_snapshot_test() -> Result<()> {
     assert_eq!(initial_count, 0, "Transaction should start with clean state");
 
     // STEP 2: Ingest webhook within transaction
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
     let post_ingestion_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
@@ -202,11 +202,11 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
     let mut tx = env.pool().begin().await?;
 
     // Create multiple tenants with webhooks
-    let tenant1 = env.create_tenant_tx(&mut *tx, "tenant-1").await?;
-    let endpoint1 = env.create_endpoint_tx(&mut *tx, tenant1, &env.http_mock.url()).await?;
+    let tenant1 = env.create_tenant_tx(&mut tx, "tenant-1").await?;
+    let endpoint1 = env.create_endpoint_tx(&mut tx, tenant1, &env.http_mock.url()).await?;
 
-    let tenant2 = env.create_tenant_tx(&mut *tx, "tenant-2").await?;
-    let endpoint2 = env.create_endpoint_tx(&mut *tx, tenant2, &env.http_mock.url()).await?;
+    let tenant2 = env.create_tenant_tx(&mut tx, "tenant-2").await?;
+    let endpoint2 = env.create_endpoint_tx(&mut tx, tenant2, &env.http_mock.url()).await?;
 
     // Configure mock for success
     env.http_mock
@@ -231,8 +231,8 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
         .body(b"tenant 2 data".to_vec())
         .build();
 
-    let event1 = env.ingest_webhook_tx(&mut *tx, &webhook1).await?;
-    let event2 = env.ingest_webhook_tx(&mut *tx, &webhook2).await?;
+    let event1 = env.ingest_webhook_tx(&mut tx, &webhook1).await?;
+    let event2 = env.ingest_webhook_tx(&mut tx, &webhook2).await?;
 
     tx.commit().await?;
 
@@ -258,8 +258,8 @@ async fn snapshot_with_failed_attempts() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "failure-snapshot").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "failure-snapshot").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Configure mock to always fail
     env.http_mock
@@ -273,7 +273,7 @@ async fn snapshot_with_failed_attempts() -> Result<()> {
         .body(b"will fail".to_vec())
         .build();
 
-    let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
     tx.commit().await?;
 
     // Attempt delivery (will fail)

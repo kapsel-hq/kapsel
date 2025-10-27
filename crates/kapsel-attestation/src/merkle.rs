@@ -37,11 +37,11 @@
 //! - **Atomic consistency**: Database transaction ensures tree/DB alignment
 //! - **High throughput**: Processes hundreds of events per batch efficiently
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use kapsel_core::storage::Storage;
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use sqlx::PgPool;
 
 use crate::{
     error::{AttestationError, Result},
@@ -64,8 +64,8 @@ use crate::{
 /// - Efficient memory usage with bounded queues
 /// - Deterministic tree construction for reproducible proofs
 pub struct MerkleService {
-    /// Database connection pool for persistent storage.
-    db: PgPool,
+    /// Storage abstraction for database operations.
+    storage: Arc<Storage>,
 
     /// Signing service for tree head attestation.
     signing: SigningService,
@@ -84,7 +84,7 @@ pub struct MerkleService {
 impl std::fmt::Debug for MerkleService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MerkleService")
-            .field("db", &"PgPool")
+            .field("storage", &"Storage")
             .field("signing", &self.signing)
             .field("tree", &"MerkleTree")
             .field("pending_count", &self.pending.len())
@@ -98,11 +98,11 @@ impl MerkleService {
     ///
     /// Initializes with an empty tree and pending queue. The service will
     /// load existing tree state from the database on first use.
-    pub fn new(db: PgPool, signing: SigningService) -> Self {
+    pub fn new(storage: Arc<Storage>, signing: SigningService) -> Self {
         // Use a fixed lock ID for production consistency
         const DEFAULT_LOCK_ID: i64 = 1234567890;
         Self {
-            db,
+            storage,
             signing,
             tree: MerkleTree::new(),
             pending: VecDeque::new(),
@@ -114,8 +114,8 @@ impl MerkleService {
     ///
     /// This is primarily used for test isolation where multiple services
     /// need different lock IDs to prevent serialization conflicts.
-    pub fn with_lock_id(db: PgPool, signing: SigningService, lock_id: i64) -> Self {
-        Self { db, signing, tree: MerkleTree::new(), pending: VecDeque::new(), lock_id }
+    pub fn with_lock_id(storage: Arc<Storage>, signing: SigningService, lock_id: i64) -> Self {
+        Self { storage, signing, tree: MerkleTree::new(), pending: VecDeque::new(), lock_id }
     }
 
     /// Add a leaf to the pending batch queue.
@@ -170,7 +170,13 @@ impl MerkleService {
         let batch_size = self.pending.len();
         let batch_id = uuid::Uuid::new_v4();
 
-        let mut tx = self.db.begin().await.map_err(|e| AttestationError::Database { source: e })?;
+        let mut tx = self
+            .storage
+            .webhook_events
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| AttestationError::Database { source: e })?;
 
         // Acquire advisory lock to serialize tree commits and prevent concurrent
         // tree_index conflicts
@@ -182,10 +188,11 @@ impl MerkleService {
 
         // Get current tree size from database atomically within transaction
         let current_tree_size: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| AttestationError::Database { source: e })?;
+            self.storage.signed_tree_heads.find_max_tree_size_in_tx(&mut tx).await.map_err(
+                |e| {
+                    AttestationError::batch_commit_failed(format!("failed to get tree size: {}", e))
+                },
+            )?;
 
         let new_tree_size = current_tree_size
             + i64::try_from(batch_size)
@@ -201,12 +208,17 @@ impl MerkleService {
 
         // Load existing leaves if any
         if current_tree_size > 0 {
-            let existing_hashes: Vec<Vec<u8>> = sqlx::query_scalar(
-                "SELECT leaf_hash FROM merkle_leaves WHERE tree_index IS NOT NULL ORDER BY tree_index ASC"
-            )
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| AttestationError::Database { source: e })?;
+            let existing_hashes: Vec<Vec<u8>> = self
+                .storage
+                .merkle_leaves
+                .find_committed_leaf_hashes_in_tx(&mut tx)
+                .await
+                .map_err(|e| {
+                    AttestationError::batch_commit_failed(format!(
+                        "failed to load existing leaves: {}",
+                        e
+                    ))
+                })?;
 
             let mut existing_32: Vec<[u8; 32]> = Vec::new();
             for hash in existing_hashes {
@@ -290,28 +302,23 @@ impl MerkleService {
         batch_id: uuid::Uuid,
         tree_index: i64,
     ) -> Result<()> {
-        sqlx::query(
-            r"
-            INSERT INTO merkle_leaves
-            (leaf_hash, delivery_attempt_id, event_id, tenant_id, endpoint_url,
-             payload_hash, attempt_number, attempted_at, tree_index, batch_id)
-            SELECT $1, $2, da.event_id, we.tenant_id, $3, $4, $5, $6, $7, $8
-            FROM delivery_attempts da
-            JOIN webhook_events we ON da.event_id = we.id
-            WHERE da.id = $2
-            ",
-        )
-        .bind(&leaf_hash[..])
-        .bind(leaf.delivery_attempt_id)
-        .bind(&leaf.endpoint_url)
-        .bind(&leaf.payload_hash[..])
-        .bind(leaf.attempt_number)
-        .bind(leaf.attempted_at)
-        .bind(tree_index)
-        .bind(batch_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| AttestationError::Database { source: e })?;
+        self.storage
+            .merkle_leaves
+            .insert_leaf_from_attempt_in_tx(
+                &mut **tx,
+                &leaf_hash[..],
+                leaf.delivery_attempt_id,
+                &leaf.endpoint_url,
+                &leaf.payload_hash[..],
+                leaf.attempt_number,
+                leaf.attempted_at,
+                Some(tree_index),
+                Some(batch_id),
+            )
+            .await
+            .map_err(|e| {
+                AttestationError::batch_commit_failed(format!("failed to insert leaves: {}", e))
+            })?;
 
         Ok(())
     }
@@ -325,12 +332,10 @@ impl MerkleService {
     async fn restore_tree_state_from_db(&mut self) -> Result<()> {
         // Query all leaves that have been committed to the tree (tree_index IS NOT
         // NULL)
-        let leaf_hashes: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT leaf_hash FROM merkle_leaves WHERE tree_index IS NOT NULL ORDER BY tree_index ASC"
-        )
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| AttestationError::Database { source: e })?;
+        let leaf_hashes: Vec<Vec<u8>> =
+            self.storage.merkle_leaves.find_committed_leaf_hashes().await.map_err(|e| {
+                AttestationError::batch_commit_failed(format!("failed to insert tree head: {}", e))
+            })?;
 
         if !leaf_hashes.is_empty() {
             // Convert to the format expected by MerkleTree

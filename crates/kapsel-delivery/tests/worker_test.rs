@@ -194,9 +194,9 @@ async fn successful_delivery_updates_database_correctly() {
 
     // Create test data using test harness
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
-        .create_endpoint_with_config_tx(&mut *tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
+        .create_endpoint_with_config_tx(&mut tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
         .await
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");
@@ -243,9 +243,9 @@ async fn failed_delivery_schedules_retry() {
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
-        .create_endpoint_with_config_tx(&mut *tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
+        .create_endpoint_with_config_tx(&mut tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
         .await
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");
@@ -295,9 +295,9 @@ async fn exhausted_retries_mark_event_failed() {
 
     // Create test data with low max retries
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
-        .create_endpoint_with_config_tx(&mut *tx, tenant_id, &webhook_url, "test-endpoint", 3, 30) // max 3 retries
+        .create_endpoint_with_config_tx(&mut tx, tenant_id, &webhook_url, "test-endpoint", 3, 30) // max 3 retries
         .await
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");
@@ -347,10 +347,10 @@ async fn worker_processes_multiple_events_correctly() {
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
         .create_endpoint_with_config_tx(
-            &mut *tx,
+            &mut tx,
             tenant_id,
             &env.http_mock.endpoint_url("/webhook"),
             "test-endpoint",
@@ -407,9 +407,9 @@ async fn non_retryable_errors_mark_event_failed_immediately() {
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
-        .create_endpoint_with_config_tx(&mut *tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
+        .create_endpoint_with_config_tx(&mut tx, tenant_id, &webhook_url, "test-endpoint", 5, 30)
         .await
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");

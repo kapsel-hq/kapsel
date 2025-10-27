@@ -25,8 +25,7 @@ async fn successful_delivery_events_create_attestation_leaves() {
 
     // Create attestation infrastructure
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Setup event handler tester
@@ -55,8 +54,7 @@ async fn failed_delivery_events_do_not_create_attestation_leaves() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     let mut tester = EventHandlerTester::new();
@@ -83,8 +81,7 @@ async fn multiple_successful_delivery_events_create_multiple_leaves() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     let mut tester = EventHandlerTester::new();
@@ -118,9 +115,9 @@ async fn multicast_event_handling_with_multiple_attestation_services() {
     let signing_service2 = SigningService::ephemeral();
 
     let merkle_service1 =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service1)));
+        Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service1)));
     let merkle_service2 =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service2)));
+        Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service2)));
 
     let subscriber1 = AttestationEventSubscriber::new(merkle_service1.clone());
     let subscriber2 = AttestationEventSubscriber::new(merkle_service2.clone());
@@ -170,8 +167,7 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     let mut tester = EventHandlerTester::new();
@@ -208,8 +204,7 @@ async fn mixed_success_failure_events_create_correct_attestations() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     let mut tester = EventHandlerTester::new();
@@ -255,8 +250,7 @@ async fn event_data_integrity_preserved_through_attestation() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(env.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     let mut tester = EventHandlerTester::new();

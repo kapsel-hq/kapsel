@@ -21,46 +21,17 @@ use uuid::Uuid;
 async fn ingest_webhook_succeeds_with_valid_request() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create tenant and endpoint
-    let tenant_id = Uuid::new_v4();
-    let endpoint_id = Uuid::new_v4();
-    let api_key = "test-key-valid-ingestion";
-    let key_hash = sha256::digest(api_key.as_bytes());
+    let mut tx = env.pool().begin().await.expect("begin transaction");
 
-    // Insert tenant
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("test-tenant-{tenant_id}"))
-        .bind("enterprise")
-        .execute(env.pool())
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    let endpoint_id = env
+        .create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook")
         .await
-        .expect("insert tenant");
+        .expect("create endpoint");
 
-    // Insert API key
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
-
-    // Insert endpoint
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, is_active, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id)
-    .bind("test-endpoint")
-    .bind("https://example.com/webhook")
-    .bind(true)
-    .bind(3)
-    .bind(30)
-    .bind("closed")
-    .execute(env.pool())
-    .await
-    .expect("insert endpoint");
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_router(env.pool().clone());
 
@@ -97,35 +68,22 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     assert!(response_json["event_id"].is_string());
     assert_eq!(response_json["status"], "received");
 
-    // Verify event was persisted to database
-    let event_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM webhook_events WHERE tenant_id = $1 AND endpoint_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .fetch_one(env.pool())
-    .await
-    .expect("count events");
+    // Verify event was persisted to database using repository
+    let events = env
+        .storage()
+        .webhook_events
+        .find_by_tenant(tenant_id, Some(10))
+        .await
+        .expect("find events");
+    assert_eq!(events.len(), 1, "exactly one event should be persisted");
 
-    assert_eq!(event_count, 1);
-
-    // Verify event details
-    let event_row: (String, String, Vec<u8>, String, i32) = sqlx::query_as(
-        "SELECT source_event_id, status, body, content_type, payload_size
-         FROM webhook_events WHERE tenant_id = $1 AND endpoint_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .fetch_one(env.pool())
-    .await
-    .expect("fetch event details");
-
-    let (source_event_id, status, body, content_type, payload_size) = event_row;
-    assert_eq!(source_event_id, "test-event-001");
-    assert_eq!(status, "received");
-    assert_eq!(body, payload_bytes);
-    assert_eq!(content_type, "application/json");
-    assert_eq!(payload_size, payload_bytes.len() as i32);
+    let event = &events[0];
+    assert_eq!(event.endpoint_id, endpoint_id);
+    assert_eq!(event.status.to_string(), "pending");
+    assert_eq!(event.body, payload_bytes);
+    assert_eq!(event.content_type, "application/json");
+    assert_eq!(event.payload_size, payload_bytes.len() as i32);
+    assert_eq!(event.source_event_id, "test-event-001");
 }
 
 /// Test webhook ingestion fails with invalid authentication.
@@ -186,26 +144,12 @@ async fn ingest_webhook_fails_without_auth() {
 async fn ingest_webhook_fails_with_nonexistent_endpoint() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create valid tenant and API key
-    let tenant_id = Uuid::new_v4();
-    let api_key = "test-key-nonexistent-endpoint";
-    let key_hash = sha256::digest(api_key.as_bytes());
-
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("test-tenant-{}", tenant_id))
-        .bind("enterprise")
-        .execute(env.pool())
-        .await
-        .expect("insert tenant");
-
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
+    // Create valid tenant and API key using TestEnv helpers
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_router(env.pool().clone());
 
@@ -235,43 +179,16 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
 async fn ingest_webhook_enforces_payload_size_limit() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create tenant, API key, and endpoint
-    let tenant_id = Uuid::new_v4();
-    let endpoint_id = Uuid::new_v4();
-    let api_key = "test-key-size-limit";
-    let key_hash = sha256::digest(api_key.as_bytes());
-
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("test-tenant-{tenant_id}"))
-        .bind("enterprise")
-        .execute(env.pool())
+    // Create tenant, API key, and endpoint using TestEnv helpers
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    let endpoint_id = env
+        .create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook")
         .await
-        .expect("insert tenant");
-
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
-
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, is_active, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id)
-    .bind("test-endpoint")
-    .bind("https://example.com/webhook")
-    .bind(true)
-    .bind(3)
-    .bind(30)
-    .bind("closed")
-    .execute(env.pool())
-    .await
-    .expect("insert endpoint");
+        .expect("create endpoint");
+    tx.commit().await.expect("commit transaction");
 
     let app = create_test_router(env.pool().clone());
 
@@ -299,43 +216,16 @@ async fn ingest_webhook_enforces_payload_size_limit() {
 async fn ingest_webhook_handles_idempotency_correctly() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create tenant, API key, and endpoint
-    let tenant_id = Uuid::new_v4();
-    let endpoint_id = Uuid::new_v4();
-    let api_key = "test-key-idempotency";
-    let key_hash = sha256::digest(api_key.as_bytes());
-
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test-tenant")
-        .bind("enterprise")
-        .execute(env.pool())
+    // Create tenant, API key, and endpoint using TestEnv helpers
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    let endpoint_id = env
+        .create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook")
         .await
-        .expect("insert tenant");
-
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
-
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, is_active, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id)
-    .bind("test-endpoint")
-    .bind("https://example.com/webhook")
-    .bind(true)
-    .bind(3)
-    .bind(30)
-    .bind("closed")
-    .execute(env.pool())
-    .await
-    .expect("insert endpoint");
+        .expect("create endpoint");
+    tx.commit().await.expect("commit transaction");
 
     let payload = json!({
         "event": "user.updated",
@@ -391,16 +281,13 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     assert_eq!(first_event_id, second_event_id);
 
     // Should only have one event in database
-    let event_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM webhook_events WHERE tenant_id = $1 AND endpoint_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .fetch_one(env.pool())
-    .await
-    .expect("count events");
-
-    assert_eq!(event_count, 1);
+    let events = env
+        .storage()
+        .webhook_events
+        .find_by_tenant(tenant_id, Some(10))
+        .await
+        .expect("find events");
+    assert_eq!(events.len(), 1, "should have exactly one event due to idempotency");
 }
 
 /// Test webhook ingestion handles different content types correctly.
@@ -411,43 +298,16 @@ async fn ingest_webhook_handles_idempotency_correctly() {
 async fn ingest_webhook_handles_different_content_types() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create tenant, API key, and endpoint
-    let tenant_id = Uuid::new_v4();
-    let endpoint_id = Uuid::new_v4();
-    let api_key = "test-key-content-types";
-    let key_hash = sha256::digest(api_key.as_bytes());
-
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("test-tenant-{tenant_id}"))
-        .bind("enterprise")
-        .execute(env.pool())
+    // Create tenant, API key, and endpoint using TestEnv helpers
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    let endpoint_id = env
+        .create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook")
         .await
-        .expect("insert tenant");
-
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
-
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, is_active, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id)
-    .bind("test-endpoint")
-    .bind("https://example.com/webhook")
-    .bind(true)
-    .bind(3)
-    .bind(30)
-    .bind("closed")
-    .execute(env.pool())
-    .await
-    .expect("insert endpoint");
+        .expect("create endpoint");
+    tx.commit().await.expect("commit transaction");
 
     // Test JSON content type
     let app = create_test_router(env.pool().clone());
@@ -467,12 +327,16 @@ async fn ingest_webhook_handles_different_content_types() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Verify JSON content type was stored
-    let stored_content_type: String =
-        sqlx::query_scalar("SELECT content_type FROM webhook_events WHERE source_event_id = $1")
-            .bind("content-type-json")
-            .fetch_one(env.pool())
-            .await
-            .expect("fetch content type");
+    let stored_content_type: String = env
+        .storage()
+        .webhook_events
+        .find_by_tenant(tenant_id, Some(10))
+        .await
+        .expect("find events")
+        .into_iter()
+        .find(|e| e.source_event_id == "content-type-json")
+        .expect("find json event")
+        .content_type;
 
     assert_eq!(stored_content_type, "application/json");
 
@@ -493,12 +357,16 @@ async fn ingest_webhook_handles_different_content_types() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Verify text content type was stored
-    let stored_content_type: String =
-        sqlx::query_scalar("SELECT content_type FROM webhook_events WHERE source_event_id = $1")
-            .bind("content-type-text")
-            .fetch_one(env.pool())
-            .await
-            .expect("fetch content type");
+    let stored_content_type: String = env
+        .storage()
+        .webhook_events
+        .find_by_tenant(tenant_id, Some(10))
+        .await
+        .expect("find events")
+        .into_iter()
+        .find(|e| e.source_event_id == "content-type-text")
+        .expect("find text event")
+        .content_type;
 
     assert_eq!(stored_content_type, "text/plain");
 }
@@ -511,43 +379,16 @@ async fn ingest_webhook_handles_different_content_types() {
 async fn ingest_webhook_without_idempotency_key() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
 
-    // Create tenant, API key, and endpoint
-    let tenant_id = Uuid::new_v4();
-    let endpoint_id = Uuid::new_v4();
-    let api_key = "test-key-no-idempotency";
-    let key_hash = sha256::digest(api_key.as_bytes());
-
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("test-tenant-{tenant_id}"))
-        .bind("enterprise")
-        .execute(env.pool())
+    let mut tx = env.pool().begin().await.expect("begin transaction");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
+    let (api_key, _key_hash) =
+        env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
+    let endpoint_id = env
+        .create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook")
         .await
-        .expect("insert tenant");
+        .expect("create endpoint");
 
-    sqlx::query("INSERT INTO api_keys (tenant_id, key_hash, name) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(&key_hash)
-        .bind("test-key")
-        .execute(env.pool())
-        .await
-        .expect("insert api key");
-
-    sqlx::query(
-        "INSERT INTO endpoints (id, tenant_id, name, url, is_active, max_retries, timeout_seconds, circuit_state)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(endpoint_id)
-    .bind(tenant_id)
-    .bind("test-endpoint")
-    .bind("https://example.com/webhook")
-    .bind(true)
-    .bind(3)
-    .bind(30)
-    .bind("closed")
-    .execute(env.pool())
-    .await
-    .expect("insert endpoint");
+    tx.commit().await.expect("commit transaction");
 
     let payload = json!({"event": "no_idempotency"});
     let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
@@ -579,14 +420,12 @@ async fn ingest_webhook_without_idempotency_key() {
     assert_eq!(response2.status(), StatusCode::OK);
 
     // Should have created two separate events
-    let event_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM webhook_events WHERE tenant_id = $1 AND endpoint_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .fetch_one(env.pool())
-    .await
-    .expect("count events");
+    let event_count = env
+        .storage()
+        .webhook_events
+        .count_by_tenant_and_endpoint(tenant_id, endpoint_id)
+        .await
+        .expect("count events");
 
     assert_eq!(event_count, 2);
 }

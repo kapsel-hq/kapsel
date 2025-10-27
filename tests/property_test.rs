@@ -535,13 +535,9 @@ fn property_webhook_delivery_retry_scenarios() {
                 let mut tx = env.pool().begin().await.unwrap();
 
                 let tenant_name = "prop-test-tenant";
-                let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
+                let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
                 let endpoint_id = env
-                    .create_endpoint_tx(
-                        &mut *tx,
-                        tenant_id,
-                        &env.http_mock.endpoint_url("/webhook"),
-                    )
+                    .create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.endpoint_url("/webhook"))
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
@@ -619,13 +615,9 @@ fn property_idempotency_under_duress() {
                 let mut tx = env.pool().begin().await.unwrap();
 
                 let tenant_name = "idempotency-tenant";
-                let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
+                let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
                 let endpoint_id = env
-                    .create_endpoint_tx(
-                        &mut *tx,
-                        tenant_id,
-                        &env.http_mock.endpoint_url("/webhook"),
-                    )
+                    .create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.endpoint_url("/webhook"))
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
@@ -728,10 +720,10 @@ fn property_circuit_breaker_resilience() {
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "circuit-breaker-tenant";
-                    let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
+                    let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
                     let endpoint_id = env
                         .create_endpoint_tx(
-                            &mut *tx,
+                            &mut tx,
                             tenant_id,
                             &env.http_mock.endpoint_url("/webhook"),
                         )
@@ -846,9 +838,9 @@ fn property_fifo_processing_order() {
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "fifo-tenant";
-                    let tenant_id = env.create_tenant_tx(&mut *tx, tenant_name).await.unwrap();
+                    let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
                     let endpoint_id =
-                        env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await.unwrap();
+                        env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await.unwrap();
 
                     // Setup mock responses - some may fail initially
                     let mut mock_sequence = env.http_mock.mock_sequence();
@@ -875,7 +867,7 @@ fn property_fifo_processing_order() {
                             .json_body(&json!({"sequence": i}))
                             .build();
 
-                        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await.unwrap();
+                        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
                         event_ids.push(event_id);
 
 
@@ -889,9 +881,6 @@ fn property_fifo_processing_order() {
 
                     // Process webhooks with single delivery cycle first
                     env.run_delivery_cycle().await.unwrap();
-
-
-
 
                     // Verify FIFO processing by checking first attempt order
                     // Get the first delivery attempt for each event, ordered by attempt time
@@ -910,7 +899,6 @@ fn property_fifo_processing_order() {
                     .fetch_all(env.pool())
                     .await
                     .unwrap();
-
 
                     // Verify that first attempts happened in FIFO order
                     for (attempt_idx, (event_id, _)) in first_attempts.iter().enumerate() {

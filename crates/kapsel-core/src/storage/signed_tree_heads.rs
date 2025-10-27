@@ -104,7 +104,7 @@ impl Repository {
     /// # Errors
     ///
     /// Returns error if query fails.
-    pub async fn get_max_tree_size(&self) -> Result<i64> {
+    pub async fn find_max_tree_size(&self) -> Result<i64> {
         let size: i64 = sqlx::query_scalar(
             r#"
             SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads
@@ -123,7 +123,10 @@ impl Repository {
     /// # Errors
     ///
     /// Returns error if query fails.
-    pub async fn get_max_tree_size_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+    pub async fn find_max_tree_size_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<i64> {
         let size: i64 = sqlx::query_scalar(
             r#"
             SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads
@@ -331,7 +334,7 @@ mod tests {
         let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
         let repo = Repository::new(Arc::new(env.pool().clone()));
 
-        let size = repo.get_max_tree_size().await.unwrap();
+        let size = repo.find_max_tree_size().await.unwrap();
         assert_eq!(size, 0);
     }
 
