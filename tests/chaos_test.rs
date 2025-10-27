@@ -18,8 +18,8 @@ async fn intermittent_endpoint_failures() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "chaos-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     // Chaos pattern: Random failures then recovery
@@ -97,10 +97,10 @@ async fn permanent_endpoint_failure() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-tenant").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "chaos-tenant").await?;
     let endpoint_id = env
         .create_endpoint_with_config_tx(
-            &mut *tx,
+            &mut tx,
             tenant_id,
             &env.http_mock.url(),
             "permanent-fail-endpoint",
@@ -178,9 +178,9 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
     let pool = env.pool().clone();
     let mut tx = pool.begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-load-tenant").await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "chaos-load-tenant").await?;
     let stable_endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+        env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Chaos pattern: Mixed success/failure for batch processing
     env.http_mock
@@ -206,7 +206,7 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
             .json_body(&json!({"message": format!("Load test webhook {}", i)}))
             .build();
 
-        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
         event_ids.push(event_id);
     }
 
@@ -215,11 +215,8 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
 
     // Verify events exist within transaction
     for event_id in &event_ids {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
-            .bind(event_id.0)
-            .fetch_one(&mut *tx)
-            .await?;
-        assert_eq!(count, 1, "Event should exist within transaction");
+        let event = env.storage().webhook_events.find_by_id_in_tx(&mut tx, *event_id).await?;
+        assert!(event.is_some(), "Event should exist within transaction");
     }
 
     // Commit transaction to make data available for delivery testing
@@ -227,12 +224,13 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
 
     // Verify data is actually committed and visible
     for event_id in &event_ids {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
-            .bind(event_id.0)
-            .fetch_one(env.pool())
+        let event = env
+            .storage()
+            .webhook_events
+            .find_by_id(*event_id)
             .await
             .with_context(|| format!("Failed to verify committed event {}", event_id.0))?;
-        assert_eq!(count, 1, "Event {} should be visible after commit", event_id.0);
+        assert!(event.is_some(), "Event {} should be visible after commit", event_id.0);
     }
 
     // Test delivery processing with the committed data
@@ -280,8 +278,8 @@ async fn idempotency_under_chaos() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "chaos-idempotency").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "chaos-idempotency").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     // Chaos pattern: Success, then duplicate attempts should be ignored
@@ -349,8 +347,8 @@ async fn database_transaction_chaos() -> Result<()> {
 
     // Test that delivery cycle commits data
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "tx-chaos").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "tx-chaos").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     env.http_mock.mock_sequence().respond_with(200, "Success").build().await;

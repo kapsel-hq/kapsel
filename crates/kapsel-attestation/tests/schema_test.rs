@@ -7,7 +7,9 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
-use kapsel_core::IdempotencyStrategy;
+use std::collections::HashMap;
+
+use kapsel_core::models::DeliveryAttempt;
 use kapsel_testing::TestEnv;
 
 #[tokio::test]
@@ -34,27 +36,31 @@ async fn only_one_active_attestation_key_allowed() {
     let mut tx = env.pool().begin().await.unwrap();
 
     // Deactivate any existing active keys within this transaction
-    sqlx::query("UPDATE attestation_keys SET is_active = FALSE WHERE is_active = TRUE")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    env.storage().attestation_keys.deactivate_all_in_tx(&mut tx).await.unwrap();
 
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
 
     // First active key succeeds
-    sqlx::query("INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE)")
-        .bind(&key1)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    let attestation_key1 = kapsel_core::storage::attestation_keys::AttestationKey {
+        id: uuid::Uuid::new_v4(),
+        public_key: key1.clone(),
+        is_active: true,
+        created_at: chrono::Utc::now(),
+        deactivated_at: None,
+    };
+    env.storage().attestation_keys.create_in_tx(&mut tx, &attestation_key1).await.unwrap();
 
     // Second active key fails
-    let result: Result<_, sqlx::Error> =
-        sqlx::query("INSERT INTO attestation_keys (public_key, is_active) VALUES ($1, TRUE)")
-            .bind(&key2)
-            .execute(&mut *tx)
-            .await;
+    // Attempt to insert second active key should fail due to unique constraint
+    let attestation_key2 = kapsel_core::storage::attestation_keys::AttestationKey {
+        id: uuid::Uuid::new_v4(),
+        public_key: key2,
+        is_active: true,
+        created_at: chrono::Utc::now(),
+        deactivated_at: None,
+    };
+    let result = env.storage().attestation_keys.create_in_tx(&mut tx, &attestation_key2).await;
 
     assert!(result.is_err(), "Only one active key allowed");
 
@@ -68,7 +74,7 @@ async fn merkle_leaves_enforces_constraints() {
     let mut tx = env.pool().begin().await.unwrap();
 
     // Create test delivery attempt
-    let attempt_id = create_test_delivery_attempt(&mut tx).await;
+    let attempt_id = create_test_delivery_attempt(&env, &mut tx).await;
 
     // Valid leaf succeeds
     let leaf_hash = vec![0u8; 32];
@@ -116,60 +122,41 @@ async fn merkle_leaves_enforces_constraints() {
 }
 
 async fn create_test_delivery_attempt(
+    env: &TestEnv,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> uuid::Uuid {
     // Create minimal test data chain: tenant -> endpoint -> event -> attempt
-    let tenant_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("test")
-        .bind("free")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
+    let tenant_id = env.create_tenant_tx(tx, "test").await.unwrap();
+    let endpoint_id = env.create_endpoint_tx(tx, tenant_id, "https://example.com").await.unwrap();
 
-    let endpoint_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO endpoints (id, tenant_id, name, url) VALUES ($1, $2, $3, $4)")
-        .bind(endpoint_id)
-        .bind(tenant_id)
-        .bind("test-endpoint")
-        .bind("https://example.com")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-
-    let event_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, headers, body, content_type, payload_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-    )
-    .bind(event_id)
-    .bind(tenant_id)
-    .bind(endpoint_id)
-    .bind("test-event")
-    .bind(IdempotencyStrategy::Header)
-    .bind(serde_json::json!({}))
-    .bind(&b"test"[..])
-    .bind("application/json")
-    .bind(4i32)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
+    let webhook = kapsel_testing::TestWebhook {
+        tenant_id: tenant_id.0,
+        endpoint_id: endpoint_id.0,
+        source_event_id: "test-event".to_string(),
+        idempotency_strategy: "header".to_string(),
+        headers: HashMap::new(),
+        body: b"test".to_vec().into(),
+        content_type: "application/json".to_string(),
+    };
+    let event_id = env.ingest_webhook_tx(tx, &webhook).await.unwrap();
 
     let attempt_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO delivery_attempts (id, event_id, attempt_number, request_url, request_headers, request_method)
-         VALUES ($1, $2, $3, $4, $5, $6)"
-    )
-    .bind(attempt_id)
-    .bind(event_id)
-    .bind(1i32)
-    .bind("https://example.com")
-    .bind(serde_json::json!({}))
-    .bind("POST")
-    .execute(&mut **tx)
-    .await
-    .unwrap();
+    let delivery_attempt = DeliveryAttempt {
+        id: attempt_id,
+        event_id: event_id.into(),
+        attempt_number: 1,
+        endpoint_id: endpoint_id.into(),
+        request_headers: HashMap::new(),
+        request_body: b"test".to_vec(),
+        response_status: Some(200),
+        response_headers: Some(HashMap::new()),
+        response_body: Some(b"response".to_vec()),
+        attempted_at: chrono::Utc::now(),
+        succeeded: true,
+        error_message: None,
+    };
+
+    env.storage().delivery_attempts.create_in_tx(tx, &delivery_attempt).await.unwrap();
 
     attempt_id
 }

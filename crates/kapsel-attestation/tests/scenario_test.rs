@@ -38,10 +38,10 @@ async fn successful_delivery_creates_attestation_leaf_via_events() {
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await.expect("begin transaction");
     let tenant_id =
-        env.create_tenant_tx(&mut *tx, "Test Tenant").await.expect("failed to create tenant");
+        env.create_tenant_tx(&mut tx, "Test Tenant").await.expect("failed to create tenant");
     let endpoint_id = env
         .create_endpoint_with_config_tx(
-            &mut *tx,
+            &mut tx,
             tenant_id,
             &mock_server.uri(),
             "Test Endpoint", // name
@@ -112,10 +112,10 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() {
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
     let tenant_id =
-        env.create_tenant_tx(&mut *tx, "Test Tenant Multi").await.expect("failed to create tenant");
+        env.create_tenant_tx(&mut tx, "Test Tenant Multi").await.expect("failed to create tenant");
     let endpoint_id = env
         .create_endpoint_with_config_tx(
-            &mut *tx,
+            &mut tx,
             tenant_id,
             &mock_server.uri(),
             "Test Endpoint",
@@ -196,12 +196,12 @@ async fn failed_delivery_does_not_create_attestation_leaf() {
     // Create test setup
     let mut tx = env.pool().begin().await.expect("begin transaction");
     let tenant_id = env
-        .create_tenant_tx(&mut *tx, "Test Tenant Failure")
+        .create_tenant_tx(&mut tx, "Test Tenant Failure")
         .await
         .expect("failed to create tenant");
     let endpoint_id = env
         .create_endpoint_with_config_tx(
-            &mut *tx,
+            &mut tx,
             tenant_id,
             &mock_server.uri(),
             "Test Endpoint Failure",
@@ -316,11 +316,7 @@ async fn multiple_events_enable_batch_attestation_commitment() {
     let attestation_subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Capture initial tree size to measure relative growth
-    let initial_tree_size: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads")
-            .fetch_one(env.pool())
-            .await
-            .unwrap_or(0);
+    let initial_tree_size = env.storage().signed_tree_heads.find_max_tree_size().await.unwrap();
 
     let mut event_tester = EventHandlerTester::new();
     event_tester.add_named_subscriber("attestation", Arc::new(attestation_subscriber));

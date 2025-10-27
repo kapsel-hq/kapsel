@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
-use kapsel_core::EventHandler;
+use kapsel_core::{storage::Storage, EventHandler};
 use kapsel_testing::{database::TestDatabase, events::test_events};
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -24,7 +24,8 @@ async fn complete_attestation_workflow() {
 
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service = MerkleService::new(db.pool().clone(), signing_service);
+    let mut merkle_service =
+        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
 
     // Create test leaf data
     let leaf_data = kapsel_attestation::LeafData::new(
@@ -73,7 +74,8 @@ async fn incremental_batch_processing_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service = MerkleService::new(db.pool().clone(), signing_service);
+    let mut merkle_service =
+        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
 
     // First batch: 3 events
     let base_leaf = kapsel_attestation::LeafData::new(
@@ -127,8 +129,10 @@ async fn mixed_success_failure_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
 
-    let merkle_service_shared =
-        Arc::new(RwLock::new(MerkleService::new(db.pool().clone(), signing_service)));
+    let merkle_service_shared = Arc::new(RwLock::new(MerkleService::new(
+        Arc::new(Storage::new(db.pool().clone())),
+        signing_service,
+    )));
     let subscriber = AttestationEventSubscriber::new(merkle_service_shared.clone());
 
     // Process mixed events: 4 successes, 3 failures
@@ -164,8 +168,10 @@ async fn empty_batch_commit_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
 
-    let merkle_service =
-        Arc::new(RwLock::new(MerkleService::new(db.pool().clone(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(
+        Arc::new(Storage::new(db.pool().clone())),
+        signing_service,
+    )));
 
     // Try to commit with no pending events
     let mut service = merkle_service.write().await;
@@ -191,7 +197,8 @@ async fn large_batch_processing_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service = MerkleService::new(db.pool().clone(), signing_service);
+    let mut merkle_service =
+        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
 
     // Process a larger batch (50 events - reduced for test speed)
     const BATCH_SIZE: usize = 50;
@@ -227,27 +234,16 @@ async fn large_batch_processing_workflow() {
 
 /// Helper function to store ephemeral signing key in database.
 async fn store_signing_key_in_db(pool: &PgPool, signing_service: &SigningService) -> uuid::Uuid {
-    let key_id = uuid::Uuid::new_v4();
     let public_key_bytes = signing_service.public_key_as_bytes();
 
-    // Deactivate any existing active keys
-    sqlx::query("UPDATE attestation_keys SET is_active = false WHERE is_active = true")
-        .execute(pool)
+    // Create storage instance from pool
+    let storage = kapsel_core::storage::Storage::new(pool.clone());
+
+    // Use repository to create and activate new key (automatically deactivates old
+    // keys)
+    storage
+        .attestation_keys
+        .create_and_activate(public_key_bytes.to_vec())
         .await
-        .expect("deactivate old keys");
-
-    // Insert new active key
-    sqlx::query(
-        r"
-        INSERT INTO attestation_keys (id, public_key, is_active, created_at)
-        VALUES ($1, $2, true, NOW())
-        ",
-    )
-    .bind(key_id)
-    .bind(&public_key_bytes)
-    .execute(pool)
-    .await
-    .expect("insert attestation key");
-
-    key_id
+        .expect("create and activate attestation key")
 }

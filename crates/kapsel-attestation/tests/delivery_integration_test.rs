@@ -20,8 +20,8 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
 
     // Create tenant and endpoint first
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "successful-delivery-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "successful-delivery-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
@@ -59,8 +59,8 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
 
     // Create tenant and endpoint first
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "failed-delivery-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "failed-delivery-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
@@ -116,8 +116,8 @@ async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
 
     // Create tenant and endpoint first
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "attestation-disabled-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "attestation-disabled-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     let webhook = WebhookBuilder::new()
@@ -150,8 +150,8 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "idempotency-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "idempotency-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     let source_id = "idempotency-test-001";
@@ -196,8 +196,8 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "concurrent-deliveries-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "concurrent-deliveries-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     // Create multiple concurrent webhooks
@@ -244,8 +244,8 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "batch-commitment-test").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "batch-commitment-test").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     // Create batch of webhooks

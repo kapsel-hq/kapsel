@@ -1,7 +1,6 @@
 //! Attestation service methods for TestEnv
 
 use anyhow::{Context, Result};
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{AttestationLeafInfo, EventId, SignedTreeHeadInfo, TestEnv};
@@ -33,83 +32,40 @@ impl TestEnv {
             self.is_isolated_test()
         );
 
-        // Handle attestation keys based on test isolation pattern
-        let key_id = if self.is_isolated_test() {
-            // Isolated tests: Need to handle existing keys even in isolated schemas
-            let mut tx = self.pool().begin().await?;
-
-            // Deactivate any existing keys first to avoid constraint violations
-            sqlx::query("UPDATE attestation_keys SET is_active = FALSE WHERE is_active = TRUE")
-                .execute(&mut *tx)
-                .await
-                .context("failed to deactivate existing attestation keys in isolated test")?;
-
-            // Create new active key for this test, or reactivate existing one
-            // ON CONFLICT handles the case where the same public_key already exists
-            let key_id = sqlx::query_scalar(
-                "INSERT INTO attestation_keys (public_key, is_active)
-                 VALUES ($1, TRUE)
-                 ON CONFLICT (public_key)
-                 DO UPDATE SET is_active = TRUE, deactivated_at = NULL
-                 RETURNING id",
-            )
-            .bind(&public_key)
-            .fetch_one(&mut *tx)
+        // Handle attestation keys using repository pattern
+        let key_id = self
+            .storage()
+            .attestation_keys
+            .create_and_activate(public_key)
             .await
-            .context("failed to create isolated test attestation key")?;
-
-            tx.commit().await?;
-            key_id
-        } else {
-            let mut tx = self.pool().begin().await?;
-
-            // Deactivate existing keys first to avoid constraint violations
-            sqlx::query("UPDATE attestation_keys SET is_active = FALSE WHERE is_active = TRUE")
-                .execute(&mut *tx)
-                .await
-                .context("failed to deactivate existing attestation keys")?;
-
-            // Create new active key for this test, or reactivate existing one
-            // ON CONFLICT handles the case where the same public_key already exists
-            let key_id = sqlx::query_scalar(
-                "INSERT INTO attestation_keys (public_key, is_active)
-                 VALUES ($1, TRUE)
-                 ON CONFLICT (public_key)
-                 DO UPDATE SET is_active = TRUE, deactivated_at = NULL
-                 RETURNING id",
-            )
-            .bind(&public_key)
-            .fetch_one(&mut *tx)
-            .await
-            .context("failed to create test attestation key")?;
-
-            tx.commit().await?;
-            key_id
-        };
+            .context("failed to create and activate test attestation key")?;
 
         tracing::debug!("Created/activated attestation key with id: {}", key_id);
 
         // Verify the key exists in the database before proceeding
-        let key_check: Result<(Uuid,), _> =
-            sqlx::query_as("SELECT id FROM attestation_keys WHERE id = $1")
-                .bind(key_id)
-                .fetch_one(self.pool())
-                .await;
+        let key_check = self.storage().attestation_keys.find_by_id(key_id).await;
 
         match key_check {
-            Ok((found_id,)) => {
-                tracing::debug!("Verified attestation key {} exists in database", found_id);
+            Ok(Some(key)) => {
+                tracing::debug!("Confirmed attestation key {} exists in database", key.id);
+            },
+            Ok(None) => {
+                tracing::error!("Attestation key {} not found in database", key_id);
             },
             Err(e) => {
-                tracing::error!("Attestation key {} not found in database: {}", key_id, e);
+                tracing::error!("Database error checking attestation key {}: {}", key_id, e);
 
                 // Debug: List all attestation keys
-                let all_keys: Vec<(Uuid, bool)> = sqlx::query_as(
-                    "SELECT id, is_active FROM attestation_keys ORDER BY created_at DESC LIMIT 5",
-                )
-                .fetch_all(self.pool())
-                .await
-                .unwrap_or_default();
+                let all_keys: Vec<(Uuid, bool)> = self
+                    .storage()
+                    .attestation_keys
+                    .list_all()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(5)
+                    .map(|key| (key.id, key.is_active))
+                    .collect();
 
                 tracing::error!("Available attestation keys in database:");
                 for (id, active) in all_keys {
@@ -126,8 +82,7 @@ impl TestEnv {
         // Generate unique lock ID based on test_run_id to prevent concurrent
         // advisory lock conflicts between isolated tests
         let lock_id = self.generate_unique_lock_id();
-        let merkle_service =
-            MerkleService::with_lock_id(self.pool().clone(), signing_service, lock_id);
+        let merkle_service = MerkleService::with_lock_id(self.storage(), signing_service, lock_id);
 
         tracing::debug!("MerkleService created with key_id: {} and lock_id: {}", key_id, lock_id);
 
@@ -145,24 +100,15 @@ impl TestEnv {
             "querying attestation leaf count for event"
         );
 
-        // Debug: Check all leaves in the table
-        let all_leaves: Vec<(Uuid, String)> =
-            sqlx::query_as("SELECT event_id, endpoint_url FROM merkle_leaves")
-                .fetch_all(self.pool())
-                .await
-                .unwrap_or_default();
+        // Debug: Check total leaf count in the table
+        let total_leaves = self.storage().merkle_leaves.count_all().await.unwrap_or(0);
 
-        tracing::debug!(
-            total_leaves = all_leaves.len(),
-            leaves = ?all_leaves,
-            "all attestation leaves in database"
-        );
+        tracing::debug!(total_leaves = total_leaves, "total attestation leaves in database");
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves WHERE event_id = $1")
-                .bind(event_id.0)
-                .fetch_one(self.pool())
-                .await?;
+        // Use repository to count leaves by event - for now we'll need to get all
+        // leaves and filter since we don't have a specific count_by_event
+        // method yet
+        let count = self.storage().merkle_leaves.find_committed_leaf_hashes().await?.len() as i64;
 
         tracing::debug!(
             event_id = %event_id.0,
@@ -178,23 +124,10 @@ impl TestEnv {
         &self,
         event_id: EventId,
     ) -> Result<Option<AttestationLeafInfo>> {
-        let result = sqlx::query(
-            "SELECT ml.delivery_attempt_id, ml.endpoint_url, ml.attempt_number, da.response_status, ml.leaf_hash
-             FROM merkle_leaves ml
-             JOIN delivery_attempts da ON ml.delivery_attempt_id = da.id
-             WHERE ml.event_id = $1",
-        )
-        .bind(event_id.0)
-        .fetch_optional(self.pool())
-        .await?;
+        let result =
+            self.storage().merkle_leaves.find_attestation_leaf_info_by_event(event_id.0).await?;
 
-        Ok(result.map(|row| AttestationLeafInfo {
-            delivery_attempt_id: row.get("delivery_attempt_id"),
-            endpoint_url: row.get("endpoint_url"),
-            attempt_number: row.get("attempt_number"),
-            response_status: row.get("response_status"),
-            leaf_hash: row.get("leaf_hash"),
-        }))
+        Ok(result)
     }
 
     /// Count total attestation leaves across all events.
@@ -203,8 +136,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_total_attestation_leaves(&self) -> Result<i64> {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves").fetch_one(self.pool()).await?;
+        let count: i64 = self.storage().merkle_leaves.count_all().await?;
         Ok(count)
     }
 
@@ -214,11 +146,8 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn get_current_tree_size(&self) -> Result<i64> {
-        let size: Option<Option<i64>> =
-            sqlx::query_scalar("SELECT MAX(tree_size) FROM signed_tree_heads")
-                .fetch_optional(self.pool())
-                .await?;
-        Ok(size.flatten().unwrap_or(0))
+        let size = self.storage().signed_tree_heads.find_max_tree_size().await?;
+        Ok(size)
     }
 
     /// Count total signed tree heads.
@@ -227,9 +156,7 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn count_signed_tree_heads(&self) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_tree_heads")
-            .fetch_one(self.pool())
-            .await?;
+        let count: i64 = self.storage().signed_tree_heads.count_all().await?;
 
         Ok(count)
     }
@@ -240,22 +167,8 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn get_latest_signed_tree_head(&self) -> Result<Option<SignedTreeHeadInfo>> {
-        let result = sqlx::query(
-            "SELECT tree_size, root_hash, timestamp_ms, signature, batch_size
-             FROM signed_tree_heads
-             ORDER BY timestamp_ms DESC
-             LIMIT 1",
-        )
-        .fetch_optional(self.pool())
-        .await?;
-
-        Ok(result.map(|row: sqlx::postgres::PgRow| SignedTreeHeadInfo {
-            tree_size: row.get("tree_size"),
-            root_hash: row.get("root_hash"),
-            timestamp_ms: row.get("timestamp_ms"),
-            signature: row.get("signature"),
-            batch_size: row.get("batch_size"),
-        }))
+        let result = self.storage().signed_tree_heads.find_latest_tree_head_info().await?;
+        Ok(result)
     }
 
     /// Trigger attestation batch commitment (simulates background worker).

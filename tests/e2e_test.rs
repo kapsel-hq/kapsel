@@ -18,8 +18,8 @@ async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
 
     // Setup test infrastructure
     let mut tx = env.pool().begin().await?;
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
     tx.commit().await?;
 
     // Configure mock to fail 3 times, then succeed
@@ -131,8 +131,8 @@ async fn batch_webhook_processing() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
     let mut tx = env.pool().begin().await?;
 
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await?;
-    let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
 
     // Configure mock to fail first 3, then succeed
     env.http_mock
@@ -155,18 +155,15 @@ async fn batch_webhook_processing() -> Result<()> {
             .json_body(&json!({"message": format!("Batch webhook {}", i)}))
             .build();
 
-        let event_id = env.ingest_webhook_tx(&mut *tx, &webhook).await?;
+        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
         event_ids.push(event_id);
     }
 
     // Verify events exist within transaction
     assert_eq!(event_ids.len(), 5, "Should have created 5 webhooks");
     for event_id in &event_ids {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
-            .bind(event_id.0)
-            .fetch_one(&mut *tx)
-            .await?;
-        assert_eq!(count, 1, "Event should exist within transaction");
+        let event = env.storage().webhook_events.find_by_id_in_tx(&mut tx, *event_id).await?;
+        assert!(event.is_some(), "Event should exist within transaction");
     }
 
     // Commit transaction to make data available for delivery testing

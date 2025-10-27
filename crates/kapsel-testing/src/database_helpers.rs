@@ -410,18 +410,30 @@ impl TestEnv {
     ///
     /// Returns error if database query fails.
     pub async fn get_all_events(&self) -> Result<Vec<WebhookEventData>> {
-        let events: Vec<WebhookEventData> = sqlx::query_as(
-            "SELECT
-                id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-                status, failure_count, last_attempt_at, next_retry_at,
-                headers, body, content_type, payload_size,
-                signature_valid, signature_error,
-                received_at, delivered_at, failed_at
-             FROM webhook_events ORDER BY received_at",
-        )
-        .fetch_all(self.pool())
-        .await
-        .context("failed to fetch all events")?;
+        let events = self.storage().webhook_events.list_all().await?;
+        let events: Vec<WebhookEventData> = events
+            .into_iter()
+            .map(|e| WebhookEventData {
+                id: e.id,
+                tenant_id: e.tenant_id,
+                endpoint_id: e.endpoint_id.0,
+                source_event_id: e.source_event_id,
+                idempotency_strategy: e.idempotency_strategy.to_string(),
+                status: e.status.to_string(),
+                failure_count: e.failure_count,
+                last_attempt_at: e.last_attempt_at,
+                next_retry_at: e.next_retry_at,
+                headers: serde_json::to_value(e.headers.0).unwrap_or_default(),
+                body: e.body,
+                content_type: e.content_type,
+                payload_size: e.payload_size,
+                signature_valid: e.signature_valid,
+                signature_error: e.signature_error,
+                received_at: e.received_at,
+                delivered_at: e.delivered_at,
+                failed_at: e.failed_at,
+            })
+            .collect();
         Ok(events)
     }
 }

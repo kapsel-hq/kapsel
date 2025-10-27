@@ -41,43 +41,39 @@ async fn merkle_service_commits_batch_atomically() {
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
     let delivery_attempt_id = Uuid::new_v4();
-    let event_id = Uuid::new_v4();
 
-    // Create webhook event
-    sqlx::query(
-        "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status, headers, body, content_type, payload_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
-    )
-    .bind(event_id)
-    .bind(tenant_id.0)
-    .bind(endpoint_id.0)
-    .bind("test-source-event")
-    .bind("source_id")
-    .bind("pending")
-    .bind(serde_json::json!({}))
-    .bind(br#"{"test": "data"}"#)
-    .bind("application/json")
-    .bind(i32::try_from(r#"{"test": "data"}"#.len()).expect("payload size fits in i32"))
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    // Create webhook event using repository
+    let webhook = kapsel_testing::TestWebhook {
+        tenant_id: tenant_id.0,
+        endpoint_id: endpoint_id.0,
+        source_event_id: "test-source-event".to_string(),
+        idempotency_strategy: "source_id".to_string(),
+        headers: std::collections::HashMap::new(),
+        body: br#"{"test": "data"}"#.to_vec().into(),
+        content_type: "application/json".to_string(),
+    };
+    let created_event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
 
-    // Create delivery attempt
-    sqlx::query(
-        "INSERT INTO delivery_attempts (id, event_id, attempt_number, request_url, request_headers, response_status, attempted_at)
-         VALUES ($1, $2, 1, $3, $4, 200, NOW())"
-    )
-    .bind(delivery_attempt_id)
-    .bind(event_id)
-    .bind("https://example.com/webhook")
-    .bind(serde_json::json!({}))
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    // Create delivery attempt using repository
+    let delivery_attempt = kapsel_core::models::DeliveryAttempt {
+        id: delivery_attempt_id,
+        event_id: created_event_id,
+        attempt_number: 1,
+        endpoint_id: endpoint_id.into(),
+        request_headers: std::collections::HashMap::new(),
+        request_body: b"request_body".to_vec(),
+        response_status: Some(200),
+        response_headers: Some(std::collections::HashMap::new()),
+        response_body: Some(b"response_body".to_vec()),
+        attempted_at: chrono::Utc::now(),
+        succeeded: true,
+        error_message: None,
+    };
+    env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -86,7 +82,7 @@ async fn merkle_service_commits_batch_atomically() {
 
     let leaf = LeafData::new(
         delivery_attempt_id,
-        event_id,
+        created_event_id.0,
         "https://example.com/webhook".to_string(),
         [0x11u8; 32],
         1,
@@ -105,21 +101,13 @@ async fn merkle_service_commits_batch_atomically() {
     assert_eq!(signed_head.root_hash.len(), 32);
 
     // Verify database persistence - filter by this test's delivery attempt
-    let leaf_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM merkle_leaves WHERE delivery_attempt_id = $1")
-            .bind(delivery_attempt_id)
-            .fetch_one(env.pool())
-            .await
-            .unwrap();
+    let leaf_count =
+        env.storage().merkle_leaves.count_by_delivery_attempt(delivery_attempt_id).await.unwrap();
     assert_eq!(leaf_count, 1);
 
     // Verify tree head was created (check by tree_size since we restored existing
     // state)
-    let tree_head_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE tree_size >= 1)")
-            .fetch_one(env.pool())
-            .await
-            .unwrap();
+    let tree_head_exists = env.storage().signed_tree_heads.exists_with_min_size(1).await.unwrap();
     assert!(tree_head_exists);
 
     // Verify pending queue is cleared
@@ -132,49 +120,52 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
-    let delivery_attempt_id_1 = Uuid::new_v4();
-    let event_id_1 = Uuid::new_v4();
-    let delivery_attempt_id_2 = Uuid::new_v4();
-    let event_id_2 = Uuid::new_v4();
-
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
     // Create webhook events and delivery attempts
-    for (event_id, delivery_attempt_id, source_id) in [
-        (event_id_1, delivery_attempt_id_1, "test-source-1"),
-        (event_id_2, delivery_attempt_id_2, "test-source-2"),
-    ] {
-        sqlx::query(
-            "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status, headers, body, content_type, payload_size)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
-        )
-        .bind(event_id)
-        .bind(tenant_id.0)
-        .bind(endpoint_id.0)
-        .bind(source_id)
-        .bind("source_id")
-        .bind("pending")
-        .bind(serde_json::json!({}))
-        .bind(br#"{"test": "data"}"#)
-        .bind("application/json")
-        .bind(i32::try_from(r#"{"test": "data"}"#.len()).expect("payload size fits in i32"))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    let mut delivery_attempt_ids = Vec::new();
+    let mut event_ids = Vec::new();
 
-        sqlx::query(
-            "INSERT INTO delivery_attempts (id, event_id, attempt_number, request_url, request_headers, response_status, attempted_at)
-             VALUES ($1, $2, 1, $3, $4, 200, NOW())"
-        )
-        .bind(delivery_attempt_id)
-        .bind(event_id)
-        .bind("https://example.com/webhook")
-        .bind(serde_json::json!({}))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    for source_id in ["test-source-1", "test-source-2"] {
+        let delivery_attempt_id = Uuid::new_v4();
+        // Create webhook event using repository
+        let webhook = kapsel_testing::TestWebhook {
+            tenant_id: tenant_id.0,
+            endpoint_id: endpoint_id.0,
+            source_event_id: source_id.to_string(),
+            idempotency_strategy: "source_id".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: br#"{"test": "data"}"#.to_vec().into(),
+            content_type: "application/json".to_string(),
+        };
+        let created_event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
+
+        // Create delivery attempt using repository
+        let delivery_attempt = kapsel_core::models::DeliveryAttempt {
+            id: delivery_attempt_id,
+            event_id: created_event_id,
+            attempt_number: 1,
+            endpoint_id: endpoint_id.into(),
+            request_headers: std::collections::HashMap::new(),
+            request_body: b"request_body".to_vec(),
+            response_status: Some(200),
+            response_headers: Some(std::collections::HashMap::new()),
+            response_body: Some(b"response_body".to_vec()),
+            attempted_at: chrono::Utc::now(),
+            succeeded: true,
+            error_message: None,
+        };
+        env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
+
+        delivery_attempt_ids.push(delivery_attempt_id);
+        event_ids.push(created_event_id);
     }
+
+    let delivery_attempt_id_1 = delivery_attempt_ids[0];
+    let event_id_1 = event_ids[0];
+    let delivery_attempt_id_2 = delivery_attempt_ids[1];
+    let event_id_2 = event_ids[1];
 
     tx.commit().await.unwrap();
 
@@ -185,7 +176,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
 
     let leaf1 = LeafData::new(
         delivery_attempt_id_1,
-        event_id_1,
+        event_id_1.0,
         "https://example.com/webhook1".to_string(),
         [0x11u8; 32],
         1,
@@ -196,7 +187,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
 
     let leaf2 = LeafData::new(
         delivery_attempt_id_2,
-        event_id_2,
+        event_id_2.0,
         "https://example.com/webhook2".to_string(),
         [0x22u8; 32],
         1,
@@ -216,22 +207,17 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     // Verify tree head reflects both leaves - should be at least 2
     assert!(signed_head.tree_size >= 2);
 
-    // Verify both leaves are in database with correct tree indices - filter by this
-    // test's attempts
-    let leaves: Vec<(i64,)> = sqlx::query_as(
-        "SELECT tree_index FROM merkle_leaves
-         WHERE delivery_attempt_id IN ($1, $2)
-         ORDER BY tree_index",
-    )
-    .bind(delivery_attempt_id_1)
-    .bind(delivery_attempt_id_2)
-    .fetch_all(env.pool())
-    .await
-    .unwrap();
+    // Verify both leaves are in database with correct tree indices
+    let tree_indices = env
+        .storage()
+        .merkle_leaves
+        .find_tree_indices_by_attempts(&delivery_attempt_ids)
+        .await
+        .unwrap();
 
-    assert_eq!(leaves.len(), 2);
+    assert_eq!(tree_indices.len(), 2);
     // Tree indices should be consecutive (relative to current tree state)
-    assert_eq!(leaves[0].0 + 1, leaves[1].0);
+    assert_eq!(tree_indices[0] + 1, tree_indices[1]);
 }
 
 #[tokio::test]
@@ -252,43 +238,41 @@ async fn merkle_service_stores_batch_metadata() {
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
     let delivery_attempt_id = Uuid::new_v4();
     let event_id = Uuid::new_v4();
 
     // Create webhook event
-    sqlx::query(
-        "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status, headers, body, content_type, payload_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
-    )
-    .bind(event_id)
-    .bind(tenant_id.0)
-    .bind(endpoint_id.0)
-    .bind("test-source-event")
-    .bind("source_id")
-    .bind("pending")
-    .bind(serde_json::json!({}))
-    .bind(br#"{"test": "data"}"#)
-    .bind("application/json")
-    .bind(i32::try_from(r#"{"test": "data"}"#.len()).expect("payload size fits in i32"))
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    // Create webhook event using repository
+    let webhook = kapsel_testing::TestWebhook {
+        tenant_id: tenant_id.0,
+        endpoint_id: endpoint_id.0,
+        source_event_id: "test-source-event".to_string(),
+        idempotency_strategy: "source_id".to_string(),
+        headers: std::collections::HashMap::new(),
+        body: br#"{"test": "data"}"#.to_vec().into(),
+        content_type: "application/json".to_string(),
+    };
+    let created_event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
 
-    // Create delivery attempt
-    sqlx::query(
-        "INSERT INTO delivery_attempts (id, event_id, attempt_number, request_url, request_headers, response_status, attempted_at)
-         VALUES ($1, $2, 1, $3, $4, 200, NOW())"
-    )
-    .bind(delivery_attempt_id)
-    .bind(event_id)
-    .bind("https://example.com/webhook")
-    .bind(serde_json::json!({}))
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    // Create delivery attempt using repository
+    let delivery_attempt = kapsel_core::models::DeliveryAttempt {
+        id: delivery_attempt_id,
+        event_id: created_event_id,
+        attempt_number: 1,
+        endpoint_id: endpoint_id.into(),
+        request_headers: std::collections::HashMap::new(),
+        request_body: b"request_body".to_vec(),
+        response_status: Some(200),
+        response_headers: Some(std::collections::HashMap::new()),
+        response_body: Some(b"response_body".to_vec()),
+        attempted_at: chrono::Utc::now(),
+        succeeded: true,
+        error_message: None,
+    };
+    env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
 
     tx.commit().await.unwrap();
 
@@ -316,22 +300,19 @@ async fn merkle_service_stores_batch_metadata() {
     assert_eq!(signed_head.signature.len(), 64); // Ed25519 signature length
 
     // Verify batch metadata exists for this test's leaf
-    let leaf_batch_id: Uuid =
-        sqlx::query_scalar("SELECT batch_id FROM merkle_leaves WHERE delivery_attempt_id = $1")
-            .bind(delivery_attempt_id)
-            .fetch_one(env.pool())
-            .await
-            .unwrap();
+    let leaf_batch_id = env
+        .storage()
+        .merkle_leaves
+        .find_batch_id_by_delivery_attempt(delivery_attempt_id)
+        .await
+        .unwrap()
+        .unwrap(); // Unwrap the Option since we expect it to exist
 
     assert!(!leaf_batch_id.is_nil());
 
     // Verify tree head exists for this batch
-    let batch_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE batch_id = $1)")
-            .bind(leaf_batch_id)
-            .fetch_one(env.pool())
-            .await
-            .unwrap();
+    let batch_exists =
+        env.storage().signed_tree_heads.exists_for_batch(leaf_batch_id).await.unwrap();
 
     assert!(batch_exists);
 }
@@ -370,9 +351,9 @@ async fn merkle_service_preserves_leaf_ordering() {
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
     let endpoint_id =
-        env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
     // Create multiple delivery attempts
     let mut delivery_attempt_ids = Vec::new();
@@ -380,41 +361,38 @@ async fn merkle_service_preserves_leaf_ordering() {
 
     for i in 0..5 {
         let delivery_id = Uuid::new_v4();
-        let event_id = Uuid::new_v4();
         delivery_attempt_ids.push(delivery_id);
-        event_ids.push(event_id);
 
         // Create webhook event
-        sqlx::query(
-            "INSERT INTO webhook_events (id, tenant_id, endpoint_id, source_event_id, idempotency_strategy, status, headers, body, content_type, payload_size)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
-        )
-        .bind(event_id)
-        .bind(tenant_id.0)
-        .bind(endpoint_id.0)
-        .bind(format!("test-source-{i}"))
-        .bind("source_id")
-        .bind("pending")
-        .bind(serde_json::json!({}))
-        .bind(br#"{"test": "data"}"#)
-        .bind("application/json")
-        .bind(i32::try_from(r#"{"test": "data"}"#.len()).expect("payload size fits in i32"))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+        // Create webhook event using repository
+        let webhook = kapsel_testing::TestWebhook {
+            tenant_id: tenant_id.0,
+            endpoint_id: endpoint_id.0,
+            source_event_id: format!("test-source-event-{}", i),
+            idempotency_strategy: "source_id".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: br#"{"test": "data"}"#.to_vec().into(),
+            content_type: "application/json".to_string(),
+        };
+        let created_event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
+        event_ids.push(created_event_id.0);
 
-        // Create delivery attempt
-        sqlx::query(
-            "INSERT INTO delivery_attempts (id, event_id, attempt_number, request_url, request_headers, response_status, attempted_at)
-             VALUES ($1, $2, 1, $3, $4, 200, NOW())"
-        )
-        .bind(delivery_id)
-        .bind(event_id)
-        .bind("https://example.com/webhook")
-        .bind(serde_json::json!({}))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+        // Create delivery attempt using repository
+        let delivery_attempt = kapsel_core::models::DeliveryAttempt {
+            id: delivery_id,
+            event_id: created_event_id,
+            attempt_number: 1,
+            endpoint_id: endpoint_id.into(),
+            request_headers: std::collections::HashMap::new(),
+            request_body: b"request_body".to_vec(),
+            response_status: Some(200),
+            response_headers: Some(std::collections::HashMap::new()),
+            response_body: Some(b"response_body".to_vec()),
+            attempted_at: chrono::Utc::now(),
+            succeeded: true,
+            error_message: None,
+        };
+        env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
     }
 
     tx.commit().await.unwrap();
@@ -445,15 +423,13 @@ async fn merkle_service_preserves_leaf_ordering() {
     // Commit batch
     service.try_commit_pending().await.unwrap();
 
-    // Verify leaves are stored in correct order - filter by this test's attempts
-    let stored_leaves: Vec<(Uuid, i64)> = sqlx::query_as(
-        "SELECT delivery_attempt_id, tree_index FROM merkle_leaves
-         WHERE delivery_attempt_id = ANY($1) ORDER BY tree_index",
-    )
-    .bind(&delivery_attempt_ids)
-    .fetch_all(env.pool())
-    .await
-    .unwrap();
+    // Verify leaves are stored in correct order
+    let stored_leaves = env
+        .storage()
+        .merkle_leaves
+        .find_attempts_with_tree_indices(&delivery_attempt_ids)
+        .await
+        .unwrap();
 
     // Should have 5 leaves with consecutive indices
     assert_eq!(stored_leaves.len(), 5);

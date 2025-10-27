@@ -7,6 +7,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
+use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
 use kapsel_core::{
     models::{EndpointId, EventId, WebhookEvent},
     storage::Storage,
@@ -22,7 +23,7 @@ use uuid::Uuid;
 
 use crate::{
     circuit::{CircuitBreakerManager, CircuitConfig},
-    client::{extract_retry_after_seconds, ClientConfig, DeliveryClient},
+    client::{extract_retry_after_seconds, ClientConfig, DeliveryClient, DeliveryRequest},
     error::{DeliveryError, Result},
     retry::{RetryContext, RetryPolicy},
     worker_pool::WorkerPool,
@@ -107,12 +108,11 @@ impl DeliveryEngine {
         let cancellation_token = CancellationToken::new();
 
         let mut event_handler = MulticastEventHandler::new();
-        let signing_service = kapsel_attestation::SigningService::ephemeral();
-        let merkle_service = Arc::new(tokio::sync::RwLock::new(
-            kapsel_attestation::MerkleService::new(pool.clone(), signing_service),
-        ));
-        let attestation_subscriber =
-            Arc::new(kapsel_attestation::AttestationEventSubscriber::new(merkle_service));
+        let signing_service = SigningService::ephemeral();
+        let storage = Arc::new(Storage::new(pool.clone()));
+        let merkle_service =
+            Arc::new(tokio::sync::RwLock::new(MerkleService::new(storage, signing_service)));
+        let attestation_subscriber = Arc::new(AttestationEventSubscriber::new(merkle_service));
         event_handler.add_subscriber(attestation_subscriber);
 
         Ok(Self {
@@ -204,7 +204,6 @@ impl DeliveryEngine {
 /// Individual worker that processes webhook deliveries.
 pub struct DeliveryWorker {
     id: usize,
-    pool: PgPool,
     storage: Arc<Storage>,
     config: DeliveryConfig,
     client: Arc<DeliveryClient>,
@@ -220,7 +219,6 @@ impl DeliveryWorker {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
-        pool: PgPool,
         storage: Arc<Storage>,
         config: DeliveryConfig,
         client: Arc<DeliveryClient>,
@@ -232,7 +230,6 @@ impl DeliveryWorker {
     ) -> Self {
         Self {
             id,
-            pool,
             storage,
             config,
             client,
@@ -407,7 +404,7 @@ impl DeliveryWorker {
 
         // 3. Build delivery request
         let delivery_attempt_id = Uuid::new_v4();
-        let delivery_request = crate::client::DeliveryRequest {
+        let delivery_request = DeliveryRequest {
             delivery_id: delivery_attempt_id,
             event_id: event.id.0,
             url: endpoint_url
@@ -467,10 +464,9 @@ impl DeliveryWorker {
                     // HTTP request succeeded but response indicates failure
                     // Create appropriate error based on status code
                     let error = match response.status_code {
-                        400..=499 => crate::error::DeliveryError::client_error(
-                            response.status_code,
-                            response.body.clone(),
-                        ),
+                        400..=499 => {
+                            DeliveryError::client_error(response.status_code, response.body.clone())
+                        },
                         _ => crate::error::DeliveryError::server_error(
                             response.status_code,
                             response.body.clone(),
@@ -733,27 +729,6 @@ impl DeliveryWorker {
         }
     }
 
-    /// Categorizes delivery errors for audit trail.
-    fn categorize_error(result: &Result<crate::client::DeliveryResponse>) -> Option<String> {
-        match result {
-            Ok(_) => None,
-            Err(e) => {
-                let error_str = e.to_string().to_lowercase();
-                if error_str.contains("timeout") {
-                    Some("timeout".to_string())
-                } else if error_str.contains("connection") {
-                    Some("connection_refused".to_string())
-                } else if error_str.contains("dns") {
-                    Some("dns".to_string())
-                } else if error_str.contains("ssl") || error_str.contains("tls") {
-                    Some("ssl".to_string())
-                } else {
-                    Some("network".to_string())
-                }
-            },
-        }
-    }
-
     /// Computes SHA-256 hash of the payload.
     fn compute_payload_hash(payload: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
@@ -765,14 +740,9 @@ impl DeliveryWorker {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
-    use kapsel_core::{
-        models::{EventStatus, TenantId},
-        IdempotencyStrategy,
-    };
+    use kapsel_core::{models::EventStatus, time::RealClock, IdempotencyStrategy};
     use kapsel_testing::TestEnv;
-    use sqlx::Row;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -835,12 +805,12 @@ mod tests {
         let worker = create_test_worker_with_pool(env.pool());
 
         // Get the event and attempt delivery
-        let event = event_by_id(env.pool(), &event_id).await;
+        let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(result.is_ok(), "delivery should succeed: {:?}", result.err());
 
         // Verify event is marked as delivered
-        let updated_event = event_by_id(env.pool(), &event_id).await;
+        let updated_event = event_by_id(&env.storage(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivered);
         assert!(updated_event.delivered_at.is_some());
 
@@ -871,7 +841,7 @@ mod tests {
         let worker = create_test_worker_with_pool(env.pool());
 
         // Get event and attempt delivery
-        let event = event_by_id(env.pool(), &event_id).await;
+        let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -880,7 +850,7 @@ mod tests {
         );
 
         // Verify event is marked for retry
-        let updated_event = event_by_id(env.pool(), &event_id).await;
+        let updated_event = event_by_id(&env.storage(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Pending);
         assert_eq!(updated_event.failure_count, 1);
         assert!(updated_event.next_retry_at.is_some());
@@ -907,10 +877,9 @@ mod tests {
             setup_test_data_isolated(&env, &webhook_url).await;
 
         // Update event to be at max retry limit (assuming default max_attempts = 10)
-        sqlx::query("UPDATE webhook_events SET failure_count = $1 WHERE id = $2")
-            .bind(9)
-            .bind(event_id)
-            .execute(env.pool())
+        env.storage()
+            .webhook_events
+            .mark_failed(event_id.into(), 9, None)
             .await
             .expect("failed to update event failure count");
 
@@ -922,7 +891,7 @@ mod tests {
         let worker = create_test_worker_with_config_and_pool(env.pool(), config);
 
         // Get event and attempt delivery (this will be attempt #10)
-        let event = event_by_id(env.pool(), &event_id).await;
+        let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -931,7 +900,7 @@ mod tests {
         );
 
         // Verify event is marked as failed (no more retries)
-        let updated_event = event_by_id(env.pool(), &event_id).await;
+        let updated_event = event_by_id(&env.storage(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
 
@@ -949,9 +918,9 @@ mod tests {
             setup_test_data_isolated(&env, &webhook_url).await;
 
         // Set event to delivering status (simulates normal claim process)
-        sqlx::query("UPDATE webhook_events SET status = 'delivering' WHERE id = $1")
-            .bind(event_id)
-            .execute(env.pool())
+        env.storage()
+            .webhook_events
+            .update_status(event_id.into(), kapsel_core::models::EventStatus::Delivering)
             .await
             .expect("failed to update event status");
 
@@ -967,7 +936,7 @@ mod tests {
             .await;
 
         // Get event and attempt delivery
-        let event = event_by_id(env.pool(), &event_id).await;
+        let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
 
         // Should fail with circuit open error
@@ -979,7 +948,7 @@ mod tests {
         }
 
         // Event should remain in delivering status (unchanged)
-        let updated_event = event_by_id(env.pool(), &event_id).await;
+        let updated_event = event_by_id(&env.storage(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Delivering);
     }
 
@@ -996,30 +965,36 @@ mod tests {
         // Insert second event under same tenant/endpoint
         let event2_id = uuid::Uuid::new_v4();
         let now = Utc::now();
-        sqlx::query(
-            r"
-            INSERT INTO webhook_events (
-                id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-                status, failure_count, headers, body, content_type,
-                received_at, payload_size
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            ",
-        )
-        .bind(event2_id)
-        .bind(tenant_id)
-        .bind(endpoint_id)
-        .bind(format!("source-{event2_id}"))
-        .bind(IdempotencyStrategy::Header)
-        .bind("pending")
-        .bind(0)
-        .bind(serde_json::json!({"x-test-2": "value"}))
-        .bind(b"test payload 2".as_slice())
-        .bind("application/json")
-        .bind(now)
-        .bind(14i32) // payload_size for "test payload 2"
-        .execute(env.pool())
-        .await
-        .expect("failed to insert second webhook event");
+        let webhook_event2 = WebhookEvent {
+            id: event2_id.into(),
+            tenant_id: tenant_id.into(),
+            endpoint_id: endpoint_id.into(),
+            source_event_id: format!("source-{event2_id}"),
+            idempotency_strategy: IdempotencyStrategy::Header,
+            status: kapsel_core::models::EventStatus::Pending,
+            failure_count: 0,
+            last_attempt_at: None,
+            next_retry_at: None,
+            headers: sqlx::types::Json(std::collections::HashMap::from([(
+                "x-test".to_string(),
+                "value".to_string(),
+            )])),
+            body: b"test payload 2".to_vec(),
+            content_type: "application/json".to_string(),
+            received_at: now,
+            delivered_at: None,
+            failed_at: None,
+            payload_size: 14,
+            signature_valid: None,
+            signature_error: None,
+        };
+        let mut tx = env.pool().begin().await.expect("failed to begin transaction");
+        env.storage()
+            .webhook_events
+            .create_in_tx(&mut tx, &webhook_event2)
+            .await
+            .expect("failed to create second webhook event");
+        tx.commit().await.expect("failed to commit transaction");
 
         // Create worker with the pool
         let worker = create_test_worker_with_pool(env.pool());
@@ -1031,17 +1006,23 @@ mod tests {
         assert_eq!(claimed_events.len(), 2);
 
         // Events should be marked as delivering in database
+        let event1_status = env
+            .storage()
+            .webhook_events
+            .find_by_id(event1_id.into())
+            .await
+            .expect("failed to find event1")
+            .expect("event1 not found");
+        let event2_status = env
+            .storage()
+            .webhook_events
+            .find_by_id(event2_id.into())
+            .await
+            .expect("failed to find event2")
+            .expect("event2 not found");
 
-        let delivering_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM webhook_events WHERE status = 'delivering' AND (id = $1 OR id = $2)",
-        )
-        .bind(event1_id)
-        .bind(event2_id)
-        .fetch_one(env.pool())
-        .await
-        .expect("failed to count delivering events");
-
-        assert_eq!(delivering_count, 2);
+        assert_eq!(event1_status.status, kapsel_core::models::EventStatus::Delivering);
+        assert_eq!(event2_status.status, kapsel_core::models::EventStatus::Delivering);
     }
 
     #[tokio::test]
@@ -1065,7 +1046,7 @@ mod tests {
         let worker = create_test_worker_with_pool(env.pool());
 
         // Get event and attempt delivery
-        let event = event_by_id(env.pool(), &event_id).await;
+        let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(
             result.is_ok(),
@@ -1074,7 +1055,7 @@ mod tests {
         );
 
         // Verify event is marked as failed immediately (no retry for 4xx)
-        let updated_event = event_by_id(env.pool(), &event_id).await;
+        let updated_event = event_by_id(&env.storage(), &event_id).await;
         assert_eq!(updated_event.status, EventStatus::Failed);
         assert!(updated_event.failed_at.is_some());
         assert!(updated_event.next_retry_at.is_none());
@@ -1087,71 +1068,63 @@ mod tests {
         webhook_url: &str,
     ) -> (uuid::Uuid, uuid::Uuid, uuid::Uuid) {
         let tenant_id = uuid::Uuid::new_v4();
-        let endpoint_id = uuid::Uuid::new_v4();
         let event_id = uuid::Uuid::new_v4();
 
         // Insert tenant
         let tenant_name = format!("test-tenant-{}", tenant_id.simple());
-        sqlx::query("INSERT INTO tenants (id, name, plan, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())")
-            .bind(tenant_id)
-            .bind(tenant_name)
-            .bind("free")
-            .execute(env.pool())
-            .await
-            .expect("failed to insert test tenant");
+        let mut tx = env.pool().begin().await.expect("failed to begin transaction");
+        let tenant_id =
+            env.create_tenant_tx(&mut tx, &tenant_name).await.expect("failed to create tenant");
+        tx.commit().await.expect("failed to commit transaction");
 
         // Insert endpoint
-        sqlx::query(
-            "INSERT INTO endpoints (id, tenant_id, name, url, signing_secret, max_retries, timeout_seconds, circuit_state, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())"
-        )
-        .bind(endpoint_id)
-        .bind(tenant_id)
-        .bind("test-endpoint")
-        .bind(webhook_url)
-        .bind("secret123")
-        .bind(5)
-        .bind(30)
-        .bind("closed")
-        .execute(env.pool())
-        .await
-        .expect("failed to insert test endpoint");
+        let mut tx = env.pool().begin().await.expect("failed to begin transaction");
+        let endpoint_id = env
+            .create_endpoint_tx(&mut tx, tenant_id, &webhook_url)
+            .await
+            .expect("failed to create endpoint");
+        tx.commit().await.expect("failed to commit transaction");
 
-        // Insert webhook event
+        // Insert webhook event using repository
         let now = Utc::now();
-        sqlx::query(
-            r"
-            INSERT INTO webhook_events (
-                id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-                status, failure_count, headers, body, content_type,
-                received_at, payload_size
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            ",
-        )
-        .bind(event_id)
-        .bind(tenant_id)
-        .bind(endpoint_id)
-        .bind(format!("source-{event_id}"))
-        .bind(IdempotencyStrategy::Header)
-        .bind("pending")
-        .bind(0)
-        .bind(serde_json::json!({"x-test": "value"}))
-        .bind(b"test payload".as_slice())
-        .bind("application/json")
-        .bind(now)
-        .bind(12i32) // payload_size for "test payload"
-        .execute(env.pool())
-        .await
-        .expect("failed to insert webhook event");
+        let webhook_event = WebhookEvent {
+            id: event_id.into(),
+            tenant_id: tenant_id.into(),
+            endpoint_id: endpoint_id.into(),
+            source_event_id: format!("source-{event_id}"),
+            idempotency_strategy: IdempotencyStrategy::Header,
+            status: kapsel_core::models::EventStatus::Pending,
+            failure_count: 0,
+            last_attempt_at: None,
+            next_retry_at: None,
+            headers: sqlx::types::Json(std::collections::HashMap::from([(
+                "x-test".to_string(),
+                "value".to_string(),
+            )])),
+            body: b"test payload".to_vec(),
+            content_type: "application/json".to_string(),
+            received_at: now,
+            delivered_at: None,
+            failed_at: None,
+            payload_size: 12,
+            signature_valid: None,
+            signature_error: None,
+        };
+        let mut tx = env.pool().begin().await.expect("failed to begin transaction");
+        env.storage()
+            .webhook_events
+            .create_in_tx(&mut tx, &webhook_event)
+            .await
+            .expect("failed to create webhook event");
+        tx.commit().await.expect("failed to commit transaction");
 
-        (tenant_id, endpoint_id, event_id)
+        (tenant_id.0, endpoint_id.0, event_id)
     }
 
     fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
         let storage = Arc::new(Storage::new(pool.clone()));
         DeliveryWorker::new(
             0,
-            pool.clone(),
             storage,
             DeliveryConfig::default(),
             Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
@@ -1159,7 +1132,7 @@ mod tests {
             Arc::new(RwLock::new(EngineStats::default())),
             CancellationToken::new(),
             Arc::new(MulticastEventHandler::default()),
-            Arc::new(kapsel_core::SystemClock),
+            Arc::new(RealClock::new()),
         )
     }
 
@@ -1170,7 +1143,6 @@ mod tests {
         let storage = Arc::new(Storage::new(pool.clone()));
         DeliveryWorker::new(
             0,
-            pool.clone(),
             storage,
             config,
             Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
@@ -1178,66 +1150,16 @@ mod tests {
             Arc::new(RwLock::new(EngineStats::default())),
             CancellationToken::new(),
             Arc::new(MulticastEventHandler::default()),
-            Arc::new(kapsel_core::SystemClock),
+            Arc::new(RealClock::new()),
         )
     }
 
-    async fn event_by_id(pool: &PgPool, event_id: &uuid::Uuid) -> WebhookEvent {
-        let row = sqlx::query(
-            r"
-            SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
-                   status, failure_count, last_attempt_at, next_retry_at,
-                   headers, body, content_type, received_at, delivered_at, failed_at,
-                   payload_size, signature_valid, signature_error
-            FROM webhook_events WHERE id = $1
-            ",
-        )
-        .bind(event_id)
-        .fetch_one(pool)
-        .await
-        .expect("failed to fetch webhook event");
-
-        let headers_value: serde_json::Value =
-            row.try_get("headers").expect("failed to get headers");
-        let headers: HashMap<String, String> =
-            serde_json::from_value(headers_value).expect("invalid headers JSON");
-
-        let status_str: String = row.try_get("status").expect("failed to get status");
-        let status = match status_str.as_str() {
-            "received" => EventStatus::Received,
-            "pending" => EventStatus::Pending,
-            "delivering" => EventStatus::Delivering,
-            "delivered" => EventStatus::Delivered,
-            "failed" => EventStatus::Failed,
-            "dead_letter" => EventStatus::DeadLetter,
-            _ => unreachable!("unknown event status: {status_str}"),
-        };
-
-        WebhookEvent {
-            id: EventId(row.try_get("id").expect("failed to get id")),
-            tenant_id: TenantId(row.try_get("tenant_id").expect("failed to get tenant_id")),
-            endpoint_id: EndpointId(row.try_get("endpoint_id").expect("failed to get endpoint_id")),
-            source_event_id: row.try_get("source_event_id").expect("failed to get source_event_id"),
-            idempotency_strategy: row
-                .try_get("idempotency_strategy")
-                .expect("failed to get idempotency_strategy"),
-            status,
-            failure_count: row
-                .try_get::<i32, _>("failure_count")
-                .expect("failed to get failure_count")
-                .try_into()
-                .expect("failure_count should be non-negative"),
-            last_attempt_at: row.try_get("last_attempt_at").expect("failed to get last_attempt_at"),
-            next_retry_at: row.try_get("next_retry_at").expect("failed to get next_retry_at"),
-            headers: sqlx::types::Json(headers),
-            body: row.try_get::<Vec<u8>, _>("body").expect("failed to get body"),
-            content_type: row.try_get("content_type").expect("failed to get content_type"),
-            received_at: row.try_get("received_at").expect("failed to get received_at"),
-            delivered_at: row.try_get("delivered_at").expect("failed to get delivered_at"),
-            failed_at: row.try_get("failed_at").expect("failed to get failed_at"),
-            payload_size: row.try_get("payload_size").expect("failed to get payload_size"),
-            signature_valid: row.try_get("signature_valid").expect("failed to get signature_valid"),
-            signature_error: row.try_get("signature_error").expect("failed to get signature_error"),
-        }
+    async fn event_by_id(storage: &Storage, event_id: &uuid::Uuid) -> WebhookEvent {
+        storage
+            .webhook_events
+            .find_by_id((*event_id).into())
+            .await
+            .expect("failed to fetch webhook event")
+            .expect("event not found")
     }
 }

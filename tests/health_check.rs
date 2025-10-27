@@ -121,7 +121,7 @@ async fn database_transaction_rollback_works() {
     // Test that a committed operation does persist
     let mut tx = env.pool().begin().await.expect("begin transaction");
     let created_tenant_id =
-        env.create_tenant_tx(&mut *tx, "Test Tenant").await.expect("Insert should work");
+        env.create_tenant_tx(&mut tx, "Test Tenant").await.expect("Insert should work");
     tx.commit().await.expect("commit transaction");
     let _tenant_id_str = created_tenant_id.0.to_string();
 

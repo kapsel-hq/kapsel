@@ -19,9 +19,9 @@ async fn delivery_engine_processes_pending_events() {
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
-    let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await.expect("create tenant");
+    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.expect("create tenant");
     let endpoint_id = env
-        .create_endpoint_tx(&mut *tx, tenant_id, &env.http_mock.url())
+        .create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url())
         .await
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");
