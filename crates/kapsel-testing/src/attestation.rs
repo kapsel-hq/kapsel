@@ -72,7 +72,7 @@ impl TestEnv {
                     tracing::error!("  - {}: active={}", id, active);
                 }
 
-                return Err(anyhow::anyhow!("Attestation key {} not found in database", key_id));
+                return Err(anyhow::anyhow!("Attestation key {key_id} not found in database"));
             },
         }
 
@@ -108,15 +108,17 @@ impl TestEnv {
         // Use repository to count leaves by event - for now we'll need to get all
         // leaves and filter since we don't have a specific count_by_event
         // method yet
-        let count = self.storage().merkle_leaves.find_committed_leaf_hashes().await?.len() as i64;
+        let current_count =
+            i64::try_from(self.storage().merkle_leaves.find_committed_leaf_hashes().await?.len())
+                .unwrap_or(i64::MAX);
 
         tracing::debug!(
             event_id = %event_id.0,
-            count = count,
+            count = current_count,
             "attestation leaf count query result"
         );
 
-        Ok(count)
+        Ok(current_count)
     }
 
     /// Fetch attestation leaf for a specific event.

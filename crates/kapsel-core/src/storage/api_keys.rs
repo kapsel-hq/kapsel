@@ -74,7 +74,7 @@ impl Repository {
     ///
     /// Returns error if insert fails or constraints are violated.
     pub async fn create(&self, api_key: &ApiKey) -> Result<()> {
-        self._create(&*self.pool, api_key).await
+        self.create_impl(&*self.pool, api_key).await
     }
 
     /// Creates an API key within a transaction.
@@ -87,19 +87,19 @@ impl Repository {
         tx: &mut Transaction<'_, Postgres>,
         api_key: &ApiKey,
     ) -> Result<()> {
-        self._create(&mut **tx, api_key).await
+        self.create_impl(&mut **tx, api_key).await
     }
 
     /// Private helper for creating API keys with generic executor.
-    async fn _create<'e, E>(&self, executor: E, api_key: &ApiKey) -> Result<()>
+    async fn create_impl<'e, E>(&self, executor: E, api_key: &ApiKey) -> Result<()>
     where
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO api_keys (id, tenant_id, key_hash, name, expires_at, revoked_at, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#,
+            ",
         )
         .bind(api_key.id)
         .bind(api_key.tenant_id.0)
@@ -121,12 +121,12 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
         let api_key = sqlx::query_as::<_, ApiKey>(
-            r#"
+            r"
             SELECT id, tenant_id, key_hash, name, expires_at, revoked_at,
                    last_used_at, created_at
             FROM api_keys
             WHERE key_hash = $1
-            "#,
+            ",
         )
         .bind(key_hash)
         .fetch_optional(&*self.pool)
@@ -145,13 +145,13 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn validate(&self, key_hash: &str) -> Result<Option<TenantId>> {
         let row: Option<(Uuid,)> = sqlx::query_as(
-            r#"
+            r"
             SELECT tenant_id
             FROM api_keys
             WHERE key_hash = $1
               AND revoked_at IS NULL
               AND (expires_at IS NULL OR expires_at > NOW())
-            "#,
+            ",
         )
         .bind(key_hash)
         .fetch_optional(&*self.pool)
@@ -160,11 +160,11 @@ impl Repository {
         if let Some((tenant_id,)) = row {
             // Update last_used_at timestamp
             let _ = sqlx::query(
-                r#"
+                r"
                 UPDATE api_keys
                 SET last_used_at = NOW()
                 WHERE key_hash = $1
-                "#,
+                ",
             )
             .bind(key_hash)
             .execute(&*self.pool)
@@ -183,11 +183,11 @@ impl Repository {
     /// Returns error if update fails.
     pub async fn revoke(&self, key_hash: &str) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE api_keys
             SET revoked_at = NOW()
             WHERE key_hash = $1
-            "#,
+            ",
         )
         .bind(key_hash)
         .execute(&*self.pool)
@@ -207,11 +207,11 @@ impl Repository {
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE api_keys
             SET expires_at = $2
             WHERE key_hash = $1
-            "#,
+            ",
         )
         .bind(key_hash)
         .bind(expires_at)
@@ -234,21 +234,21 @@ impl Repository {
         include_revoked: bool,
     ) -> Result<Vec<ApiKey>> {
         let query = if include_revoked {
-            r#"
+            r"
             SELECT id, tenant_id, key_hash, name, expires_at, revoked_at,
                    last_used_at, created_at
             FROM api_keys
             WHERE tenant_id = $1
             ORDER BY created_at DESC
-            "#
+            "
         } else {
-            r#"
+            r"
             SELECT id, tenant_id, key_hash, name, expires_at, revoked_at,
                    last_used_at, created_at
             FROM api_keys
             WHERE tenant_id = $1 AND revoked_at IS NULL
             ORDER BY created_at DESC
-            "#
+            "
         };
 
         let api_keys =
@@ -264,10 +264,10 @@ impl Repository {
     /// Returns error if delete fails.
     pub async fn delete(&self, key_hash: &str) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             DELETE FROM api_keys
             WHERE key_hash = $1
-            "#,
+            ",
         )
         .bind(key_hash)
         .execute(&*self.pool)
@@ -283,15 +283,15 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_tenant(&self, tenant_id: TenantId, include_revoked: bool) -> Result<i64> {
         let query = if include_revoked {
-            r#"
+            r"
             SELECT COUNT(*) FROM api_keys
             WHERE tenant_id = $1
-            "#
+            "
         } else {
-            r#"
+            r"
             SELECT COUNT(*) FROM api_keys
             WHERE tenant_id = $1 AND revoked_at IS NULL
-            "#
+            "
         };
 
         let count: (i64,) = sqlx::query_as(query).bind(tenant_id.0).fetch_one(&*self.pool).await?;
@@ -309,10 +309,10 @@ impl Repository {
     /// Returns error if delete fails.
     pub async fn cleanup_expired(&self) -> Result<u64> {
         let result = sqlx::query(
-            r#"
+            r"
             DELETE FROM api_keys
             WHERE expires_at IS NOT NULL AND expires_at < NOW()
-            "#,
+            ",
         )
         .execute(&*self.pool)
         .await?;

@@ -85,10 +85,10 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO attestation_keys (id, public_key, is_active, created_at, deactivated_at)
             VALUES ($1, $2, $3, $4, $5)
-            "#,
+            ",
         )
         .bind(key.id)
         .bind(&key.public_key)
@@ -108,13 +108,13 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_active(&self) -> Result<Option<AttestationKey>> {
         let key = sqlx::query_as::<_, AttestationKey>(
-            r#"
+            r"
             SELECT id, public_key, is_active, created_at, deactivated_at
             FROM attestation_keys
             WHERE is_active = TRUE
             ORDER BY created_at DESC
             LIMIT 1
-            "#,
+            ",
         )
         .fetch_optional(&*self.pool)
         .await?;
@@ -129,11 +129,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_by_id(&self, key_id: Uuid) -> Result<Option<AttestationKey>> {
         let key = sqlx::query_as::<_, AttestationKey>(
-            r#"
+            r"
             SELECT id, public_key, is_active, created_at, deactivated_at
             FROM attestation_keys
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(key_id)
         .fetch_optional(&*self.pool)
@@ -168,11 +168,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE attestation_keys
             SET is_active = FALSE, deactivated_at = NOW()
             WHERE is_active = TRUE
-            "#,
+            ",
         )
         .execute(executor)
         .await?;
@@ -211,18 +211,18 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE attestation_keys
             SET is_active = TRUE, deactivated_at = NULL
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(key_id)
         .execute(executor)
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(CoreError::NotFound(format!("attestation_key {}", key_id)));
+            return Err(CoreError::NotFound(format!("attestation_key {key_id}")));
         }
 
         Ok(())
@@ -286,11 +286,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn list_all(&self) -> Result<Vec<AttestationKey>> {
         let keys = sqlx::query_as::<_, AttestationKey>(
-            r#"
+            r"
             SELECT id, public_key, is_active, created_at, deactivated_at
             FROM attestation_keys
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .fetch_all(&*self.pool)
         .await?;
@@ -305,9 +305,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_all(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM attestation_keys
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -324,9 +324,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_active(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM attestation_keys WHERE is_active = TRUE
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -344,17 +344,17 @@ impl Repository {
     /// Returns error if deletion fails.
     pub async fn delete(&self, key_id: Uuid) -> Result<()> {
         let result = sqlx::query(
-            r#"
+            r"
             DELETE FROM attestation_keys
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(key_id)
         .execute(&*self.pool)
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(CoreError::NotFound(format!("attestation_key {}", key_id)));
+            return Err(CoreError::NotFound(format!("attestation_key {key_id}")));
         }
 
         Ok(())

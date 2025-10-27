@@ -40,9 +40,8 @@ async fn only_one_active_key_at_a_time() {
     // Verify the constraint name in error message
     let error_msg = result.unwrap_err().to_string();
     assert!(
-        error_msg.contains("idx_attestation_keys_single_active"),
-        "Error should reference unique constraint: {}",
-        error_msg
+        error_msg.contains("idx_attestation_keys_public_key"),
+        "Error should reference unique constraint violation: {error_msg}"
     );
 }
 

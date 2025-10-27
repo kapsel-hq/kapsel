@@ -11,6 +11,27 @@ use uuid::Uuid;
 
 use crate::error::Result;
 
+/// Parameters for inserting a merkle leaf from delivery attempt data.
+#[derive(Debug)]
+pub struct MerkleLeafInsert<'a> {
+    /// Hash of the merkle tree leaf
+    pub leaf_hash: &'a [u8],
+    /// Unique identifier for the delivery attempt
+    pub delivery_attempt_id: Uuid,
+    /// URL of the endpoint that was called
+    pub endpoint_url: &'a str,
+    /// Hash of the payload that was delivered
+    pub payload_hash: &'a [u8],
+    /// Sequential attempt number for this delivery
+    pub attempt_number: i32,
+    /// Timestamp when the delivery was attempted
+    pub attempted_at: DateTime<Utc>,
+    /// Index position in the merkle tree (None for uncommitted leaves)
+    pub tree_index: Option<i64>,
+    /// Batch identifier for grouping related leaves
+    pub batch_id: Option<Uuid>,
+}
+
 /// Attestation leaf information for verification queries.
 ///
 /// Contains joined data from merkle_leaves and delivery_attempts tables
@@ -114,10 +135,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_delivery_attempt(&self, delivery_attempt_id: Uuid) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM merkle_leaves
             WHERE delivery_attempt_id = $1
-            "#,
+            ",
         )
         .bind(delivery_attempt_id)
         .fetch_one(&*self.pool)
@@ -138,12 +159,12 @@ impl Repository {
         delivery_attempt_ids: &[Uuid],
     ) -> Result<Vec<i64>> {
         let indices: Vec<(i64,)> = sqlx::query_as(
-            r#"
+            r"
             SELECT tree_index FROM merkle_leaves
             WHERE delivery_attempt_id = ANY($1)
             AND tree_index IS NOT NULL
             ORDER BY tree_index ASC
-            "#,
+            ",
         )
         .bind(delivery_attempt_ids)
         .fetch_all(&*self.pool)
@@ -164,10 +185,10 @@ impl Repository {
         delivery_attempt_id: Uuid,
     ) -> Result<Option<Uuid>> {
         let batch_id: Option<Uuid> = sqlx::query_scalar(
-            r#"
+            r"
             SELECT batch_id FROM merkle_leaves
             WHERE delivery_attempt_id = $1
-            "#,
+            ",
         )
         .bind(delivery_attempt_id)
         .fetch_optional(&*self.pool)
@@ -189,12 +210,12 @@ impl Repository {
         delivery_attempt_ids: &[Uuid],
     ) -> Result<Vec<(Uuid, i64)>> {
         let results: Vec<(Uuid, i64)> = sqlx::query_as(
-            r#"
+            r"
             SELECT delivery_attempt_id, tree_index FROM merkle_leaves
             WHERE delivery_attempt_id = ANY($1)
             AND tree_index IS NOT NULL
             ORDER BY tree_index ASC
-            "#,
+            ",
         )
         .bind(delivery_attempt_ids)
         .fetch_all(&*self.pool)
@@ -212,11 +233,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_committed_leaf_hashes(&self) -> Result<Vec<Vec<u8>>> {
         let hashes: Vec<Vec<u8>> = sqlx::query_scalar(
-            r#"
+            r"
             SELECT leaf_hash FROM merkle_leaves
             WHERE tree_index IS NOT NULL
             ORDER BY tree_index ASC
-            "#,
+            ",
         )
         .fetch_all(&*self.pool)
         .await?;
@@ -236,11 +257,11 @@ impl Repository {
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<Vec<u8>>> {
         let hashes: Vec<Vec<u8>> = sqlx::query_scalar(
-            r#"
+            r"
             SELECT leaf_hash FROM merkle_leaves
             WHERE tree_index IS NOT NULL
             ORDER BY tree_index ASC
-            "#,
+            ",
         )
         .fetch_all(&mut **tx)
         .await?;
@@ -255,9 +276,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_all(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM merkle_leaves
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -272,10 +293,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_committed(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM merkle_leaves
             WHERE tree_index IS NOT NULL
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -297,13 +318,13 @@ impl Repository {
         event_id: Uuid,
     ) -> Result<Option<AttestationLeafInfo>> {
         let result = sqlx::query_as::<_, AttestationLeafInfo>(
-            r#"
+            r"
             SELECT ml.delivery_attempt_id, ml.endpoint_url, ml.attempt_number,
                    da.response_status, ml.leaf_hash
             FROM merkle_leaves ml
             JOIN delivery_attempts da ON ml.delivery_attempt_id = da.id
             WHERE ml.event_id = $1
-            "#,
+            ",
         )
         .bind(event_id)
         .fetch_optional(&*self.pool)
@@ -320,29 +341,8 @@ impl Repository {
     /// # Errors
     ///
     /// Returns error if insert fails or delivery attempt not found.
-    pub async fn insert_leaf_from_attempt(
-        &self,
-        leaf_hash: &[u8],
-        delivery_attempt_id: Uuid,
-        endpoint_url: &str,
-        payload_hash: &[u8],
-        attempt_number: i32,
-        attempted_at: DateTime<Utc>,
-        tree_index: Option<i64>,
-        batch_id: Option<Uuid>,
-    ) -> Result<()> {
-        self.insert_leaf_from_attempt_in_tx(
-            &*self.pool,
-            leaf_hash,
-            delivery_attempt_id,
-            endpoint_url,
-            payload_hash,
-            attempt_number,
-            attempted_at,
-            tree_index,
-            batch_id,
-        )
-        .await
+    pub async fn insert_leaf_from_attempt(&self, params: MerkleLeafInsert<'_>) -> Result<()> {
+        self.insert_leaf_from_attempt_in_tx(&*self.pool, params).await
     }
 
     /// Inserts a merkle leaf from delivery attempt data within a transaction.
@@ -353,20 +353,13 @@ impl Repository {
     pub async fn insert_leaf_from_attempt_in_tx<'e, E>(
         &self,
         executor: E,
-        leaf_hash: &[u8],
-        delivery_attempt_id: Uuid,
-        endpoint_url: &str,
-        payload_hash: &[u8],
-        attempt_number: i32,
-        attempted_at: DateTime<Utc>,
-        tree_index: Option<i64>,
-        batch_id: Option<Uuid>,
+        params: MerkleLeafInsert<'_>,
     ) -> Result<()>
     where
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO merkle_leaves
             (leaf_hash, delivery_attempt_id, event_id, tenant_id, endpoint_url,
              payload_hash, attempt_number, attempted_at, tree_index, batch_id)
@@ -374,16 +367,16 @@ impl Repository {
             FROM delivery_attempts da
             JOIN webhook_events we ON da.event_id = we.id
             WHERE da.id = $2
-            "#,
+            ",
         )
-        .bind(leaf_hash)
-        .bind(delivery_attempt_id)
-        .bind(endpoint_url)
-        .bind(payload_hash)
-        .bind(attempt_number)
-        .bind(attempted_at)
-        .bind(tree_index)
-        .bind(batch_id)
+        .bind(params.leaf_hash)
+        .bind(params.delivery_attempt_id)
+        .bind(params.endpoint_url)
+        .bind(params.payload_hash)
+        .bind(params.attempt_number)
+        .bind(params.attempted_at)
+        .bind(params.tree_index)
+        .bind(params.batch_id)
         .execute(executor)
         .await?;
 

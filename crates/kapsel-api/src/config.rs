@@ -408,12 +408,14 @@ fn default_log_level() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_types)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
-    use std::{collections::HashMap, env, sync::Mutex};
+    use std::{collections::HashMap, env};
 
     use super::*;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct TestEnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -423,7 +425,7 @@ mod tests {
 
     impl TestEnvGuard {
         fn new() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             Self { _lock: lock, vars: Vec::new(), originals: HashMap::new() }
         }
 
@@ -432,7 +434,7 @@ mod tests {
                 self.originals.insert(key.to_string(), env::var(key).ok());
                 self.vars.push(key.to_string());
             }
-            env::set_var(key, value);
+            std::env::set_var(key, value);
         }
     }
 
@@ -440,8 +442,8 @@ mod tests {
         fn drop(&mut self) {
             for var in &self.vars {
                 match self.originals.get(var) {
-                    Some(Some(value)) => env::set_var(var, value),
-                    Some(None) => env::remove_var(var),
+                    Some(Some(value)) => std::env::set_var(var, value),
+                    Some(None) => std::env::remove_var(var),
                     None => {},
                 }
             }
@@ -460,21 +462,23 @@ mod tests {
 
     #[test]
     fn config_with_env_overrides_snapshot() {
-        let mut guard = TestEnvGuard::new();
-        guard.set_var("DATABASE_URL", "postgresql://env:override@localhost:5432/test_db");
-        guard.set_var("DATABASE_MAX_CONNECTIONS", "25");
-        guard.set_var("HOST", "127.0.0.1");
-        guard.set_var("PORT", "9090");
-        guard.set_var("WORKER_POOL_SIZE", "16");
-        guard.set_var("WORKER_QUEUE_SIZE", "25");
-        guard.set_var("MAX_RETRY_ATTEMPTS", "12");
-        guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-        guard.set_var("RETRY_MAX_DELAY_MS", "120000");
-        guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-        guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "60");
-        guard.set_var("DELIVERY_TIMEOUT_SECONDS", "35");
-        guard.set_var("ATTESTATION_BATCH_SIZE", "150");
-        guard.set_var("RUST_LOG", "info,kapsel=debug");
+        {
+            let mut guard = TestEnvGuard::new();
+            guard.set_var("DATABASE_URL", "postgresql://env:override@localhost:5432/test_db");
+            guard.set_var("DATABASE_MAX_CONNECTIONS", "25");
+            guard.set_var("HOST", "127.0.0.1");
+            guard.set_var("PORT", "9090");
+            guard.set_var("WORKER_POOL_SIZE", "16");
+            guard.set_var("WORKER_QUEUE_SIZE", "25");
+            guard.set_var("MAX_RETRY_ATTEMPTS", "12");
+            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
+            guard.set_var("RETRY_MAX_DELAY_MS", "120000");
+            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
+            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "60");
+            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "35");
+            guard.set_var("ATTESTATION_BATCH_SIZE", "150");
+            guard.set_var("RUST_LOG", "info,kapsel=debug");
+        }
 
         let config = Config::load().expect("Config should load with env overrides");
 
@@ -488,22 +492,24 @@ mod tests {
 
     #[test]
     fn production_like_config_snapshot() {
-        let mut guard = TestEnvGuard::new();
-        guard.set_var("DATABASE_URL", "postgresql://prod:secret@db.example.com:5432/kapsel");
-        guard.set_var("DATABASE_MAX_CONNECTIONS", "50");
-        guard.set_var("DATABASE_MIN_CONNECTIONS", "10");
-        guard.set_var("HOST", "0.0.0.0");
-        guard.set_var("PORT", "8080");
-        guard.set_var("WORKER_POOL_SIZE", "32");
-        guard.set_var("WORKER_QUEUE_SIZE", "50");
-        guard.set_var("MAX_RETRY_ATTEMPTS", "15");
-        guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-        guard.set_var("RETRY_MAX_DELAY_MS", "600000");
-        guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-        guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
-        guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
-        guard.set_var("ATTESTATION_BATCH_SIZE", "500");
-        guard.set_var("RUST_LOG", "info,kapsel=debug");
+        {
+            let mut guard = TestEnvGuard::new();
+            guard.set_var("DATABASE_URL", "postgresql://prod:secret@db.example.com:5432/kapsel");
+            guard.set_var("DATABASE_MAX_CONNECTIONS", "50");
+            guard.set_var("DATABASE_MIN_CONNECTIONS", "10");
+            guard.set_var("HOST", "0.0.0.0");
+            guard.set_var("PORT", "8080");
+            guard.set_var("WORKER_POOL_SIZE", "32");
+            guard.set_var("WORKER_QUEUE_SIZE", "50");
+            guard.set_var("MAX_RETRY_ATTEMPTS", "15");
+            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
+            guard.set_var("RETRY_MAX_DELAY_MS", "600000");
+            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
+            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
+            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
+            guard.set_var("ATTESTATION_BATCH_SIZE", "500");
+            guard.set_var("RUST_LOG", "info,kapsel=debug");
+        }
 
         let config = Config::load().expect("Config should load production settings");
 
@@ -517,16 +523,18 @@ mod tests {
 
     #[test]
     fn config_conversions_snapshot() {
-        let mut guard = TestEnvGuard::new();
-        guard.set_var("DATABASE_URL", "postgresql://test:pass@localhost:5432/kapsel_test");
-        guard.set_var("WORKER_POOL_SIZE", "32");
-        guard.set_var("WORKER_QUEUE_SIZE", "50");
-        guard.set_var("MAX_RETRY_ATTEMPTS", "15");
-        guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-        guard.set_var("RETRY_MAX_DELAY_MS", "600000");
-        guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-        guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
-        guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
+        {
+            let mut guard = TestEnvGuard::new();
+            guard.set_var("DATABASE_URL", "postgresql://test:pass@localhost:5432/kapsel_test");
+            guard.set_var("WORKER_POOL_SIZE", "32");
+            guard.set_var("WORKER_QUEUE_SIZE", "50");
+            guard.set_var("MAX_RETRY_ATTEMPTS", "15");
+            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
+            guard.set_var("RETRY_MAX_DELAY_MS", "600000");
+            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
+            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
+            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
+        }
 
         let config = Config::load().expect("Config should load for conversion testing");
 
@@ -563,37 +571,39 @@ mod tests {
 
     #[test]
     fn invalid_config_validation_fails() {
-        let mut config = Config::default();
-
         // Test invalid port
-        config.port = 0;
+        let config = Config { port: 0, ..Default::default() };
         assert!(config.validate().is_err());
 
         // Reset and test invalid connection counts
-        config = Config::default();
-        config.database_max_connections = 0;
+        let config = Config { database_max_connections: 0, ..Default::default() };
         assert!(config.validate().is_err());
 
-        config = Config::default();
-        config.database_min_connections = 100;
-        config.database_max_connections = 10;
+        let config = Config {
+            database_min_connections: 100,
+            database_max_connections: 10,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
         // Reset and test invalid worker count
-        config = Config::default();
-        config.worker_pool_size = 0;
+        let config = Config { worker_pool_size: 0, ..Default::default() };
         assert!(config.validate().is_err());
 
         // Reset and test invalid batch size
-        config = Config::default();
-        config.worker_queue_size = 0;
+        let config = Config { worker_queue_size: 0, ..Default::default() };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn database_url_masking() {
-        let mut guard = TestEnvGuard::new();
-        guard.set_var("DATABASE_URL", "postgresql://username:secret123@db.example.com:5432/kapsel");
+        {
+            let mut guard = TestEnvGuard::new();
+            guard.set_var(
+                "DATABASE_URL",
+                "postgresql://username:secret123@db.example.com:5432/kapsel",
+            );
+        }
 
         let config = Config::load().expect("Config should load");
         let masked = config.database_url_masked();
@@ -606,10 +616,7 @@ mod tests {
 
     #[test]
     fn socket_address_parsing() {
-        let mut config = Config::default();
-        config.host = "127.0.0.1".to_string();
-        config.port = 9000;
-
+        let config = Config { host: "127.0.0.1".to_string(), port: 9000, ..Default::default() };
         let addr = config.parse_server_addr().expect("Should parse socket address");
 
         assert_eq!(addr.ip().to_string(), "127.0.0.1");

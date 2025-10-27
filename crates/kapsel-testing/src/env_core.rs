@@ -198,11 +198,11 @@ impl TestEnv {
         let mut hasher = DefaultHasher::new();
         self.test_run_id.hash(&mut hasher);
         // Use the hash as a positive i64 for the advisory lock
-        (hasher.finish() as i64).abs()
+        i64::try_from(hasher.finish()).unwrap_or(i64::MAX).abs()
     }
 
     /// Debug helper to check database pool statistics.
-    pub async fn debug_pool_stats(&self) -> String {
+    pub fn debug_pool_stats(&self) -> String {
         let pool = self.pool();
         format!(
             "Pool stats: size={}, num_idle={}, is_closed={}",

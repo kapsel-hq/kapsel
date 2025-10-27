@@ -29,15 +29,8 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 async fn validate_api_key(storage: &Storage, api_key: &str) -> Result<Uuid, AuthError> {
     let key_hash = sha256::digest(api_key.as_bytes());
 
-    match storage
-        .api_keys
-        .validate(&key_hash)
-        .await
-        .map_err(|e| AuthError::Database(e.to_string()))?
-    {
-        Some(tenant_id) => Ok(tenant_id.0),
-        None => Err(AuthError::InvalidApiKey),
-    }
+    (storage.api_keys.validate(&key_hash).await.map_err(|e| AuthError::Database(e.to_string()))?)
+        .map_or(Err(AuthError::InvalidApiKey), |tenant_id| Ok(tenant_id.0))
 }
 
 /// Errors that can occur during API key authentication.

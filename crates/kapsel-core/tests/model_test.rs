@@ -967,7 +967,7 @@ fn domain_model_invariants_and_edge_cases() {
         timeout_seconds: 1, // Minimal timeout
         retry_strategy: BackoffStrategy::Fixed,
         circuit_state: CircuitState::Open,
-        circuit_failure_count: u32::MAX as i32, // Maximum failures
+        circuit_failure_count: i32::MAX,
         circuit_success_count: 0,
         circuit_last_failure_at: Some(now),
         circuit_half_open_at: None,

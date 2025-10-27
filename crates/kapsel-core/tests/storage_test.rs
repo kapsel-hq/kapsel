@@ -187,7 +187,7 @@ async fn webhook_event_claim_and_delivery_flow() {
         let webhook = test_events::create_test_webhook_with_payload(
             tenant_id,
             endpoint_id,
-            &format!("{{\"message\": \"test{}\"}}", i),
+            &format!("{{\"message\": \"test{i}\"}}"),
         );
         let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
         event_ids.push(event_id);
@@ -254,7 +254,7 @@ async fn concurrent_event_claiming() {
         let webhook = test_events::create_test_webhook_with_payload(
             tenant_id,
             endpoint_id,
-            &format!("{{\"message\": \"concurrent{}\"}}", i),
+            &format!("{{\"message\": \"concurrent{i}\"}}"),
         );
         env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
     }
@@ -279,7 +279,7 @@ async fn concurrent_event_claiming() {
     let ids2: Vec<_> = results2.iter().map(|e| e.id).collect();
 
     for id in &ids1 {
-        assert!(!ids2.contains(id), "Event {:?} claimed by both workers", id);
+        assert!(!ids2.contains(id), "Event {id:?} claimed by both workers");
     }
 
     // Total should be 5 (all events claimed)
@@ -349,7 +349,7 @@ async fn delivery_attempt_repository_operations() {
 
     // Test success rate
     let rate = storage.delivery_attempts.success_rate_by_endpoint(endpoint_id, None).await.unwrap();
-    assert_eq!(rate, 1.0);
+    assert!((rate - 1.0).abs() < f64::EPSILON); // 1 success out of 1 attempt
 
     // Add a failed attempt
     let failed_attempt = DeliveryAttempt {
@@ -371,7 +371,7 @@ async fn delivery_attempt_repository_operations() {
 
     // Test success rate with mixed results
     let rate = storage.delivery_attempts.success_rate_by_endpoint(endpoint_id, None).await.unwrap();
-    assert_eq!(rate, 0.5); // 1 success out of 2 attempts
+    assert!((rate - 0.5).abs() < f64::EPSILON); // 1 success out of 2 attempts
 
     // Test find by endpoint
     let endpoint_attempts =

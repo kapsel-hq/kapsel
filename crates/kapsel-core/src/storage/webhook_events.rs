@@ -53,17 +53,17 @@ impl Repository {
 
         // Select events using FOR UPDATE SKIP LOCKED for concurrent processing
         let event_ids: Vec<Uuid> = sqlx::query_scalar(
-            r#"
+            r"
             SELECT id FROM webhook_events
             WHERE status = 'pending'
               AND (next_retry_at IS NULL OR next_retry_at <= $1)
-            ORDER BY received_at ASC
+            ORDER BY next_retry_at ASC NULLS FIRST
             LIMIT $2
             FOR UPDATE SKIP LOCKED
-            "#,
+            ",
         )
         .bind(now)
-        .bind(batch_size as i32)
+        .bind(i32::try_from(batch_size).unwrap_or(i32::MAX))
         .fetch_all(&mut *tx)
         .await?;
 
@@ -74,7 +74,7 @@ impl Repository {
 
         // Update status and fetch full event data
         let events = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = 'delivering', last_attempt_at = NOW()
             WHERE id = ANY($1)
@@ -82,7 +82,7 @@ impl Repository {
                       status, failure_count, last_attempt_at, next_retry_at,
                       headers, body, content_type, received_at, delivered_at, failed_at,
                       payload_size, signature_valid, signature_error
-            "#,
+            ",
         )
         .bind(&event_ids)
         .fetch_all(&mut *tx)
@@ -121,7 +121,7 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let id = sqlx::query_scalar(
-            r#"
+            r"
             INSERT INTO webhook_events (
                 id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                 status, failure_count, headers, body, content_type,
@@ -130,7 +130,7 @@ impl Repository {
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
             RETURNING id
-            "#,
+            ",
         )
         .bind(event.id.0)
         .bind(event.tenant_id.0)
@@ -183,11 +183,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = 'delivered', delivered_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(event_id.0)
         .execute(executor)
@@ -244,14 +244,13 @@ impl Repository {
             if next_retry_at.is_some() { EventStatus::Pending } else { EventStatus::Failed };
 
         sqlx::query(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = $1,
                 failure_count = $2,
-                next_retry_at = $3,
-                failed_at = CASE WHEN $3 IS NULL THEN NOW() ELSE NULL END
+                next_retry_at = $3
             WHERE id = $4
-            "#,
+            ",
         )
         .bind(status.to_string())
         .bind(failure_count)
@@ -295,14 +294,14 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let event = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
                    payload_size, signature_valid, signature_error
             FROM webhook_events
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_optional(executor)
@@ -324,7 +323,7 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<WebhookEvent>> {
         let events = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
@@ -333,7 +332,7 @@ impl Repository {
             WHERE tenant_id = $1
             ORDER BY received_at DESC
             LIMIT $2
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .bind(limit.unwrap_or(100))
@@ -356,7 +355,7 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<WebhookEvent>> {
         let events = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
@@ -365,7 +364,7 @@ impl Repository {
             WHERE endpoint_id = $1
             ORDER BY received_at DESC
             LIMIT $2
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(limit.unwrap_or(100))
@@ -409,11 +408,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = $1
             WHERE id = $2
-            "#,
+            ",
         )
         .bind(status.to_string())
         .bind(event_id.0)
@@ -430,10 +429,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_status(&self, status: EventStatus) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM webhook_events
             WHERE status = $1
-            "#,
+            ",
         )
         .bind(status.to_string())
         .fetch_one(&*self.pool)
@@ -449,10 +448,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_tenant(&self, tenant_id: TenantId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM webhook_events
             WHERE tenant_id = $1
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .fetch_one(&*self.pool)
@@ -468,9 +467,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_all(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM webhook_events
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -488,10 +487,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_terminal(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM webhook_events
             WHERE status IN ('delivered', 'failed')
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -513,10 +512,10 @@ impl Repository {
         endpoint_id: EndpointId,
     ) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM webhook_events
             WHERE tenant_id = $1 AND endpoint_id = $2
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .bind(endpoint_id.0)
@@ -557,10 +556,10 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let result = sqlx::query(
-            r#"
+            r"
             DELETE FROM webhook_events
             WHERE tenant_id = $1
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .execute(executor)
@@ -583,7 +582,7 @@ impl Repository {
         source_event_id: &str,
     ) -> Result<Option<WebhookEvent>> {
         let event = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
@@ -592,7 +591,7 @@ impl Repository {
             WHERE endpoint_id = $1
               AND source_event_id = $2
               AND received_at > NOW() - INTERVAL '24 hours'
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(source_event_id)
@@ -633,11 +632,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = 'dead_letter', failed_at = NOW()
             WHERE id = $1 AND status = 'failed'
-            "#,
+            ",
         )
         .bind(event_id.0)
         .execute(executor)
@@ -659,7 +658,7 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<WebhookEvent>> {
         let events = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
@@ -668,7 +667,7 @@ impl Repository {
             WHERE tenant_id = $1 AND status = 'dead_letter'
             ORDER BY failed_at DESC
             LIMIT $2
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .bind(limit.unwrap_or(100))
@@ -687,14 +686,14 @@ impl Repository {
     /// Returns error if update fails.
     pub async fn retry_dead_letter(&self, event_id: EventId) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE webhook_events
             SET status = 'pending',
                 failure_count = 0,
                 next_retry_at = NULL,
                 failed_at = NULL
             WHERE id = $1 AND status = 'dead_letter'
-            "#,
+            ",
         )
         .bind(event_id.0)
         .execute(&*self.pool)
@@ -713,14 +712,14 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn list_all(&self) -> Result<Vec<WebhookEvent>> {
         let events = sqlx::query_as::<_, WebhookEvent>(
-            r#"
+            r"
             SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
                    status, failure_count, last_attempt_at, next_retry_at,
                    headers, body, content_type, received_at, delivered_at, failed_at,
                    payload_size, signature_valid, signature_error
             FROM webhook_events
             ORDER BY received_at ASC
-            "#,
+            ",
         )
         .fetch_all(&*self.pool)
         .await?;
@@ -739,9 +738,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn exists(&self, event_id: EventId) -> Result<bool> {
         let exists: bool = sqlx::query_scalar(
-            r#"
+            r"
             SELECT EXISTS(SELECT 1 FROM webhook_events WHERE id = $1)
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_one(&*self.pool)

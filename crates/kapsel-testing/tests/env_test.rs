@@ -200,7 +200,7 @@ async fn test_debug_helpers() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
     // Test pool stats
-    let stats = env.debug_pool_stats().await;
+    let stats = env.debug_pool_stats();
     assert!(stats.contains("size="));
     assert!(stats.contains("num_idle="));
 

@@ -435,9 +435,12 @@ impl ScenarioBuilder {
                 Step::ExpectDeliveryAttempts(event_id, expected) => {
                     let actual = env.count_delivery_attempts(event_id).await?;
                     assert_eq!(
-                        actual, expected as u32,
+                        actual,
+                        u32::try_from(expected).unwrap_or(u32::MAX),
                         "Delivery attempt count mismatch for event {}: expected {}, got {}",
-                        event_id.0, expected, actual
+                        event_id.0,
+                        expected,
+                        actual
                     );
                 },
                 Step::ExpectAttestationLeafCount(event_id, expected) => {
@@ -473,7 +476,11 @@ impl ScenarioBuilder {
                 Step::ExpectConcurrentAttestationIntegrity(event_ids) => {
                     // First ensure all pending leaves are committed to database
                     if env.attestation_service.is_some() {
-                        let merkle_service = env.attestation_service.as_ref().unwrap();
+                        let merkle_service = env.attestation_service.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "attestation service should be configured for this test"
+                            )
+                        })?;
                         let pending_count = merkle_service.read().await.pending_count();
                         if pending_count > 0 {
                             tracing::debug!(

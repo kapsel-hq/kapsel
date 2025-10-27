@@ -367,8 +367,8 @@ async fn worker_processes_multiple_events_correctly() {
         let webhook_data = kapsel_testing::fixtures::WebhookBuilder::new()
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
-            .source_event(&format!("test-source-{}", i))
-            .body(format!("payload {}", i).into_bytes())
+            .source_event(format!("test-source-{i}"))
+            .body(format!("payload {i}").into_bytes())
             .content_type("application/json")
             .build();
 

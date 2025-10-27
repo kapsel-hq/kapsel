@@ -20,7 +20,7 @@ async fn complete_attestation_workflow() {
     let db = TestDatabase::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
+    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
 
     let signing_service = signing_service.with_key_id(key_id);
 
@@ -43,7 +43,7 @@ async fn complete_attestation_workflow() {
     for i in 0..5 {
         let mut leaf = leaf_data.clone();
         leaf.delivery_attempt_id = uuid::Uuid::new_v4();
-        leaf.payload_hash[0] = i as u8; // Make each leaf unique
+        leaf.payload_hash[0] = u8::try_from(i).unwrap_or(0); // Make each leaf unique
         merkle_service.add_leaf(leaf).unwrap();
     }
 
@@ -71,7 +71,7 @@ async fn incremental_batch_processing_workflow() {
     let db = TestDatabase::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
+    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let mut merkle_service =
@@ -92,7 +92,7 @@ async fn incremental_batch_processing_workflow() {
     for i in 0..3 {
         let mut leaf = base_leaf.clone();
         leaf.delivery_attempt_id = uuid::Uuid::new_v4();
-        leaf.payload_hash[0] = i as u8;
+        leaf.payload_hash[0] = u8::try_from(i).unwrap_or(0);
         merkle_service.add_leaf(leaf).unwrap();
     }
 
@@ -104,7 +104,7 @@ async fn incremental_batch_processing_workflow() {
     for i in 3..5 {
         let mut leaf = base_leaf.clone();
         leaf.delivery_attempt_id = uuid::Uuid::new_v4();
-        leaf.payload_hash[0] = i as u8;
+        leaf.payload_hash[0] = u8::try_from(i).unwrap_or(0);
         merkle_service.add_leaf(leaf).unwrap();
     }
 
@@ -126,7 +126,7 @@ async fn mixed_success_failure_workflow() {
     let db = TestDatabase::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
+    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let merkle_service_shared = Arc::new(RwLock::new(MerkleService::new(
@@ -165,7 +165,7 @@ async fn empty_batch_commit_workflow() {
     let db = TestDatabase::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
+    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -191,17 +191,17 @@ async fn empty_batch_commit_workflow() {
 /// without performance degradation or memory issues.
 #[tokio::test]
 async fn large_batch_processing_workflow() {
+    const BATCH_SIZE: usize = 50;
     let db = TestDatabase::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await;
+    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let mut merkle_service =
         MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
 
     // Process a larger batch (50 events - reduced for test speed)
-    const BATCH_SIZE: usize = 50;
     let base_leaf = kapsel_attestation::LeafData::new(
         uuid::Uuid::new_v4(),
         uuid::Uuid::new_v4(),
@@ -216,8 +216,8 @@ async fn large_batch_processing_workflow() {
     for i in 0..BATCH_SIZE {
         let mut leaf = base_leaf.clone();
         leaf.delivery_attempt_id = uuid::Uuid::new_v4();
-        leaf.payload_hash[0] = (i % 256) as u8;
-        leaf.payload_hash[1] = (i / 256) as u8;
+        leaf.payload_hash[0] = u8::try_from(i % 256).unwrap_or(0);
+        leaf.payload_hash[1] = u8::try_from(i / 256).unwrap_or(0);
         merkle_service.add_leaf(leaf).unwrap();
     }
 
@@ -233,17 +233,16 @@ async fn large_batch_processing_workflow() {
 }
 
 /// Helper function to store ephemeral signing key in database.
-async fn store_signing_key_in_db(pool: &PgPool, signing_service: &SigningService) -> uuid::Uuid {
+async fn store_signing_key_in_db(
+    pool: &PgPool,
+    signing_service: &SigningService,
+) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let public_key_bytes = signing_service.public_key_as_bytes();
 
-    // Create storage instance from pool
-    let storage = kapsel_core::storage::Storage::new(pool.clone());
+    let storage = Storage::new(pool.clone());
 
     // Use repository to create and activate new key (automatically deactivates old
     // keys)
-    storage
-        .attestation_keys
-        .create_and_activate(public_key_bytes.to_vec())
-        .await
-        .expect("create and activate attestation key")
+    let key_id = storage.attestation_keys.create_and_activate(public_key_bytes.clone()).await?;
+    Ok(key_id)
 }
