@@ -106,9 +106,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_max_tree_size(&self) -> Result<i64> {
         let size: i64 = sqlx::query_scalar(
-            r#"
+            r"
             SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -128,9 +128,9 @@ impl Repository {
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<i64> {
         let size: i64 = sqlx::query_scalar(
-            r#"
+            r"
             SELECT COALESCE(MAX(tree_size), 0) FROM signed_tree_heads
-            "#,
+            ",
         )
         .fetch_one(&mut **tx)
         .await?;
@@ -147,9 +147,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn exists_with_min_size(&self, min_size: i64) -> Result<bool> {
         let exists: bool = sqlx::query_scalar(
-            r#"
+            r"
             SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE tree_size >= $1)
-            "#,
+            ",
         )
         .bind(min_size)
         .fetch_one(&*self.pool)
@@ -167,9 +167,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn exists_for_batch(&self, batch_id: Uuid) -> Result<bool> {
         let exists: bool = sqlx::query_scalar(
-            r#"
+            r"
             SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE batch_id = $1)
-            "#,
+            ",
         )
         .bind(batch_id)
         .fetch_one(&*self.pool)
@@ -206,11 +206,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO signed_tree_heads
             (id, tree_size, root_hash, signature, key_id, batch_id, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#,
+            ",
         )
         .bind(tree_head.id)
         .bind(tree_head.tree_size)
@@ -232,12 +232,12 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_latest(&self) -> Result<Option<SignedTreeHead>> {
         let tree_head = sqlx::query_as::<_, SignedTreeHead>(
-            r#"
+            r"
             SELECT id, tree_size, root_hash, signature, key_id, batch_id, created_at
             FROM signed_tree_heads
             ORDER BY tree_size DESC, created_at DESC
             LIMIT 1
-            "#,
+            ",
         )
         .fetch_optional(&*self.pool)
         .await?;
@@ -252,11 +252,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_by_batch(&self, batch_id: Uuid) -> Result<Option<SignedTreeHead>> {
         let tree_head = sqlx::query_as::<_, SignedTreeHead>(
-            r#"
+            r"
             SELECT id, tree_size, root_hash, signature, key_id, batch_id, created_at
             FROM signed_tree_heads
             WHERE batch_id = $1
-            "#,
+            ",
         )
         .bind(batch_id)
         .fetch_optional(&*self.pool)
@@ -272,9 +272,9 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_all(&self) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM signed_tree_heads
-            "#,
+            ",
         )
         .fetch_one(&*self.pool)
         .await?;
@@ -289,11 +289,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn list_all(&self) -> Result<Vec<SignedTreeHead>> {
         let tree_heads = sqlx::query_as::<_, SignedTreeHead>(
-            r#"
+            r"
             SELECT id, tree_size, root_hash, signature, key_id, batch_id, created_at
             FROM signed_tree_heads
             ORDER BY tree_size ASC
-            "#,
+            ",
         )
         .fetch_all(&*self.pool)
         .await?;
@@ -311,12 +311,12 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_latest_tree_head_info(&self) -> Result<Option<SignedTreeHeadInfo>> {
         let tree_head_info = sqlx::query_as::<_, SignedTreeHeadInfo>(
-            r#"
+            r"
             SELECT tree_size, root_hash, timestamp_ms, signature, batch_size
             FROM signed_tree_heads
             ORDER BY timestamp_ms DESC
             LIMIT 1
-            "#,
+            ",
         )
         .fetch_optional(&*self.pool)
         .await?;

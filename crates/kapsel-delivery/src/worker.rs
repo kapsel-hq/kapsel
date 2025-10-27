@@ -379,7 +379,7 @@ impl DeliveryWorker {
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
         let start_time = std::time::Instant::now();
         let endpoint_key = event.endpoint_id.to_string();
-        let attempt_number = (event.failure_count + 1) as u32;
+        let attempt_number = u32::try_from(event.failure_count + 1).unwrap_or(u32::MAX);
 
         // 1. Check circuit breaker state BEFORE we do anything else
         let should_allow =
@@ -424,7 +424,7 @@ impl DeliveryWorker {
         self.record_delivery_attempt(
             event,
             &endpoint_url,
-            (event.failure_count + 1) as u32,
+            u32::try_from(event.failure_count + 1).unwrap_or(u32::MAX),
             &delivery_result,
             start_time.elapsed(),
         )
@@ -590,7 +590,7 @@ impl DeliveryWorker {
                 },
                 crate::retry::RetryDecision::GiveUp { reason } => {
                     // Mark as permanently failed
-                    self.mark_event_failed(&event).await?;
+                    self.mark_event_failed(event).await?;
 
                     error!(
                         worker_id = self.id,
@@ -1080,7 +1080,7 @@ mod tests {
         // Insert endpoint
         let mut tx = env.pool().begin().await.expect("failed to begin transaction");
         let endpoint_id = env
-            .create_endpoint_tx(&mut tx, tenant_id, &webhook_url)
+            .create_endpoint_tx(&mut tx, tenant_id, webhook_url)
             .await
             .expect("failed to create endpoint");
         tx.commit().await.expect("failed to commit transaction");
@@ -1089,8 +1089,8 @@ mod tests {
         let now = Utc::now();
         let webhook_event = WebhookEvent {
             id: event_id.into(),
-            tenant_id: tenant_id.into(),
-            endpoint_id: endpoint_id.into(),
+            tenant_id,
+            endpoint_id,
             source_event_id: format!("source-{event_id}"),
             idempotency_strategy: IdempotencyStrategy::Header,
             status: kapsel_core::models::EventStatus::Pending,

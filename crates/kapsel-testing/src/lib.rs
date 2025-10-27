@@ -148,12 +148,19 @@ impl WebhookEventData {
 #[derive(Debug)]
 struct ReadyWebhook {
     event_id: EventId,
-    _endpoint_id: Uuid,
+    endpoint_id: Uuid,
     url: String,
     body: Vec<u8>,
     failure_count: i32,
     _endpoint_name: String,
     max_retries: i32,
+}
+
+impl ReadyWebhook {
+    /// Returns the endpoint ID for this webhook.
+    fn endpoint_id(&self) -> EndpointId {
+        EndpointId(self.endpoint_id)
+    }
 }
 
 /// Result of attempting webhook delivery.

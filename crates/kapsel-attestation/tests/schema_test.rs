@@ -143,9 +143,9 @@ async fn create_test_delivery_attempt(
     let attempt_id = uuid::Uuid::new_v4();
     let delivery_attempt = DeliveryAttempt {
         id: attempt_id,
-        event_id: event_id.into(),
+        event_id,
         attempt_number: 1,
-        endpoint_id: endpoint_id.into(),
+        endpoint_id,
         request_headers: HashMap::new(),
         request_body: b"test".to_vec(),
         response_status: Some(200),

@@ -4,7 +4,7 @@ use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use kapsel_core::models::{DeliveryAttempt, EndpointId};
+use kapsel_core::models::DeliveryAttempt;
 use kapsel_delivery::{
     error::DeliveryError,
     retry::{BackoffStrategy, RetryContext, RetryPolicy},
@@ -89,7 +89,7 @@ impl TestEnv {
             .into_iter()
             .map(|row| ReadyWebhook {
                 event_id: EventId(row.get("id")),
-                _endpoint_id: row.get("endpoint_id"),
+                endpoint_id: row.get("endpoint_id"),
                 url: row.get("url"),
                 body: row.get("body"),
                 failure_count: row.get("failure_count"),
@@ -126,7 +126,7 @@ impl TestEnv {
             .into_iter()
             .map(|row| ReadyWebhook {
                 event_id: EventId(row.get("id")),
-                _endpoint_id: row.get("endpoint_id"),
+                endpoint_id: row.get("endpoint_id"),
                 url: row.get("url"),
                 body: row.get("body"),
                 failure_count: row.get("failure_count"),
@@ -193,15 +193,15 @@ impl TestEnv {
         let attempt = DeliveryAttempt {
             id: attempt_id,
             event_id: webhook.event_id,
-            attempt_number: attempt_number.max(1) as u32,
-            endpoint_id: EndpointId(webhook._endpoint_id),
+            attempt_number: u32::try_from(attempt_number.max(1)).unwrap_or(u32::MAX),
+            endpoint_id: webhook.endpoint_id(),
             request_headers,
             request_body: vec![], // Test delivery doesn't store request body
             response_status: result.status_code,
             response_headers: None,
             response_body: result.response_body.as_ref().map(|s| s.as_bytes().to_vec()),
             attempted_at,
-            succeeded: result.status_code.map_or(false, |code| (200..300).contains(&code)),
+            succeeded: result.status_code.is_some_and(|code| (200..300).contains(&code)),
             error_message: result.error_type.clone(),
         };
 

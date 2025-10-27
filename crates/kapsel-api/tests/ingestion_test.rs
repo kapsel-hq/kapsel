@@ -48,7 +48,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     // Make ingestion request
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/ingest/{}", endpoint_id))
+        .uri(format!("/ingest/{endpoint_id}"))
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .header("x-idempotency-key", "test-event-001")
@@ -82,7 +82,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
     assert_eq!(event.status.to_string(), "pending");
     assert_eq!(event.body, payload_bytes);
     assert_eq!(event.content_type, "application/json");
-    assert_eq!(event.payload_size, payload_bytes.len() as i32);
+    assert_eq!(event.payload_size, i32::try_from(payload_bytes.len()).unwrap_or(i32::MAX));
     assert_eq!(event.source_event_id, "test-event-001");
 }
 

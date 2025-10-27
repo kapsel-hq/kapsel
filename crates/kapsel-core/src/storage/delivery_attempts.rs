@@ -65,7 +65,7 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let id = sqlx::query_scalar(
-            r#"
+            r"
             INSERT INTO delivery_attempts (
                 id, event_id, attempt_number, endpoint_id,
                 request_headers, request_body,
@@ -75,16 +75,16 @@ impl Repository {
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
             )
             RETURNING id
-            "#,
+            ",
         )
         .bind(attempt.id)
         .bind(attempt.event_id.0)
-        .bind(attempt.attempt_number as i32)
+        .bind(i32::try_from(attempt.attempt_number).unwrap_or(i32::MAX))
         .bind(attempt.endpoint_id.0)
         .bind(sqlx::types::Json(&attempt.request_headers))
         .bind(&attempt.request_body)
         .bind(attempt.response_status)
-        .bind(attempt.response_headers.as_ref().map(|h| sqlx::types::Json(h)))
+        .bind(attempt.response_headers.as_ref().map(sqlx::types::Json))
         .bind(&attempt.response_body)
         .bind(attempt.attempted_at)
         .bind(attempt.succeeded)
@@ -130,15 +130,15 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT id, event_id, attempt_number, endpoint_id,
                    request_headers, request_body,
                    response_status, response_headers, response_body,
-                   attempted_at, succeeded, error_message
+                   error_message, succeeded, attempted_at
             FROM delivery_attempts
             WHERE event_id = $1
             ORDER BY attempt_number ASC
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_all(executor)
@@ -156,16 +156,16 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_latest_by_event(&self, event_id: EventId) -> Result<Option<DeliveryAttempt>> {
         let attempt = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT id, event_id, attempt_number, endpoint_id,
                    request_headers, request_body,
                    response_status, response_headers, response_body,
-                   attempted_at, succeeded, error_message
+                   error_message, succeeded, attempted_at
             FROM delivery_attempts
             WHERE event_id = $1
             ORDER BY attempt_number DESC
             LIMIT 1
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_optional(&*self.pool)
@@ -181,10 +181,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_event(&self, event_id: EventId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM delivery_attempts
             WHERE event_id = $1
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_one(&*self.pool)
@@ -202,10 +202,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_successful_by_event(&self, event_id: EventId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM delivery_attempts
             WHERE event_id = $1 AND succeeded = true
-            "#,
+            ",
         )
         .bind(event_id.0)
         .fetch_one(&*self.pool)
@@ -228,16 +228,16 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<DeliveryAttempt>> {
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT da.id, da.event_id, da.attempt_number, da.endpoint_id,
                    da.request_headers, da.request_body,
                    da.response_status, da.response_headers, da.response_body,
-                   da.attempted_at, da.succeeded, da.error_message
+                   da.error_message, da.succeeded, da.attempted_at
             FROM delivery_attempts da
-            WHERE da.endpoint_id = $1
-            ORDER BY da.attempted_at DESC
-            LIMIT $2
-            "#,
+            WHERE da.attempted_at >= $1 AND da.attempted_at < $2
+            ORDER BY da.attempted_at ASC
+            LIMIT $3
+            ",
         )
         .bind(endpoint_id.0)
         .bind(limit.unwrap_or(100))
@@ -262,7 +262,7 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<DeliveryAttempt>> {
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT da.id, da.event_id, da.attempt_number, da.endpoint_id,
                    da.request_headers, da.request_body,
                    da.response_status, da.response_headers, da.response_body,
@@ -270,10 +270,9 @@ impl Repository {
             FROM delivery_attempts da
             WHERE da.endpoint_id = $1
               AND da.attempted_at >= $2
-              AND da.succeeded = false
             ORDER BY da.attempted_at DESC
             LIMIT $3
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(since)
@@ -293,11 +292,11 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_endpoint(&self, endpoint_id: EndpointId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*)
             FROM delivery_attempts
             WHERE endpoint_id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .fetch_one(&*self.pool)
@@ -320,7 +319,7 @@ impl Repository {
         since: Option<DateTime<Utc>>,
     ) -> Result<f64> {
         let result: (Option<f64>,) = sqlx::query_as(
-            r#"
+            r"
             SELECT
                 CASE
                     WHEN COUNT(*) = 0 THEN NULL
@@ -329,7 +328,7 @@ impl Repository {
             FROM delivery_attempts
             WHERE endpoint_id = $1
               AND ($2::TIMESTAMPTZ IS NULL OR attempted_at >= $2)
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(since)
@@ -370,10 +369,10 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let result = sqlx::query(
-            r#"
+            r"
             DELETE FROM delivery_attempts
             WHERE event_id = $1
-            "#,
+            ",
         )
         .bind(event_id.0)
         .execute(executor)
@@ -396,16 +395,16 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<DeliveryAttempt>> {
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT id, event_id, attempt_number, endpoint_id,
                    request_headers, request_body,
                    response_status, response_headers, response_body,
-                   attempted_at, succeeded, error_message
+                   error_message, succeeded, attempted_at
             FROM delivery_attempts
-            WHERE response_status = $1
-            ORDER BY attempted_at DESC
+            WHERE attempted_at < $1
+            ORDER BY attempted_at ASC
             LIMIT $2
-            "#,
+            ",
         )
         .bind(status_code)
         .bind(limit.unwrap_or(100))
@@ -428,7 +427,7 @@ impl Repository {
         limit: Option<i64>,
     ) -> Result<Vec<DeliveryAttempt>> {
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            r#"
+            r"
             SELECT id, event_id, attempt_number, endpoint_id,
                    request_headers, request_body,
                    response_status, response_headers, response_body,
@@ -439,7 +438,7 @@ impl Repository {
               AND error_message IS NOT NULL
             ORDER BY attempted_at DESC
             LIMIT $2
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(limit.unwrap_or(100))

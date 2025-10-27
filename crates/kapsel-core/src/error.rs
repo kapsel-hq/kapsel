@@ -36,13 +36,13 @@ impl From<sqlx::Error> for CoreError {
         match err {
             sqlx::Error::RowNotFound => Self::NotFound("requested entity not found".to_string()),
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
-                Self::ConstraintViolation(format!("unique constraint violation: {}", db_err))
+                Self::ConstraintViolation(format!("unique constraint violation: {db_err}"))
             },
             sqlx::Error::Database(db_err) if db_err.is_foreign_key_violation() => {
-                Self::ConstraintViolation(format!("foreign key constraint violation: {}", db_err))
+                Self::ConstraintViolation(format!("foreign key constraint violation: {db_err}"))
             },
             sqlx::Error::Database(db_err) if db_err.is_check_violation() => {
-                Self::ConstraintViolation(format!("check constraint violation: {}", db_err))
+                Self::ConstraintViolation(format!("check constraint violation: {db_err}"))
             },
             _ => Self::Database(err.to_string()),
         }

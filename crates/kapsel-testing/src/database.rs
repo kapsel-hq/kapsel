@@ -4,17 +4,12 @@
 //! between tests. Each test gets its own PostgreSQL database created from
 //! a pre-migrated template for fast setup and guaranteed cleanup.
 
-use std::{
-    collections::HashSet,
-    env,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, env, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use sqlx::{postgres::PgConnectOptions, PgPool, Postgres, Transaction};
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -126,7 +121,7 @@ impl IsolatedTestDatabase {
         let database_name = format!("test_{}", Uuid::new_v4().simple());
 
         // Register for cleanup
-        register_database_for_cleanup(&database_name);
+        register_database_for_cleanup(&database_name).await;
 
         // Create the test database from template
         create_database_from_template(&admin_pool, &database_name).await?;
@@ -162,8 +157,8 @@ impl Drop for IsolatedTestDatabase {
 
                 // Attempt to drop the database
                 match drop_database(&admin_pool, &database_name).await {
-                    Ok(_) => {
-                        debug!("successfully dropped test database: {}", database_name);
+                    Ok(()) => {
+                        debug!("successfully dropped test database: {database_name}");
                     },
                     Err(e) => {
                         // This is common if another test is still using connections
@@ -182,9 +177,9 @@ impl Drop for IsolatedTestDatabase {
 }
 
 /// Register a database for cleanup tracking.
-fn register_database_for_cleanup(database_name: &str) {
-    CLEANUP_REGISTRY.lock().unwrap().insert(database_name.to_string());
-    debug!("registered database {} for cleanup", database_name);
+async fn register_database_for_cleanup(database_name: &str) {
+    CLEANUP_REGISTRY.lock().await.insert(database_name.to_string());
+    debug!("registered database {database_name} for cleanup");
 }
 
 /// Clean up stale databases once per process.
@@ -253,21 +248,22 @@ fn is_test_database(name: &str) -> bool {
 
 /// Ensures the template database exists and is fully migrated.
 async fn ensure_template_database() -> Result<()> {
-    // Fast path: already initialized
+    // Check if template is already initialized
     if TEMPLATE_INITIALIZED.get().is_some() {
         return Ok(());
     }
 
     // Serialize template initialization across all tests
-    let _lock = TEMPLATE_INIT_MUTEX.lock().unwrap();
+    let _lock = TEMPLATE_INIT_MUTEX.lock().await;
 
     // Double-check after acquiring lock
     if TEMPLATE_INITIALIZED.get().is_some() {
         return Ok(());
     }
 
-    info!("initializing template database: {}", TEMPLATE_DB_NAME);
+    info!("initializing template database: {TEMPLATE_DB_NAME}");
 
+    // Create admin connection pool
     let admin_pool = create_admin_pool().await?;
 
     // Check if template database already exists
@@ -280,8 +276,7 @@ async fn ensure_template_database() -> Result<()> {
     if !exists.0 {
         // Create template database
         sqlx::query(&format!(
-            "CREATE DATABASE \"{}\" WITH TEMPLATE template0 ENCODING 'UTF8'",
-            TEMPLATE_DB_NAME
+            "CREATE DATABASE \"{TEMPLATE_DB_NAME}\" WITH TEMPLATE template0 ENCODING 'UTF8'"
         ))
         .execute(&admin_pool)
         .await
@@ -330,8 +325,7 @@ async fn create_database_from_template(admin_pool: &PgPool, database_name: &str)
 
     for attempt in 1..=MAX_RETRIES {
         let query = format!(
-            "CREATE DATABASE \"{}\" WITH TEMPLATE \"{}\" OWNER postgres",
-            database_name, TEMPLATE_DB_NAME
+            "CREATE DATABASE \"{database_name}\" WITH TEMPLATE \"{TEMPLATE_DB_NAME}\" OWNER postgres"
         );
 
         match sqlx::query(&query).execute(admin_pool).await {
@@ -368,19 +362,18 @@ async fn drop_database(admin_pool: &PgPool, database_name: &str) -> Result<()> {
     sqlx::query(&format!(
         "SELECT pg_terminate_backend(pid)
          FROM pg_stat_activity
-         WHERE datname = '{}'
-         AND pid <> pg_backend_pid()",
-        database_name
+         WHERE datname = '{database_name}'
+         AND pid <> pg_backend_pid()"
     ))
     .execute(admin_pool)
     .await
     .ok(); // Ignore errors from termination
 
     // Now drop the database
-    sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", database_name))
+    sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\""))
         .execute(admin_pool)
         .await
-        .with_context(|| format!("failed to drop database: {}", database_name))?;
+        .with_context(|| format!("failed to drop database: {database_name}"))?;
 
     Ok(())
 }
@@ -433,7 +426,7 @@ async fn create_database_pool(database_name: &str) -> Result<PgPool> {
         .test_before_acquire(false) // Skip health checks for performance
         .connect_with(opts)
         .await
-        .with_context(|| format!("failed to connect to database: {}", database_name))?;
+        .with_context(|| format!("failed to connect to database: {database_name}"))?;
 
     Ok(pool)
 }

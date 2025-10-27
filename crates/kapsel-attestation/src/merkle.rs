@@ -40,7 +40,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use kapsel_core::storage::Storage;
+use kapsel_core::storage::{merkle_leaves::MerkleLeafInsert, Storage};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 
 use crate::{
@@ -100,7 +100,7 @@ impl MerkleService {
     /// load existing tree state from the database on first use.
     pub fn new(storage: Arc<Storage>, signing: SigningService) -> Self {
         // Use a fixed lock ID for production consistency
-        const DEFAULT_LOCK_ID: i64 = 1234567890;
+        const DEFAULT_LOCK_ID: i64 = 1_234_567_890;
         Self {
             storage,
             signing,
@@ -160,6 +160,7 @@ impl MerkleService {
     ///
     /// Returns `AttestationError::BatchCommitFailed` if database transaction
     /// fails or tree operations are invalid.
+    #[allow(clippy::too_many_lines)]
     pub async fn try_commit_pending(&mut self) -> Result<SignedTreeHead> {
         if self.pending.is_empty() {
             return Err(AttestationError::BatchCommitFailed {
@@ -189,9 +190,7 @@ impl MerkleService {
         // Get current tree size from database atomically within transaction
         let current_tree_size: i64 =
             self.storage.signed_tree_heads.find_max_tree_size_in_tx(&mut tx).await.map_err(
-                |e| {
-                    AttestationError::batch_commit_failed(format!("failed to get tree size: {}", e))
-                },
+                |e| AttestationError::batch_commit_failed(format!("failed to get tree size: {e}")),
             )?;
 
         let new_tree_size = current_tree_size
@@ -215,8 +214,7 @@ impl MerkleService {
                 .await
                 .map_err(|e| {
                     AttestationError::batch_commit_failed(format!(
-                        "failed to load existing leaves: {}",
-                        e
+                        "failed to load existing leaves: {e}"
                     ))
                 })?;
 
@@ -304,20 +302,19 @@ impl MerkleService {
     ) -> Result<()> {
         self.storage
             .merkle_leaves
-            .insert_leaf_from_attempt_in_tx(
-                &mut **tx,
-                &leaf_hash[..],
-                leaf.delivery_attempt_id,
-                &leaf.endpoint_url,
-                &leaf.payload_hash[..],
-                leaf.attempt_number,
-                leaf.attempted_at,
-                Some(tree_index),
-                Some(batch_id),
-            )
+            .insert_leaf_from_attempt_in_tx(&mut **tx, MerkleLeafInsert {
+                leaf_hash: &leaf_hash[..],
+                delivery_attempt_id: leaf.delivery_attempt_id,
+                endpoint_url: &leaf.endpoint_url,
+                payload_hash: &leaf.payload_hash[..],
+                attempt_number: leaf.attempt_number,
+                attempted_at: leaf.attempted_at,
+                tree_index: Some(tree_index),
+                batch_id: Some(batch_id),
+            })
             .await
             .map_err(|e| {
-                AttestationError::batch_commit_failed(format!("failed to insert leaves: {}", e))
+                AttestationError::batch_commit_failed(format!("failed to insert leaves: {e}"))
             })?;
 
         Ok(())
@@ -334,7 +331,7 @@ impl MerkleService {
         // NULL)
         let leaf_hashes: Vec<Vec<u8>> =
             self.storage.merkle_leaves.find_committed_leaf_hashes().await.map_err(|e| {
-                AttestationError::batch_commit_failed(format!("failed to insert tree head: {}", e))
+                AttestationError::batch_commit_failed(format!("failed to insert tree head: {e}"))
             })?;
 
         if !leaf_hashes.is_empty() {

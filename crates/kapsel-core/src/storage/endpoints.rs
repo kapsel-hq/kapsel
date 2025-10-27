@@ -14,6 +14,21 @@ use crate::{
     models::{CircuitState, Endpoint, EndpointId, SignatureConfig, TenantId},
 };
 
+/// Parameters for updating circuit breaker state.
+#[derive(Debug)]
+pub struct CircuitStateUpdate {
+    /// New circuit state
+    pub state: CircuitState,
+    /// Current failure count
+    pub failure_count: i32,
+    /// Current success count
+    pub success_count: i32,
+    /// Timestamp of last failure
+    pub last_failure_at: Option<DateTime<Utc>>,
+    /// Timestamp when half-open state should be attempted
+    pub half_open_at: Option<DateTime<Utc>>,
+}
+
 /// Repository for endpoint database operations.
 ///
 /// Handles all database interactions for webhook endpoints including
@@ -65,12 +80,12 @@ impl Repository {
         let signature_config = match &endpoint.signature_config {
             SignatureConfig::None => "none".to_string(),
             SignatureConfig::HmacSha256 { secret, header } => {
-                format!("hmac_sha256:{}:{}", header, secret)
+                format!("hmac_sha256:{header}:{secret}")
             },
         };
 
         let id = sqlx::query_scalar(
-            r#"
+            r"
             INSERT INTO endpoints (
                 id, tenant_id, name, url, is_active, signature_config,
                 max_retries, timeout_seconds, retry_strategy,
@@ -81,7 +96,7 @@ impl Repository {
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
             )
             RETURNING id
-            "#,
+            ",
         )
         .bind(endpoint.id.0)
         .bind(endpoint.tenant_id.0)
@@ -138,7 +153,7 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         let endpoint = sqlx::query_as::<_, Endpoint>(
-            r#"
+            r"
             SELECT id, tenant_id, name, url, is_active, signature_config,
                    max_retries, timeout_seconds, retry_strategy,
                    circuit_state, circuit_failure_count, circuit_success_count,
@@ -147,7 +162,7 @@ impl Repository {
                    total_events_received, total_events_delivered, total_events_failed
             FROM endpoints
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .fetch_optional(executor)
@@ -165,7 +180,7 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_by_tenant(&self, tenant_id: TenantId) -> Result<Vec<Endpoint>> {
         let endpoints = sqlx::query_as::<_, Endpoint>(
-            r#"
+            r"
             SELECT id, tenant_id, name, url, is_active, signature_config,
                    max_retries, timeout_seconds, retry_strategy,
                    circuit_state, circuit_failure_count, circuit_success_count,
@@ -175,7 +190,7 @@ impl Repository {
             FROM endpoints
             WHERE tenant_id = $1
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .fetch_all(&*self.pool)
@@ -194,7 +209,7 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_active_by_tenant(&self, tenant_id: TenantId) -> Result<Vec<Endpoint>> {
         let endpoints = sqlx::query_as::<_, Endpoint>(
-            r#"
+            r"
             SELECT id, tenant_id, name, url, is_active, signature_config,
                    max_retries, timeout_seconds, retry_strategy,
                    circuit_state, circuit_failure_count, circuit_success_count,
@@ -204,7 +219,7 @@ impl Repository {
             FROM endpoints
             WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL
             ORDER BY created_at DESC
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .fetch_all(&*self.pool)
@@ -244,12 +259,12 @@ impl Repository {
         let signature_config = match &endpoint.signature_config {
             SignatureConfig::None => "none".to_string(),
             SignatureConfig::HmacSha256 { secret, header } => {
-                format!("hmac_sha256:{}:{}", header, secret)
+                format!("hmac_sha256:{header}:{secret}")
             },
         };
 
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET name = $2, url = $3, is_active = $4, signature_config = $5,
                 max_retries = $6, timeout_seconds = $7,
@@ -257,7 +272,7 @@ impl Repository {
                 circuit_success_count = $11, circuit_last_failure_at = $12,
                 circuit_half_open_at = $13, updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint.id.0)
         .bind(&endpoint.name)
@@ -315,11 +330,11 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET is_active = $2, updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(enabled)
@@ -346,16 +361,14 @@ impl Repository {
         last_failure_at: Option<DateTime<Utc>>,
         half_open_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        self.update_circuit_state_impl(
-            &*self.pool,
-            endpoint_id,
+        let update = CircuitStateUpdate {
             state,
             failure_count,
             success_count,
             last_failure_at,
             half_open_at,
-        )
-        .await
+        };
+        self.update_circuit_state_impl(&*self.pool, endpoint_id, update).await
     }
 
     /// Updates circuit breaker state within a transaction.
@@ -367,22 +380,9 @@ impl Repository {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         endpoint_id: EndpointId,
-        state: CircuitState,
-        failure_count: i32,
-        success_count: i32,
-        last_failure_at: Option<DateTime<Utc>>,
-        half_open_at: Option<DateTime<Utc>>,
+        update: CircuitStateUpdate,
     ) -> Result<()> {
-        self.update_circuit_state_impl(
-            &mut **tx,
-            endpoint_id,
-            state,
-            failure_count,
-            success_count,
-            last_failure_at,
-            half_open_at,
-        )
-        .await
+        self.update_circuit_state_impl(&mut **tx, endpoint_id, update).await
     }
 
     /// Private helper for updating circuit state with generic executor.
@@ -390,17 +390,13 @@ impl Repository {
         &self,
         executor: E,
         endpoint_id: EndpointId,
-        state: CircuitState,
-        failure_count: i32,
-        success_count: i32,
-        last_failure_at: Option<DateTime<Utc>>,
-        half_open_at: Option<DateTime<Utc>>,
+        update: CircuitStateUpdate,
     ) -> Result<()>
     where
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET circuit_state = $2,
                 circuit_failure_count = $3,
@@ -409,14 +405,14 @@ impl Repository {
                 circuit_half_open_at = $6,
                 updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
-        .bind(state.to_string())
-        .bind(failure_count)
-        .bind(success_count)
-        .bind(last_failure_at)
-        .bind(half_open_at)
+        .bind(update.state.to_string())
+        .bind(update.failure_count)
+        .bind(update.success_count)
+        .bind(update.last_failure_at)
+        .bind(update.half_open_at)
         .execute(executor)
         .await?;
 
@@ -454,10 +450,10 @@ impl Repository {
         E: Executor<'e, Database = Postgres>,
     {
         sqlx::query(
-            r#"
+            r"
             DELETE FROM endpoints
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .execute(executor)
@@ -476,11 +472,11 @@ impl Repository {
     /// Returns error if update fails.
     pub async fn soft_delete(&self, endpoint_id: EndpointId) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET deleted_at = NOW(), is_active = false, updated_at = NOW()
             WHERE id = $1 AND deleted_at IS NULL
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .execute(&*self.pool)
@@ -496,11 +492,11 @@ impl Repository {
     /// Returns error if update fails.
     pub async fn recover(&self, endpoint_id: EndpointId) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET deleted_at = NULL, is_active = true, updated_at = NOW()
             WHERE id = $1 AND deleted_at IS NOT NULL
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .execute(&*self.pool)
@@ -519,10 +515,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_by_tenant(&self, tenant_id: TenantId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM endpoints
             WHERE tenant_id = $1 AND deleted_at IS NULL
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .fetch_one(&*self.pool)
@@ -540,10 +536,10 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn count_active_by_tenant(&self, tenant_id: TenantId) -> Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            r#"
+            r"
             SELECT COUNT(*) FROM endpoints
             WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .fetch_one(&*self.pool)
@@ -561,7 +557,7 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_by_name(&self, tenant_id: TenantId, name: &str) -> Result<Option<Endpoint>> {
         let endpoint = sqlx::query_as::<_, Endpoint>(
-            r#"
+            r"
             SELECT id, tenant_id, name, url, is_active, signature_config,
                    max_retries, timeout_seconds, retry_strategy,
                    circuit_state, circuit_failure_count, circuit_success_count,
@@ -570,7 +566,7 @@ impl Repository {
                    total_events_received, total_events_delivered, total_events_failed
             FROM endpoints
             WHERE tenant_id = $1 AND name = $2 AND deleted_at IS NULL
-            "#,
+            ",
         )
         .bind(tenant_id.0)
         .bind(name)
@@ -596,14 +592,14 @@ impl Repository {
         events_failed: i64,
     ) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET total_events_received = total_events_received + $2,
                 total_events_delivered = total_events_delivered + $3,
                 total_events_failed = total_events_failed + $4,
                 updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .bind(events_received)
@@ -624,7 +620,7 @@ impl Repository {
     /// Returns error if query fails.
     pub async fn find_with_open_circuits(&self, limit: Option<i64>) -> Result<Vec<Endpoint>> {
         let endpoints = sqlx::query_as::<_, Endpoint>(
-            r#"
+            r"
             SELECT id, tenant_id, name, url, is_active, signature_config,
                    max_retries, timeout_seconds, retry_strategy,
                    circuit_state, circuit_failure_count, circuit_success_count,
@@ -635,7 +631,7 @@ impl Repository {
             WHERE circuit_state = 'open' AND deleted_at IS NULL
             ORDER BY circuit_last_failure_at DESC
             LIMIT $1
-            "#,
+            ",
         )
         .bind(limit.unwrap_or(100))
         .fetch_all(&*self.pool)
@@ -653,7 +649,7 @@ impl Repository {
     /// Returns error if update fails.
     pub async fn reset_circuit_breaker(&self, endpoint_id: EndpointId) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE endpoints
             SET circuit_state = 'closed',
                 circuit_failure_count = 0,
@@ -662,7 +658,7 @@ impl Repository {
                 circuit_half_open_at = NULL,
                 updated_at = NOW()
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(endpoint_id.0)
         .execute(&*self.pool)

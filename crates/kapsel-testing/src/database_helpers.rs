@@ -46,8 +46,8 @@ impl TestEnv {
             id: tenant_id,
             name: unique_name,
             tier: plan.to_string(),
-            max_events_per_month: 100000, // Default for testing
-            max_endpoints: 100,           // Default for testing
+            max_events_per_month: 100_000, // Default for testing
+            max_endpoints: 100,            // Default for testing
             events_this_month: 0,
             created_at: now,
             updated_at: now,

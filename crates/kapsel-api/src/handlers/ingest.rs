@@ -140,7 +140,7 @@ pub async fn ingest_webhook(
                 error!(error = %e, "Failed to check for duplicates");
                 return create_error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &KapselError::Other(anyhow::anyhow!("Failed to check for duplicates: {}", e)),
+                    &KapselError::Other(anyhow::anyhow!("Failed to check for duplicates: {e}")),
                 );
             },
         }
@@ -219,7 +219,7 @@ pub async fn ingest_webhook(
             error!(error = %e, "Failed to persist webhook event");
             create_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &KapselError::Other(anyhow::anyhow!("Failed to persist webhook event: {}", e)),
+                &KapselError::Other(anyhow::anyhow!("Failed to persist webhook event: {e}")),
             )
         },
     }
@@ -274,14 +274,14 @@ async fn persist_event(
         failure_count: 0,
         last_attempt_at: None,
         next_retry_at: None,
-        headers: sqlx::types::Json(
-            headers
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect(),
-        ),
+        headers: sqlx::types::Json({
+            if let Some(obj) = headers.as_object() {
+                obj.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()
+            } else {
+                error!("headers field is not an object");
+                return Err(CoreError::InvalidInput("headers must be an object".to_string()));
+            }
+        }),
         body: body.to_vec(),
         content_type,
         received_at: chrono::Utc::now(),

@@ -260,8 +260,8 @@ async fn invariant_checks_concurrent_delivery_attempts() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant_id.0)
             .endpoint(endpoint_id.0)
-            .source_event(format!("concurrent-{}", i))
-            .body(format!("webhook {}", i).into_bytes())
+            .source_event(format!("concurrent-{i}"))
+            .body(format!("webhook {i}").into_bytes())
             .build();
 
         let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
