@@ -596,6 +596,8 @@ fn property_webhook_delivery_retry_scenarios() {
                     "Total processing time should match sum of backoff delays for {} failures",
                     num_failures
                 );
+
+                env.shutdown_delivery_engine().await.unwrap();
             });
 
             Ok(())
@@ -692,6 +694,8 @@ fn property_idempotency_under_duress() {
                 .unwrap();
 
                 assert_eq!(count, 1, "Should have exactly one event for source_event_id");
+
+                env.shutdown_delivery_engine().await.unwrap();
             });
             Ok(())
         })
@@ -817,6 +821,8 @@ fn property_circuit_breaker_resilience() {
                         "Circuit breaker should be in a valid state: {}",
                         circuit_state
                     );
+
+                    env.shutdown_delivery_engine().await.unwrap();
                 });
                 Ok(())
             },
@@ -922,6 +928,8 @@ fn property_fifo_processing_order() {
                         "Should have first attempts for all {} events",
                         webhook_count
                     );
+
+                    env.shutdown_delivery_engine().await.unwrap();
                 });
                 Ok(())
             },
