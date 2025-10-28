@@ -43,18 +43,6 @@ use crate::{config::Config, handlers, middleware::auth::auth_middleware, AppStat
 /// - Request tracing and logging
 /// - Timeout handling (configurable)
 /// - Shared application state
-///
-/// # Example
-///
-/// ```no_run
-/// use kapsel_api::{server::create_router, Config};
-/// use sqlx::PgPool;
-///
-/// async fn start(db: PgPool, config: &Config) {
-///     let app = create_router(db, config);
-///     // Serve the app...
-/// }
-/// ```
 pub fn create_router(storage: Arc<Storage>, clock: Arc<dyn Clock>, config: &Config) -> Router {
     let app_state = AppState::new(storage.clone(), clock);
 
@@ -107,26 +95,6 @@ async fn inject_request_id(req: Request, next: Next) -> Response {
 /// - Port is already in use
 /// - Network interface unavailable
 /// - TLS configuration invalid (future)
-///
-/// # Example
-///
-/// ```no_run
-/// use std::net::SocketAddr;
-///
-/// use kapsel_api::{server::start_server, Config};
-/// use sqlx::PgPool;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let db = PgPool::connect("postgresql://...").await?;
-///     let config = Config::load()?;
-///     let addr = "127.0.0.1:8080".parse()?;
-///
-///     start_server(db, &config, addr).await?;
-///     Ok(())
-/// }
-/// ```
-/// Starts the HTTP server on the specified address.
 pub async fn start_server(
     db: PgPool,
     clock: Arc<dyn Clock>,

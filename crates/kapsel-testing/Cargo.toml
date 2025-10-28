@@ -22,7 +22,6 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 insta = { workspace = true }
-sha2 = { workspace = true }
 sha256 = "1.5"
 once_cell = { workspace = true }
 tracing = { workspace = true }
