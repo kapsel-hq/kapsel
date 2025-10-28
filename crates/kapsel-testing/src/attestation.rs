@@ -107,25 +107,18 @@ impl TestEnv {
             "querying attestation leaf count for event"
         );
 
-        // Debug: Check total leaf count in the table
-        let total_leaves = self.storage().merkle_leaves.count_all().await.unwrap_or(0);
-
-        tracing::debug!(total_leaves = total_leaves, "total attestation leaves in database");
-
-        // Use repository to count leaves by event - for now we'll need to get all
-        // leaves and filter since we don't have a specific count_by_event
-        // method yet
-        let current_count =
-            i64::try_from(self.storage().merkle_leaves.find_committed_leaf_hashes().await?.len())
-                .unwrap_or(i64::MAX);
+        // Use repository to find leaves for the specific event
+        let leaves =
+            self.storage().merkle_leaves.find_attestation_leaf_info_by_event(event_id.0).await?;
+        let count = if leaves.is_some() { 1 } else { 0 };
 
         tracing::debug!(
             event_id = %event_id.0,
-            count = current_count,
+            count = count,
             "attestation leaf count query result"
         );
 
-        Ok(current_count)
+        Ok(count)
     }
 
     /// Fetch attestation leaf for a specific event.
