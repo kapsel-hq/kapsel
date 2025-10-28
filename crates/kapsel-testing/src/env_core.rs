@@ -116,9 +116,20 @@ impl TestEnvBuilder {
             };
 
             let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
+
+            // Use NoOpEventHandler by default for test isolation
+            // This avoids coupling delivery tests to the attestation system
+            let event_handler =
+                Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+
             Some(
-                DeliveryEngine::new(database.clone(), delivery_config, clock_arc)
-                    .context("failed to create delivery engine")?,
+                DeliveryEngine::with_event_handler(
+                    database.clone(),
+                    delivery_config,
+                    clock_arc,
+                    event_handler,
+                )
+                .context("failed to create delivery engine")?,
             )
         } else {
             None

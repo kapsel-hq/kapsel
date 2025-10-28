@@ -95,18 +95,49 @@ pub struct DeliveryEngine {
 }
 
 impl DeliveryEngine {
-    /// Creates a new delivery engine with the given configuration.
+    /// Creates a new delivery engine with the given configuration and event
+    /// handler.
+    ///
+    /// This constructor allows for dependency injection of the event handler,
+    /// enabling isolated testing without attestation dependencies.
     ///
     /// # Errors
     ///
     /// Returns error if the delivery client cannot be initialized.
-    pub fn new(pool: PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
+    pub fn with_event_handler(
+        pool: PgPool,
+        config: DeliveryConfig,
+        clock: Arc<dyn Clock>,
+        event_handler: Arc<dyn EventHandler>,
+    ) -> Result<Self> {
         let client = Arc::new(DeliveryClient::new(config.client_config.clone(), clock.clone())?);
         let circuit_manager =
             Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
 
+        Ok(Self {
+            pool,
+            config,
+            client,
+            circuit_manager,
+            stats,
+            cancellation_token,
+            worker_pool: None,
+            clock,
+            event_handler,
+        })
+    }
+
+    /// Creates a new delivery engine with the given configuration.
+    ///
+    /// This constructor creates a production engine with attestation support
+    /// enabled. For testing without attestation, use `with_event_handler`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the delivery client cannot be initialized.
+    pub fn new(pool: PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
         let mut event_handler = MulticastEventHandler::new(clock.clone());
         let signing_service = SigningService::ephemeral();
         let storage = Arc::new(Storage::new(pool.clone(), &clock.clone()));
@@ -118,17 +149,7 @@ impl DeliveryEngine {
         let attestation_subscriber = Arc::new(AttestationEventSubscriber::new(merkle_service));
         event_handler.add_subscriber(attestation_subscriber);
 
-        Ok(Self {
-            pool,
-            config,
-            client,
-            circuit_manager,
-            stats,
-            cancellation_token,
-            worker_pool: None,
-            clock,
-            event_handler: Arc::new(event_handler),
-        })
+        Self::with_event_handler(pool, config, clock, Arc::new(event_handler))
     }
 
     /// Starts the delivery engine with configured worker pool.
@@ -787,7 +808,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_starts_with_configured_workers() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
         let mut engine = DeliveryEngine::new(
@@ -806,7 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_shuts_down_gracefully() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let config = DeliveryConfig::default();
         let mut engine = DeliveryEngine::new(
             env.create_pool(),
@@ -823,7 +844,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_delivery_updates_database_correctly() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -860,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_delivery_schedules_retry() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -898,7 +919,7 @@ mod tests {
 
     #[tokio::test]
     async fn exhausted_retries_mark_event_failed() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -947,7 +968,7 @@ mod tests {
 
     #[tokio::test]
     async fn circuit_breaker_blocks_delivery_when_open() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -992,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_claims_pending_events_from_database() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
@@ -1066,7 +1087,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_retryable_errors_mark_event_failed_immediately() {
-        let env = TestEnv::new().await.expect("test environment setup failed");
+        let env = TestEnv::new_isolated().await.expect("test environment setup failed");
         let mock_server = MockServer::start().await;
         let webhook_url = format!("{}/webhook", mock_server.uri());
 
