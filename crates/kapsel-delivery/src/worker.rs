@@ -460,6 +460,12 @@ impl DeliveryWorker {
 
         // 3. Build delivery request
         let delivery_attempt_id = Uuid::new_v4();
+        debug!(
+            worker_id = self.id,
+            event_id = %event.id,
+            delivery_attempt_id = %delivery_attempt_id,
+            "Generated delivery attempt ID"
+        );
         let delivery_request = DeliveryRequest {
             delivery_id: delivery_attempt_id,
             event_id: event.id.0,
@@ -477,12 +483,19 @@ impl DeliveryWorker {
         let delivery_result = self.client.deliver(delivery_request).await;
 
         // 5. Record delivery attempt for audit trail
+        debug!(
+            worker_id = self.id,
+            event_id = %event.id,
+            delivery_attempt_id = %delivery_attempt_id,
+            "Recording delivery attempt to database"
+        );
         self.record_delivery_attempt(
             event,
             &endpoint_url,
             u32::try_from(event.failure_count + 1).unwrap_or(u32::MAX),
             &delivery_result,
             start_time.elapsed(),
+            delivery_attempt_id,
         )
         .await;
 
@@ -507,6 +520,12 @@ impl DeliveryWorker {
                         payload_hash: Self::compute_payload_hash(&event.body),
                         payload_size: event.payload_size,
                     });
+                    debug!(
+                        worker_id = self.id,
+                        event_id = %event.id,
+                        delivery_attempt_id = %delivery_attempt_id,
+                        "Publishing delivery success event for attestation"
+                    );
                     self.event_handler.handle_event(success_event).await;
 
                     info!(
@@ -772,6 +791,7 @@ impl DeliveryWorker {
         attempt_number: u32,
         result: &Result<crate::client::DeliveryResponse>,
         _duration: std::time::Duration,
+        delivery_attempt_id: Uuid,
     ) {
         let (response_status, response_body, error_message, succeeded) = match result {
             Ok(response) => (
@@ -784,7 +804,7 @@ impl DeliveryWorker {
         };
 
         let delivery_attempt = kapsel_core::models::DeliveryAttempt {
-            id: uuid::Uuid::new_v4(),
+            id: delivery_attempt_id,
             event_id: event.id,
             attempt_number,
             endpoint_id: event.endpoint_id,
