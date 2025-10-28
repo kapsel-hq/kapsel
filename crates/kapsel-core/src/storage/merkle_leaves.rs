@@ -358,7 +358,14 @@ impl Repository {
     where
         E: Executor<'e, Database = Postgres>,
     {
-        sqlx::query(
+        tracing::debug!(
+            delivery_attempt_id = %params.delivery_attempt_id,
+            endpoint_url = %params.endpoint_url,
+            attempt_number = params.attempt_number,
+            "Inserting merkle leaf for delivery attempt"
+        );
+
+        let result = sqlx::query(
             r"
             INSERT INTO merkle_leaves
             (leaf_hash, delivery_attempt_id, event_id, tenant_id, endpoint_url,
@@ -379,6 +386,19 @@ impl Repository {
         .bind(params.batch_id)
         .execute(executor)
         .await?;
+
+        tracing::debug!(
+            delivery_attempt_id = %params.delivery_attempt_id,
+            rows_affected = result.rows_affected(),
+            "Merkle leaf insert completed"
+        );
+
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_attempt_id = %params.delivery_attempt_id,
+                "No rows inserted - delivery attempt may not exist in database"
+            );
+        }
 
         Ok(())
     }
