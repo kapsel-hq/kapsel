@@ -607,12 +607,33 @@ impl DeliveryWorker {
         self.circuit_manager.write().await.record_failure(endpoint_key).await;
 
         if error.is_retryable() {
-            // Calculate retry timing using policy
+            // Fetch endpoint to get specific max_retries configuration
+            let endpoint = self
+                .storage
+                .endpoints
+                .find_by_id(event.endpoint_id)
+                .await
+                .map_err(|e| DeliveryError::database(format!("failed to fetch endpoint: {e}")))?
+                .ok_or_else(|| {
+                    DeliveryError::configuration(format!(
+                        "endpoint {} not found",
+                        event.endpoint_id
+                    ))
+                })?;
+
+            // Create retry policy using endpoint-specific max_retries
+            // max_retries means total attempts = max_retries + 1 (initial attempt)
+            let endpoint_retry_policy = RetryPolicy {
+                max_attempts: u32::try_from(endpoint.max_retries + 1).unwrap_or(10),
+                ..self.config.default_retry_policy.clone()
+            };
+
+            // Calculate retry timing using endpoint-specific policy
             let retry_context = RetryContext::new(
                 attempt_number,
                 error.clone(),
                 DateTime::<Utc>::from(self.clock.now_system()),
-                self.config.default_retry_policy.clone(),
+                endpoint_retry_policy,
             );
 
             match retry_context.decide_retry() {
@@ -935,10 +956,11 @@ mod tests {
         let (_tenant_id, _endpoint_id, event_id) =
             setup_test_data_isolated(&env, &webhook_url).await;
 
-        // Update event to be at max retry limit (assuming default max_attempts = 10)
+        // Update event to be at max retry limit (endpoint has max_retries = 10, so 11
+        // total attempts)
         env.storage()
             .webhook_events
-            .mark_failed(event_id.into(), 9, None)
+            .mark_failed(event_id.into(), 10, None)
             .await
             .expect("failed to update event failure count");
 
@@ -949,7 +971,7 @@ mod tests {
         };
         let worker = create_test_worker_with_config_and_pool(env.pool(), config);
 
-        // Get event and attempt delivery (this will be attempt #10)
+        // Get event and attempt delivery (this will be attempt #11, the final one)
         let event = event_by_id(&env.storage(), &event_id).await;
         let result = worker.attempt_delivery(&event).await;
         assert!(

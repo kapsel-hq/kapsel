@@ -186,14 +186,19 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
     // Chaos pattern: Mixed success/failure for batch processing
     env.http_mock
         .mock_sequence()
-        .respond_with(200, "OK")        // Webhook 1: Success
-        .respond_with(503, "Busy")      // Webhook 2: Fail
-        .respond_with(200, "OK")        // Webhook 3: Success
-        .respond_with(408, "Timeout")   // Webhook 4: Fail
-        .respond_with(200, "OK")        // Webhook 5: Success
-        .respond_with(500, "Error")     // Webhook 6: Fail
-        .respond_with(200, "OK")        // Webhook 7: Success
-        .respond_with(503, "Busy")      // Webhook 8: Fail
+        .respond_with(200, "OK")        // Webhook 0: Success
+        .respond_with(503, "Busy")      // Webhook 1: Fail (will retry)
+        .respond_with(200, "OK")        // Webhook 2: Success
+        .respond_with(408, "Timeout")   // Webhook 3: Fail (will retry)
+        .respond_with(200, "OK")        // Webhook 4: Success
+        .respond_with(500, "Error")     // Webhook 5: Fail (will retry)
+        .respond_with(200, "OK")        // Webhook 6: Success
+        .respond_with(503, "Busy")      // Webhook 7: Fail (will retry)
+        // Retry responses for failed webhooks (1, 3, 5, 7)
+        .respond_with(200, "OK")        // Webhook 1 retry: Success
+        .respond_with(200, "OK")        // Webhook 3 retry: Success
+        .respond_with(200, "OK")        // Webhook 5 retry: Success
+        .respond_with(200, "OK")        // Webhook 7 retry: Success
         .build()
         .await;
 
