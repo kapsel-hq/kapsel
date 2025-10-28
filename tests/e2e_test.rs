@@ -181,7 +181,7 @@ async fn batch_webhook_processing() -> Result<()> {
         // Verify status based on mock responses (first 3 fail with 503, last 2 succeed
         // with 200)
         let status = env.find_webhook_status(*event_id).await?;
-        let expected_status = if i > 3 { EventStatus::Delivered } else { EventStatus::Pending };
+        let expected_status = if i >= 3 { EventStatus::Delivered } else { EventStatus::Pending };
         assert_eq!(
             status, expected_status,
             "Event {} should have status '{}' but got '{}'",
