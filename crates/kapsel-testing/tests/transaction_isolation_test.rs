@@ -16,7 +16,7 @@ async fn test_transactions_provide_isolation() -> Result<()> {
 
     // tx1 inserts data
     let tenant_id1 = Uuid::new_v4();
-    sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO tenants (id, name, tier) VALUES ($1, $2, $3)")
         .bind(tenant_id1)
         .bind("tenant-tx1")
         .bind("free")
@@ -44,7 +44,7 @@ async fn test_rollback_prevents_data_persistence() -> Result<()> {
         let mut tx = env.pool().begin().await?;
 
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO tenants (id, name, plan) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO tenants (id, name, tier) VALUES ($1, $2, $3)")
             .bind(id)
             .bind("rollback-test")
             .bind("free")
@@ -74,7 +74,7 @@ async fn test_helper_methods_work_with_transactions() -> Result<()> {
 
     // Test that we can create tenant within a transaction
     let tenant_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO tenants (id, name, plan, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())")
+    sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())")
         .bind(tenant_id)
         .bind("tx-tenant")
         .bind("free")
@@ -152,6 +152,9 @@ async fn test_transaction_aware_helpers_with_transaction() -> Result<()> {
     let unique_name = format!("pool-tenant-{}", Uuid::new_v4().simple());
     let tenant_id = env.create_tenant_tx(&mut tx, &unique_name).await?;
     let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
+
+    // Commit the transaction so data persists
+    tx.commit().await?;
 
     // Verify data exists (not in a transaction, so it persists)
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
