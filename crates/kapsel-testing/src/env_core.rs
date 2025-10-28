@@ -1,4 +1,5 @@
-//! Core TestEnv implementation - basic environment setup and management
+//! Core TestEnv implementation - basic environment setup and manage//! Core
+//! TestEnv implementation - basic environment setup and management
 
 use std::{sync::Arc, time::Duration};
 
@@ -6,7 +7,7 @@ use anyhow::{Context, Result};
 use kapsel_core::{storage::Storage, Clock};
 use kapsel_delivery::{
     retry::{BackoffStrategy, RetryPolicy},
-    DeliveryConfig, DeliveryEngine,
+    ClientConfig, DeliveryConfig, DeliveryEngine,
 };
 use uuid::Uuid;
 
@@ -115,7 +116,7 @@ impl TestEnvBuilder {
                 batch_size: self.batch_size,
                 poll_interval: self.poll_interval,
                 shutdown_timeout: self.shutdown_timeout,
-                client_config: Default::default(),
+                client_config: ClientConfig::default(),
                 default_retry_policy: RetryPolicy {
                     max_attempts: 10,
                     base_delay: Duration::from_secs(1),
@@ -355,12 +356,54 @@ impl TestEnv {
     }
 
     /// Enable attestation service for testing.
+    ///
+    /// This rebuilds the delivery engine with attestation event handler to
+    /// ensure delivery attempts are captured for attestation.
     pub fn enable_attestation(&mut self, service: kapsel_attestation::MerkleService) {
         use std::sync::Arc;
 
+        use kapsel_attestation::AttestationEventSubscriber;
+        use kapsel_delivery::DeliveryConfig;
         use tokio::sync::RwLock;
 
-        self.attestation_service = Some(Arc::new(RwLock::new(service)));
+        tracing::debug!("Enabling attestation service - rebuilding delivery engine");
+
+        // Store the attestation service
+        let attestation_service_arc = Arc::new(RwLock::new(service));
+        self.attestation_service = Some(attestation_service_arc.clone());
+
+        // Rebuild delivery engine with attestation if it exists
+        if let Some(_old_engine) = self.delivery_engine.take() {
+            tracing::debug!("Took old delivery engine, creating new one with attestation");
+
+            // Create attestation event handler
+            let attestation_subscriber = AttestationEventSubscriber::new(attestation_service_arc);
+
+            // Create new delivery engine with same configuration but with attestation
+            let delivery_config = DeliveryConfig {
+                worker_count: 1,
+                batch_size: 10,
+                poll_interval: std::time::Duration::from_millis(100),
+                client_config: kapsel_delivery::ClientConfig::default(),
+                default_retry_policy: kapsel_delivery::retry::RetryPolicy {
+                    jitter_factor: 0.0, // Deterministic for tests
+                    ..Default::default()
+                },
+                shutdown_timeout: std::time::Duration::from_secs(5),
+            };
+
+            let new_engine = DeliveryEngine::with_event_handler(
+                self.database.clone(),
+                delivery_config,
+                Arc::new(self.clock.clone()) as Arc<dyn Clock>,
+                Arc::new(attestation_subscriber),
+            )
+            .expect("failed to recreate delivery engine with attestation");
+
+            // Install the new engine
+            self.delivery_engine = Some(new_engine);
+            tracing::debug!("Successfully created new delivery engine with attestation");
+        }
     }
 }
 

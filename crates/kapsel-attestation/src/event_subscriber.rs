@@ -31,14 +31,26 @@ impl AttestationEventSubscriber {
 
     /// Handles a successful delivery event by creating an attestation leaf.
     async fn handle_delivery_success(&self, event: DeliverySucceededEvent) {
+        debug!(
+            event_id = %event.event_id,
+            delivery_attempt_id = %event.delivery_attempt_id,
+            "Processing successful delivery for attestation leaf creation"
+        );
         let leaf_data = match Self::create_leaf_data_from_success(&event) {
-            Ok(leaf) => leaf,
+            Ok(leaf) => {
+                debug!(
+                    event_id = %event.event_id,
+                    delivery_attempt_id = %event.delivery_attempt_id,
+                    "Successfully created leaf data for attestation"
+                );
+                leaf
+            },
             Err(e) => {
                 error!(
                     event_id = %event.event_id,
                     delivery_attempt_id = %event.delivery_attempt_id,
                     error = %e,
-                    "failed to create attestation leaf data from delivery success"
+                    "failed to create leaf data from delivery success event"
                 );
                 return;
             },
@@ -99,6 +111,7 @@ impl AttestationEventSubscriber {
 #[async_trait::async_trait]
 impl EventHandler for AttestationEventSubscriber {
     async fn handle_event(&self, event: DeliveryEvent) {
+        debug!("AttestationEventSubscriber received event: {:?}", std::mem::discriminant(&event));
         match event {
             DeliveryEvent::Succeeded(success_event) => {
                 self.handle_delivery_success(success_event).await;
