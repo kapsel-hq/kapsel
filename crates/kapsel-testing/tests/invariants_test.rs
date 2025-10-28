@@ -15,10 +15,10 @@ async fn production_engine_maintains_state_invariants() -> Result<()> {
 
     // Create test data using production code paths
     let tenant_id = env.create_tenant("invariant-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Configure successful delivery
-    let mock_endpoint = MockEndpoint::success("/webhook");
+    let mock_endpoint = MockEndpoint::success("/");
     env.http_mock.mock_endpoint(mock_endpoint).await;
 
     // Ingest webhook - should start in pending state
@@ -51,7 +51,7 @@ async fn idempotency_invariant_prevents_duplicates() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("idempotency-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/dup").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Create two webhooks with same source_event_id
     let source_event_id = "unique-source-123";
@@ -89,10 +89,10 @@ async fn retry_invariant_maintains_pending_state() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("retry-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/retry").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Configure endpoint to return server error (should trigger retry)
-    let mock_endpoint = MockEndpoint::failure("/retry", http::StatusCode::INTERNAL_SERVER_ERROR);
+    let mock_endpoint = MockEndpoint::failure("/", http::StatusCode::INTERNAL_SERVER_ERROR);
     env.http_mock.mock_endpoint(mock_endpoint).await;
 
     let event_id = env.ingest_webhook_simple(endpoint_id, b"retry payload").await?;
@@ -120,10 +120,10 @@ async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("batch-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/batch").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Configure successful delivery
-    let mock_endpoint = MockEndpoint::success("/batch");
+    let mock_endpoint = MockEndpoint::success("/");
     env.http_mock.mock_endpoint(mock_endpoint).await;
 
     // Create multiple webhooks
@@ -168,10 +168,10 @@ async fn database_consistency_invariant_after_delivery_cycle() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("consistency-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/consistency").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Mix of successful and failing endpoints
-    let success_endpoint = MockEndpoint::success("/consistency");
+    let success_endpoint = MockEndpoint::success("/");
     env.http_mock.mock_endpoint(success_endpoint).await;
 
     // Create events
@@ -199,9 +199,9 @@ async fn engine_lifecycle_invariant_handles_restart() -> Result<()> {
     let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("lifecycle-tenant").await?;
-    let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/lifecycle").await?;
+    let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
-    let mock_endpoint = MockEndpoint::success("/lifecycle");
+    let mock_endpoint = MockEndpoint::success("/");
     env.http_mock.mock_endpoint(mock_endpoint).await;
 
     // Create event
