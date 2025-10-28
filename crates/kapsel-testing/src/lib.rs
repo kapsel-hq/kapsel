@@ -65,22 +65,6 @@ type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 /// - Deterministic time control
 /// - Attestation service integration
 /// - Helper methods for test data setup
-///
-/// # Example
-///
-/// ```rust,no_run
-/// # use kapsel_testing::TestEnv;
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let env = TestEnv::new().await?;
-/// let mut tx = env.pool().begin().await?;
-///
-/// let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await?;
-/// let endpoint_id = env.create_endpoint_tx(&mut *tx, tenant_id, "https://example.com").await?;
-///
-/// // Test your webhook delivery logic here
-/// # Ok(())
-/// # }
-/// ```
 pub struct TestEnv {
     /// HTTP mock server for external API simulation
     pub http_mock: http::MockServer,
