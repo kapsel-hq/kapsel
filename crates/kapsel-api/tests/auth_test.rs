@@ -40,7 +40,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
     tx.commit().await.expect("commit transaction");
 
     // Create test app with auth middleware
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Make authenticated request
     let request = Request::builder()
@@ -67,7 +67,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
 #[tokio::test]
 async fn authenticate_request_fails_with_invalid_key() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder()
         .uri("/test")
@@ -87,7 +87,7 @@ async fn authenticate_request_fails_with_invalid_key() {
 #[tokio::test]
 async fn authenticate_request_fails_without_auth_header() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder().uri("/test").body(Body::empty()).expect("request build");
 
@@ -101,7 +101,7 @@ async fn authenticate_request_fails_without_auth_header() {
 #[tokio::test]
 async fn authenticate_request_fails_with_malformed_header() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Test missing "Bearer " prefix
     let request = Request::builder()
@@ -115,7 +115,7 @@ async fn authenticate_request_fails_with_malformed_header() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Test wrong authentication scheme
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
     let request = Request::builder()
         .uri("/test")
         .header(AUTHORIZATION, "Basic dGVzdDp0ZXN0")
@@ -150,7 +150,7 @@ async fn authenticate_request_fails_with_revoked_key() {
     // Mark the key as revoked
     env.storage().api_keys.revoke(&key_hash).await.expect("revoke key");
 
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder()
         .uri("/test")
@@ -182,16 +182,19 @@ async fn authenticate_request_fails_with_expired_key() {
     // Commit first so we can use the set_expiration method
     tx.commit().await.expect("commit transaction");
 
-    // Mark the key as expired
-    let expired_at =
-        chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()) - chrono::Duration::days(1);
+    // Set expiration to current time plus 1 day (valid constraint)
+    let expires_at =
+        chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()) + chrono::Duration::days(1);
     env.storage()
         .api_keys
-        .set_expiration(&key_hash, Some(expired_at))
+        .set_expiration(&key_hash, Some(expires_at))
         .await
         .expect("set expiration");
 
-    let app = create_test_app(env.pool().clone());
+    // Advance clock by 2 days to make the key expired
+    env.clock.advance(std::time::Duration::from_secs(2 * 24 * 60 * 60));
+
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder()
         .uri("/test")
@@ -222,7 +225,7 @@ async fn authenticate_request_updates_last_used_timestamp() {
     // Commit so API handlers can see the data
     tx.commit().await.expect("commit transaction");
 
-    let app = create_test_app(env.pool().clone());
+    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Check that last_used_at is initially NULL
     let initial_usage = env
@@ -260,14 +263,11 @@ async fn authenticate_request_updates_last_used_timestamp() {
 }
 
 /// Creates a test Axum app with auth middleware for testing.
-fn create_test_app(pool: sqlx::PgPool) -> Router {
+fn create_test_app(pool: sqlx::PgPool, clock: Arc<dyn kapsel_core::Clock>) -> Router {
     Router::new()
         .route("/test", get(test_handler))
         .layer(middleware::from_fn_with_state(
-            {
-                let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
-                Arc::new(Storage::new(pool.clone(), &clock))
-            },
+            Arc::new(Storage::new(pool.clone(), &clock)),
             auth_middleware,
         ))
         .with_state(pool)

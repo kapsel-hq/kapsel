@@ -248,13 +248,18 @@ pub async fn ingest_webhook(
         .to_string();
 
     let ingest_service = IngestService::new(app_state.clock.clone());
+
+    // Use event_id as source_event_id when no idempotency key provided
+    let source_event_id =
+        if idempotency_key.is_empty() { event_id.to_string() } else { idempotency_key };
+
     let insert_result = ingest_service
         .persist_event(
             &app_state.storage,
             event_id,
             tenant_id,
             endpoint_id,
-            idempotency_key,
+            source_event_id,
             headers_json,
             body.clone(),
             content_type,

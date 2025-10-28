@@ -20,7 +20,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
-figment = { workspace = true }
+figment = { workspace = true, features = ["test"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

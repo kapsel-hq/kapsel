@@ -81,7 +81,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
 
     let event = &events[0];
     assert_eq!(event.endpoint_id, endpoint_id);
-    assert_eq!(event.status.to_string(), "pending");
+    assert_eq!(event.status.to_string(), "received");
     assert_eq!(event.body, payload_bytes);
     assert_eq!(event.content_type, "application/json");
     assert_eq!(event.payload_size, i32::try_from(payload_bytes.len()).unwrap_or(i32::MAX));

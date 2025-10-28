@@ -411,44 +411,22 @@ fn default_log_level() -> String {
 #[allow(clippy::disallowed_types)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
-    use std::{collections::HashMap, env};
+    //! Configuration loading tests using figment::Jail for isolation.
+    //!
+    //! These tests use `figment::Jail` to provide isolated environments for
+    //! testing configuration loading with environment variables. Each test
+    //! runs in its own sandboxed environment with isolated:
+    //! - Environment variables (set with `jail.set_env()`)
+    //! - File system (temporary directory with `jail.create_file()`)
+    //! - Working directory
+    //!
+    //! This approach ensures tests can run in parallel without race conditions
+    //! from environment variable contamination, replacing the previous approach
+    //! that used a global mutex and manual environment variable cleanup.
+
+    use figment::Jail;
 
     use super::*;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct TestEnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        vars: Vec<String>,
-        originals: HashMap<String, Option<String>>,
-    }
-
-    impl TestEnvGuard {
-        fn new() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            Self { _lock: lock, vars: Vec::new(), originals: HashMap::new() }
-        }
-
-        fn set_var(&mut self, key: &str, value: &str) {
-            if !self.vars.contains(&key.to_string()) {
-                self.originals.insert(key.to_string(), env::var(key).ok());
-                self.vars.push(key.to_string());
-            }
-            std::env::set_var(key, value);
-        }
-    }
-
-    impl Drop for TestEnvGuard {
-        fn drop(&mut self) {
-            for var in &self.vars {
-                match self.originals.get(var) {
-                    Some(Some(value)) => std::env::set_var(var, value),
-                    Some(None) => std::env::remove_var(var),
-                    None => {},
-                }
-            }
-        }
-    }
 
     #[test]
     fn default_config_snapshot() {
@@ -460,113 +438,156 @@ mod tests {
         insta::assert_yaml_snapshot!("default_config", serde_yaml::to_value(&config).unwrap());
     }
 
+    /// Tests that environment variables properly override configuration
+    /// defaults.
+    ///
+    /// This test verifies the environment variable override mechanism by:
+    /// 1. Setting specific environment variables in an isolated jail
+    /// 2. Loading configuration which should pick up these overrides
+    /// 3. Snapshotting the resulting config to ensure values are correct
+    ///
+    /// Uses figment::Jail for parallel-safe environment isolation.
     #[test]
     fn config_with_env_overrides_snapshot() {
-        {
-            let mut guard = TestEnvGuard::new();
-            guard.set_var("DATABASE_URL", "postgresql://env:override@localhost:5432/test_db");
-            guard.set_var("DATABASE_MAX_CONNECTIONS", "25");
-            guard.set_var("HOST", "127.0.0.1");
-            guard.set_var("PORT", "9090");
-            guard.set_var("WORKER_POOL_SIZE", "16");
-            guard.set_var("WORKER_QUEUE_SIZE", "25");
-            guard.set_var("MAX_RETRY_ATTEMPTS", "12");
-            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-            guard.set_var("RETRY_MAX_DELAY_MS", "120000");
-            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "60");
-            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "35");
-            guard.set_var("ATTESTATION_BATCH_SIZE", "150");
-            guard.set_var("RUST_LOG", "info,kapsel=debug");
-        }
+        Jail::expect_with(|jail| {
+            jail.set_env("DATABASE_URL", "postgresql://env:override@localhost:5432/test_db");
+            jail.set_env("DATABASE_MAX_CONNECTIONS", "25");
+            jail.set_env("DATABASE_MIN_CONNECTIONS", "5");
+            jail.set_env("DATABASE_CONNECTION_TIMEOUT", "15");
+            jail.set_env("HOST", "127.0.0.1");
+            jail.set_env("PORT", "9090");
+            jail.set_env("REQUEST_TIMEOUT", "60");
+            jail.set_env("WORKER_POOL_SIZE", "16");
+            jail.set_env("WORKER_QUEUE_SIZE", "25");
+            jail.set_env("MAX_RETRY_ATTEMPTS", "12");
+            jail.set_env("RETRY_BASE_DELAY_MS", "2000");
+            jail.set_env("RETRY_MAX_DELAY_MS", "120000");
+            jail.set_env("RETRY_JITTER_FACTOR", "0.15");
+            jail.set_env("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
+            jail.set_env("CIRCUIT_BREAKER_SUCCESS_THRESHOLD", "3");
+            jail.set_env("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "60");
+            jail.set_env("DELIVERY_TIMEOUT_SECONDS", "35");
+            jail.set_env("ATTESTATION_BATCH_SIZE", "150");
+            jail.set_env("RUST_LOG", "info,kapsel=debug");
 
-        let config = Config::load().expect("Config should load with env overrides");
+            let config = Config::load().expect("Config should load with env overrides");
 
-        assert!(config.validate().is_ok());
+            assert!(config.validate().is_ok());
 
-        insta::assert_yaml_snapshot!(
-            "config_with_env_overrides",
-            serde_yaml::to_value(&config).unwrap()
-        );
+            insta::assert_yaml_snapshot!(
+                "config_with_env_overrides",
+                serde_yaml::to_value(&config).unwrap()
+            );
+
+            Ok(())
+        });
     }
 
+    /// Tests a production-like configuration with environment overrides.
+    ///
+    /// This test simulates a production deployment scenario where:
+    /// 1. Environment variables provide production-specific values
+    /// 2. Configuration loading correctly applies these overrides
+    /// 3. The resulting config matches expected production settings
+    ///
+    /// Uses figment::Jail for parallel-safe environment isolation.
     #[test]
     fn production_like_config_snapshot() {
-        {
-            let mut guard = TestEnvGuard::new();
-            guard.set_var("DATABASE_URL", "postgresql://prod:secret@db.example.com:5432/kapsel");
-            guard.set_var("DATABASE_MAX_CONNECTIONS", "50");
-            guard.set_var("DATABASE_MIN_CONNECTIONS", "10");
-            guard.set_var("HOST", "0.0.0.0");
-            guard.set_var("PORT", "8080");
-            guard.set_var("WORKER_POOL_SIZE", "32");
-            guard.set_var("WORKER_QUEUE_SIZE", "50");
-            guard.set_var("MAX_RETRY_ATTEMPTS", "15");
-            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-            guard.set_var("RETRY_MAX_DELAY_MS", "600000");
-            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
-            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
-            guard.set_var("ATTESTATION_BATCH_SIZE", "500");
-            guard.set_var("RUST_LOG", "info,kapsel=debug");
-        }
+        Jail::expect_with(|jail| {
+            jail.set_env("DATABASE_URL", "postgresql://prod:secret@db.example.com:5432/kapsel");
+            jail.set_env("DATABASE_MAX_CONNECTIONS", "50");
+            jail.set_env("DATABASE_MIN_CONNECTIONS", "10");
+            jail.set_env("DATABASE_CONNECTION_TIMEOUT", "10");
+            jail.set_env("HOST", "0.0.0.0");
+            jail.set_env("PORT", "8080");
+            jail.set_env("REQUEST_TIMEOUT", "30");
+            jail.set_env("WORKER_POOL_SIZE", "32");
+            jail.set_env("WORKER_QUEUE_SIZE", "50");
+            jail.set_env("MAX_RETRY_ATTEMPTS", "15");
+            jail.set_env("RETRY_BASE_DELAY_MS", "2000");
+            jail.set_env("RETRY_MAX_DELAY_MS", "600000");
+            jail.set_env("RETRY_JITTER_FACTOR", "0.1");
+            jail.set_env("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
+            jail.set_env("CIRCUIT_BREAKER_SUCCESS_THRESHOLD", "2");
+            jail.set_env("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
+            jail.set_env("DELIVERY_TIMEOUT_SECONDS", "45");
+            jail.set_env("ATTESTATION_BATCH_SIZE", "500");
+            jail.set_env("RUST_LOG", "info,kapsel=debug");
 
-        let config = Config::load().expect("Config should load production settings");
+            let config = Config::load().expect("Config should load production settings");
 
-        assert!(config.validate().is_ok());
+            assert!(config.validate().is_ok());
 
-        insta::assert_yaml_snapshot!(
-            "production_like_config",
-            serde_yaml::to_value(&config).unwrap()
-        );
+            insta::assert_yaml_snapshot!(
+                "production_like_config",
+                serde_yaml::to_value(&config).unwrap()
+            );
+
+            Ok(())
+        });
     }
 
+    /// Tests configuration conversion methods with values from a config file.
+    ///
+    /// This test verifies that:
+    /// 1. Configuration can be loaded from a TOML file in the jail directory
+    /// 2. Config conversion methods (to_delivery_config, to_client_config,
+    ///    etc.) work correctly with the loaded values
+    /// 3. The converted configurations match expected snapshots
+    ///
+    /// Uses figment::Jail for isolated file system and config loading.
     #[test]
     fn config_conversions_snapshot() {
-        {
-            let mut guard = TestEnvGuard::new();
-            guard.set_var("DATABASE_URL", "postgresql://test:pass@localhost:5432/kapsel_test");
-            guard.set_var("WORKER_POOL_SIZE", "32");
-            guard.set_var("WORKER_QUEUE_SIZE", "50");
-            guard.set_var("MAX_RETRY_ATTEMPTS", "15");
-            guard.set_var("RETRY_BASE_DELAY_MS", "2000");
-            guard.set_var("RETRY_MAX_DELAY_MS", "600000");
-            guard.set_var("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "8");
-            guard.set_var("CIRCUIT_BREAKER_TIMEOUT_SECONDS", "120");
-            guard.set_var("DELIVERY_TIMEOUT_SECONDS", "45");
-        }
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.toml",
+                r#"
+                worker_pool_size = 8
+                worker_queue_size = 25
+                max_retry_attempts = 10
+                retry_base_delay_ms = 2000
+                retry_jitter_factor = 0.15
+                retry_max_delay_ms = 300000
+                circuit_breaker_failure_threshold = 10
+                circuit_breaker_success_threshold = 3
+                circuit_breaker_timeout_seconds = 60
+                delivery_timeout_seconds = 45
+                "#,
+            )?;
 
-        let config = Config::load().expect("Config should load for conversion testing");
+            let config = Config::load().expect("Config should load for conversion testing");
 
-        let delivery_config = config.to_delivery_config();
-        let client_config = config.to_client_config();
-        let retry_policy = config.to_retry_policy();
-        let circuit_config = config.to_circuit_config();
+            let delivery_config = config.to_delivery_config();
+            let client_config = config.to_client_config();
+            let retry_policy = config.to_retry_policy();
+            let circuit_config = config.to_circuit_config();
 
-        let conversions = serde_json::json!({
-            "circuit_config": {
-                "failure_threshold": circuit_config.failure_threshold,
-                "success_threshold": circuit_config.success_threshold,
-                "timeout_secs": circuit_config.open_timeout.as_secs(),
-            },
-            "client_config": {
-                "timeout_secs": client_config.timeout.as_secs(),
-                "user_agent": client_config.user_agent,
-            },
-            "delivery_config": {
-                "batch_size": delivery_config.batch_size,
-                "shutdown_timeout_secs": delivery_config.shutdown_timeout.as_secs(),
-                "worker_count": delivery_config.worker_count,
-            },
-            "retry_policy": {
-                "base_delay_ms": retry_policy.base_delay.as_millis(),
-                "jitter_factor": retry_policy.jitter_factor,
-                "max_attempts": retry_policy.max_attempts,
-                "max_delay_ms": retry_policy.max_delay.as_millis(),
-            }
+            let conversions = serde_json::json!({
+                "circuit_config": {
+                    "failure_threshold": circuit_config.failure_threshold,
+                    "success_threshold": circuit_config.success_threshold,
+                    "timeout_secs": circuit_config.open_timeout.as_secs(),
+                },
+                "client_config": {
+                    "timeout_secs": client_config.timeout.as_secs(),
+                    "user_agent": client_config.user_agent,
+                },
+                "delivery_config": {
+                    "batch_size": delivery_config.batch_size,
+                    "shutdown_timeout_secs": delivery_config.shutdown_timeout.as_secs(),
+                    "worker_count": delivery_config.worker_count,
+                },
+                "retry_policy": {
+                    "base_delay_ms": retry_policy.base_delay.as_millis(),
+                    "jitter_factor": retry_policy.jitter_factor,
+                    "max_attempts": retry_policy.max_attempts,
+                    "max_delay_ms": retry_policy.max_delay.as_millis(),
+                }
+            });
+
+            insta::assert_json_snapshot!("config_conversions", conversions);
+            Ok(())
         });
-
-        insta::assert_json_snapshot!("config_conversions", conversions);
     }
 
     #[test]
@@ -595,23 +616,34 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
+    /// Tests that database URL password masking works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A database URL with credentials can be loaded from environment
+    ///    variables
+    /// 2. The masking function properly hides the password while preserving
+    ///    other parts
+    /// 3. Security-sensitive information is not exposed in logs
+    ///
+    /// Uses figment::Jail for isolated environment variable testing.
     #[test]
     fn database_url_masking() {
-        {
-            let mut guard = TestEnvGuard::new();
-            guard.set_var(
+        Jail::expect_with(|jail| {
+            jail.set_env(
                 "DATABASE_URL",
                 "postgresql://username:secret123@db.example.com:5432/kapsel",
             );
-        }
 
-        let config = Config::load().expect("Config should load");
-        let masked = config.database_url_masked();
+            let config = Config::load().expect("Config should load");
+            let masked = config.database_url_masked();
 
-        assert!(!masked.contains("secret123"));
-        assert!(masked.contains("username"));
-        assert!(masked.contains("db.example.com"));
-        assert!(masked.contains("***"));
+            assert!(!masked.contains("secret123"));
+            assert!(masked.contains("username"));
+            assert!(masked.contains("db.example.com"));
+            assert!(masked.contains("***"));
+
+            Ok(())
+        });
     }
 
     #[test]

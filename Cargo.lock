@@ -673,9 +673,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
 dependencies = [
  "atomic",
+ "parking_lot",
  "pear",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "uncased",
  "version_check",
@@ -1415,7 +1417,6 @@ dependencies = [
  "rand 0.9.2",
  "reqwest",
  "serde_json",
- "sha2",
  "sha256",
  "sqlx",
  "tokio",
