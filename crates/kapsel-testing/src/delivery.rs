@@ -24,14 +24,6 @@ impl TestEnv {
     /// - No delivery engine is configured for this TestEnv
     /// - The delivery engine fails to start, process events, or shutdown
     /// - Database connectivity issues occur during processing
-    ///
-    /// # Production Engine Required
-    ///
-    /// This method requires a production DeliveryEngine. If you need test
-    /// environments without delivery processing, use:
-    /// ```rust
-    /// let env = TestEnv::builder().without_delivery_engine().build().await?;
-    /// ```
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub async fn run_delivery_cycle(&mut self) -> Result<()> {
         self.process_batch().await.context("delivery cycle failed")
