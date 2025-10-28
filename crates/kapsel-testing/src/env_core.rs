@@ -4,7 +4,10 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use kapsel_core::{storage::Storage, Clock};
-use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
+use kapsel_delivery::{
+    retry::{BackoffStrategy, RetryPolicy},
+    DeliveryConfig, DeliveryEngine,
+};
 use uuid::Uuid;
 
 use crate::{database::TestDatabase, http, TestClock, TestEnv};
@@ -112,7 +115,14 @@ impl TestEnvBuilder {
                 batch_size: self.batch_size,
                 poll_interval: self.poll_interval,
                 shutdown_timeout: self.shutdown_timeout,
-                ..Default::default()
+                client_config: Default::default(),
+                default_retry_policy: RetryPolicy {
+                    max_attempts: 10,
+                    base_delay: Duration::from_secs(1),
+                    max_delay: Duration::from_secs(600),
+                    jitter_factor: 0.0, // Zero jitter for deterministic tests
+                    backoff_strategy: BackoffStrategy::Exponential,
+                },
             };
 
             let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
