@@ -11,7 +11,7 @@ use kapsel_testing::{MockEndpoint, TestEnv, WebhookBuilder};
 
 #[tokio::test]
 async fn production_engine_maintains_state_invariants() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_isolated().await?;
 
     // Create test data using production code paths
     let tenant_id = env.create_tenant("invariant-tenant").await?;
@@ -86,7 +86,7 @@ async fn idempotency_invariant_prevents_duplicates() -> Result<()> {
 
 #[tokio::test]
 async fn retry_invariant_maintains_pending_state() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("retry-tenant").await?;
     let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/retry").await?;
@@ -129,7 +129,7 @@ async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
     // Create multiple webhooks
     let mut event_ids = Vec::new();
     for i in 0..5 {
-        let payload = format!("batch payload {}", i);
+        let payload = format!("batch payload {i}");
         event_ids.push(env.ingest_webhook_simple(endpoint_id, payload.as_bytes()).await?);
     }
 
@@ -154,7 +154,7 @@ async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
     assert!(delivered_count > 0, "At least some events should be delivered");
 
     let final_stats = env.delivery_stats().await.expect("engine should be available");
-    assert!(final_stats.events_processed >= delivered_count as u64);
+    assert!(final_stats.events_processed >= u64::try_from(delivered_count).unwrap());
     assert_eq!(
         final_stats.in_flight_deliveries, 0,
         "No deliveries should be in flight after processing all"
@@ -165,7 +165,7 @@ async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
 
 #[tokio::test]
 async fn database_consistency_invariant_after_delivery_cycle() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("consistency-tenant").await?;
     let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/consistency").await?;
@@ -196,7 +196,7 @@ async fn database_consistency_invariant_after_delivery_cycle() -> Result<()> {
 
 #[tokio::test]
 async fn engine_lifecycle_invariant_handles_restart() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_isolated().await?;
 
     let tenant_id = env.create_tenant("lifecycle-tenant").await?;
     let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/lifecycle").await?;

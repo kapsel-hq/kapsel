@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use kapsel_core::Clock;
 
 use crate::TestEnv;
 
@@ -31,6 +32,7 @@ impl TestEnv {
     /// ```rust
     /// let env = TestEnv::builder().without_delivery_engine().build().await?;
     /// ```
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub async fn run_delivery_cycle(&mut self) -> Result<()> {
         self.process_batch().await.context("delivery cycle failed")
     }
@@ -45,7 +47,7 @@ impl TestEnv {
     ///
     /// Returns error if the delivery engine is not configured or fails to
     /// start.
-    pub async fn process_batch(&mut self) -> Result<()> {
+    pub async fn process_batch(&self) -> Result<()> {
         if let Some(ref engine) = self.delivery_engine {
             let processed_count =
                 engine.process_batch().await.context("failed to process batch")?;
@@ -83,24 +85,24 @@ impl TestEnv {
     /// # Errors
     ///
     /// Returns error if batch processing fails or timeout is exceeded.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub async fn process_all_pending(&mut self, timeout: Duration) -> Result<()> {
-        let start_time = std::time::Instant::now();
-        let mut cycles = 0;
         const MAX_CYCLES: u32 = 50; // Prevent infinite loops
+
+        let start_time = self.clock.now();
+        let mut cycles = 0;
 
         loop {
             if start_time.elapsed() > timeout {
-                anyhow::bail!("timeout processing all pending events after {} cycles", cycles);
+                anyhow::bail!("timeout processing all pending events after {cycles} cycles");
             }
 
             if cycles >= MAX_CYCLES {
-                anyhow::bail!("exceeded maximum processing cycles ({})", MAX_CYCLES);
+                anyhow::bail!("exceeded maximum processing cycles ({MAX_CYCLES})");
             }
 
-            // Get initial stats
-            let stats_before = match self.get_delivery_stats().await {
-                Some(stats) => stats,
-                None => anyhow::bail!("no delivery engine available"),
+            let Some(stats_before) = self.get_delivery_stats().await else {
+                anyhow::bail!("no delivery engine available")
             };
 
             // Process one batch
@@ -108,9 +110,8 @@ impl TestEnv {
             cycles += 1;
 
             // Check if any new events were processed
-            let stats_after = match self.get_delivery_stats().await {
-                Some(stats) => stats,
-                None => anyhow::bail!("no delivery engine available"),
+            let Some(stats_after) = self.get_delivery_stats().await else {
+                anyhow::bail!("no delivery engine available")
             };
 
             if stats_after.events_processed == stats_before.events_processed {
@@ -124,7 +125,7 @@ impl TestEnv {
             }
 
             // Brief pause between cycles
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            self.clock.sleep(Duration::from_millis(10)).await;
         }
 
         Ok(())

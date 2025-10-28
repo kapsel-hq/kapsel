@@ -7,7 +7,7 @@ use kapsel_core::{storage::Storage, Clock};
 use kapsel_delivery::{DeliveryConfig, DeliveryEngine};
 use uuid::Uuid;
 
-use crate::{database::TestDatabase, http, time, TestEnv};
+use crate::{database::TestDatabase, http, TestClock, TestEnv};
 
 /// Builder for configuring TestEnv with production engines.
 pub struct TestEnvBuilder {
@@ -39,36 +39,42 @@ impl TestEnvBuilder {
     }
 
     /// Sets the number of delivery workers (default: 1 for determinism).
+    #[must_use]
     pub fn worker_count(mut self, count: usize) -> Self {
         self.worker_count = count;
         self
     }
 
     /// Sets the batch size for claiming events (default: 10).
+    #[must_use]
     pub fn batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
     }
 
     /// Sets the poll interval for workers (default: 100ms).
+    #[must_use]
     pub fn poll_interval(mut self, interval: Duration) -> Self {
         self.poll_interval = interval;
         self
     }
 
     /// Sets the shutdown timeout for graceful termination (default: 5s).
+    #[must_use]
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
         self
     }
 
     /// Disables the production delivery engine for tests that don't need it.
+    #[must_use]
     pub fn without_delivery_engine(mut self) -> Self {
         self.enable_delivery_engine = false;
         self
     }
 
     /// Use isolated database for this test environment.
+    #[must_use]
     pub fn isolated(mut self) -> Self {
         self.is_isolated = true;
         self
@@ -96,8 +102,9 @@ impl TestEnvBuilder {
 
         let test_run_id = Uuid::new_v4().simple().to_string();
         let http_mock = http::MockServer::start().await;
-        let clock = time::TestClock::new();
-        let storage = Arc::new(Storage::with_clock(database.clone(), Arc::new(clock.clone())));
+        let clock = TestClock::new();
+        let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
+        let storage = Arc::new(Storage::new(database.clone(), &clock_arc));
 
         let delivery_engine = if self.enable_delivery_engine {
             let delivery_config = DeliveryConfig {

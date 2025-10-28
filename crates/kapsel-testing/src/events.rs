@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use kapsel_core::{DeliveryEvent, EventHandler, MulticastEventHandler};
+use kapsel_core::{DeliveryEvent, EventHandler, MulticastEventHandler, TestClock};
 use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 
@@ -22,7 +22,7 @@ use uuid::Uuid;
 /// Provides consistent event creation across all test modules to eliminate
 /// duplication and ensure standardized test data patterns.
 pub mod test_events {
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use kapsel_core::{
         events::{DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent},
         models::{EndpointId, EventId, TenantId},
@@ -33,6 +33,21 @@ pub mod test_events {
 
     /// Creates a standard successful delivery event for testing.
     pub fn create_delivery_succeeded_event() -> DeliveryEvent {
+        create_delivery_succeeded_event_with_time(None)
+    }
+
+    /// Creates a successful delivery event with optional custom timestamp.
+    pub fn create_delivery_succeeded_event_with_time(
+        delivered_at: Option<DateTime<chrono::Utc>>,
+    ) -> DeliveryEvent {
+        let timestamp = delivered_at.unwrap_or_else(|| {
+            use kapsel_core::Clock;
+
+            use crate::TestClock;
+            let clock = TestClock::new();
+            DateTime::<Utc>::from(clock.now_system())
+        });
+
         DeliveryEvent::Succeeded(DeliverySucceededEvent {
             delivery_attempt_id: Uuid::new_v4(),
             event_id: EventId::new(),
@@ -40,7 +55,7 @@ pub mod test_events {
             endpoint_url: "https://example.com/webhook".to_string(),
             response_status: 200,
             attempt_number: 1,
-            delivered_at: Utc::now(),
+            delivered_at: timestamp,
             payload_hash: [0u8; 32],
             payload_size: 1024,
         })
@@ -48,6 +63,23 @@ pub mod test_events {
 
     /// Creates a successful delivery event with custom payload hash.
     pub fn create_delivery_succeeded_event_with_hash(payload_hash: [u8; 32]) -> DeliveryEvent {
+        create_delivery_succeeded_event_with_hash_and_time(payload_hash, None)
+    }
+
+    /// Creates a successful delivery event with custom payload hash and
+    /// optional timestamp.
+    pub fn create_delivery_succeeded_event_with_hash_and_time(
+        payload_hash: [u8; 32],
+        delivered_at: Option<DateTime<chrono::Utc>>,
+    ) -> DeliveryEvent {
+        let timestamp = delivered_at.unwrap_or_else(|| {
+            use kapsel_core::Clock;
+
+            use crate::TestClock;
+            let clock = TestClock::new();
+            DateTime::<Utc>::from(clock.now_system())
+        });
+
         DeliveryEvent::Succeeded(DeliverySucceededEvent {
             delivery_attempt_id: Uuid::new_v4(),
             event_id: EventId::new(),
@@ -55,7 +87,7 @@ pub mod test_events {
             endpoint_url: "https://example.com/webhook".to_string(),
             response_status: 200,
             attempt_number: 1,
-            delivered_at: Utc::now(),
+            delivered_at: timestamp,
             payload_hash,
             payload_size: 1024,
         })
@@ -63,6 +95,21 @@ pub mod test_events {
 
     /// Creates a standard failed delivery event for testing.
     pub fn create_delivery_failed_event() -> DeliveryEvent {
+        create_delivery_failed_event_with_time(None)
+    }
+
+    /// Creates a failed delivery event with optional custom timestamp.
+    pub fn create_delivery_failed_event_with_time(
+        failed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> DeliveryEvent {
+        let timestamp = failed_at.unwrap_or_else(|| {
+            use kapsel_core::Clock;
+
+            use crate::TestClock;
+            let clock = TestClock::new();
+            chrono::DateTime::<chrono::Utc>::from(clock.now_system())
+        });
+
         DeliveryEvent::Failed(DeliveryFailedEvent {
             delivery_attempt_id: Uuid::new_v4(),
             event_id: EventId::new(),
@@ -70,13 +117,14 @@ pub mod test_events {
             endpoint_url: "https://example.com/webhook".to_string(),
             response_status: Some(500),
             attempt_number: 3,
-            failed_at: Utc::now(),
+            failed_at: timestamp,
             error_message: "Connection timeout".to_string(),
             is_retryable: true,
         })
     }
 
     /// Creates a successful delivery event with custom properties.
+    /// Creates a custom successful delivery event with all parameters.
     pub fn create_delivery_succeeded_event_custom(
         endpoint_url: &str,
         response_status: u16,
@@ -84,6 +132,34 @@ pub mod test_events {
         payload_hash: [u8; 32],
         payload_size: i32,
     ) -> DeliveryEvent {
+        create_delivery_succeeded_event_custom_with_time(
+            endpoint_url,
+            response_status,
+            attempt_number,
+            payload_hash,
+            payload_size,
+            None,
+        )
+    }
+
+    /// Creates a custom successful delivery event with all parameters and
+    /// optional timestamp.
+    pub fn create_delivery_succeeded_event_custom_with_time(
+        endpoint_url: &str,
+        response_status: u16,
+        attempt_number: u32,
+        payload_hash: [u8; 32],
+        payload_size: i32,
+        delivered_at: Option<DateTime<chrono::Utc>>,
+    ) -> DeliveryEvent {
+        let timestamp = delivered_at.unwrap_or_else(|| {
+            use kapsel_core::Clock;
+
+            use crate::TestClock;
+            let clock = TestClock::new();
+            DateTime::<Utc>::from(clock.now_system())
+        });
+
         DeliveryEvent::Succeeded(DeliverySucceededEvent {
             delivery_attempt_id: Uuid::new_v4(),
             event_id: EventId::new(),
@@ -91,7 +167,7 @@ pub mod test_events {
             endpoint_url: endpoint_url.to_string(),
             response_status,
             attempt_number,
-            delivered_at: Utc::now(),
+            delivered_at: timestamp,
             payload_hash,
             payload_size,
         })
@@ -265,7 +341,7 @@ impl EventHandlerTester {
     /// Create a new event handler tester.
     pub fn new() -> Self {
         Self {
-            multicast: MulticastEventHandler::new(),
+            multicast: MulticastEventHandler::new(Arc::new(TestClock::new())),
             trackers: HashMap::new(),
             event_history: Arc::new(RwLock::new(Vec::new())),
         }

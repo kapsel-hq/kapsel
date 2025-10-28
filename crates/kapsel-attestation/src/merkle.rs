@@ -40,7 +40,10 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use kapsel_core::storage::{merkle_leaves::MerkleLeafInsert, Storage};
+use kapsel_core::{
+    storage::{merkle_leaves::MerkleLeafInsert, Storage},
+    Clock,
+};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 
 use crate::{
@@ -70,6 +73,9 @@ pub struct MerkleService {
     /// Signing service for tree head attestation.
     signing: SigningService,
 
+    /// Clock abstraction for deterministic time operations.
+    clock: Arc<dyn Clock>,
+
     /// Current Merkle tree state.
     #[allow(dead_code)]
     tree: MerkleTree<Sha256>,
@@ -86,6 +92,7 @@ impl std::fmt::Debug for MerkleService {
         f.debug_struct("MerkleService")
             .field("storage", &"Storage")
             .field("signing", &self.signing)
+            .field("clock", &self.clock)
             .field("tree", &"MerkleTree")
             .field("pending_count", &self.pending.len())
             .field("lock_id", &self.lock_id)
@@ -98,12 +105,13 @@ impl MerkleService {
     ///
     /// Initializes with an empty tree and pending queue. The service will
     /// load existing tree state from the database on first use.
-    pub fn new(storage: Arc<Storage>, signing: SigningService) -> Self {
+    pub fn new(storage: Arc<Storage>, signing: SigningService, clock: Arc<dyn Clock>) -> Self {
         // Use a fixed lock ID for production consistency
         const DEFAULT_LOCK_ID: i64 = 1_234_567_890;
         Self {
             storage,
             signing,
+            clock,
             tree: MerkleTree::new(),
             pending: VecDeque::new(),
             lock_id: DEFAULT_LOCK_ID,
@@ -114,8 +122,13 @@ impl MerkleService {
     ///
     /// This is primarily used for test isolation where multiple services
     /// need different lock IDs to prevent serialization conflicts.
-    pub fn with_lock_id(storage: Arc<Storage>, signing: SigningService, lock_id: i64) -> Self {
-        Self { storage, signing, tree: MerkleTree::new(), pending: VecDeque::new(), lock_id }
+    pub fn with_lock_id(
+        storage: Arc<Storage>,
+        signing: SigningService,
+        clock: Arc<dyn Clock>,
+        lock_id: i64,
+    ) -> Self {
+        Self { storage, signing, clock, tree: MerkleTree::new(), pending: VecDeque::new(), lock_id }
     }
 
     /// Add a leaf to the pending batch queue.
@@ -239,7 +252,7 @@ impl MerkleService {
         })?;
 
         let tree_size = new_tree_size;
-        let timestamp_ms = Utc::now().timestamp_millis();
+        let timestamp_ms = DateTime::<Utc>::from(self.clock.now_system()).timestamp_millis();
         let signature = self.signing.sign_tree_head(&root_hash, tree_size, timestamp_ms);
 
         let start_index = current_tree_size;

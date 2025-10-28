@@ -3,12 +3,15 @@
 //! Tests WebhookEvent, Endpoint, EventStatus, and DeliveryAttempt validation,
 //! serialization, and business rule enforcement.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use chrono::Utc;
-use kapsel_core::models::{
-    BackoffStrategy, CircuitState, DeliveryAttempt, Endpoint, EndpointId, EventId, EventStatus,
-    IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
+use chrono::{DateTime, TimeZone, Utc};
+use kapsel_core::{
+    models::{
+        BackoffStrategy, CircuitState, DeliveryAttempt, Endpoint, EndpointId, EventId, EventStatus,
+        IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
+    },
+    Clock, TestClock,
 };
 use serde_json::json;
 use sqlx::types::Json;
@@ -23,7 +26,7 @@ fn webhook_event_model_creation_and_access() {
     let event_id = EventId::new();
     let tenant_id = TenantId::new();
     let endpoint_id = EndpointId::new();
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     let mut headers = HashMap::new();
     headers.insert("content-type".to_string(), "application/json".to_string());
@@ -83,7 +86,7 @@ fn webhook_event_serialization_roundtrip() {
     headers.insert("authorization".to_string(), "Bearer token".to_string());
 
     let body_content = b"test payload";
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     let original = WebhookEvent {
         id: EventId::new(),
@@ -199,7 +202,7 @@ fn circuit_state_variants_and_behavior() {
 fn endpoint_model_creation_and_validation() {
     let endpoint_id = EndpointId::new();
     let tenant_id = TenantId::new();
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     let endpoint = Endpoint {
         id: endpoint_id,
@@ -241,7 +244,7 @@ fn endpoint_model_creation_and_validation() {
 /// back without data loss.
 #[test]
 fn endpoint_serialization_roundtrip() {
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     let original = Endpoint {
         id: EndpointId::new(),
@@ -287,7 +290,7 @@ fn delivery_attempt_model_with_realistic_data() {
     let attempt_id = Uuid::new_v4();
     let event_id = EventId::new();
     let endpoint_id = EndpointId::new();
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     let mut request_headers = HashMap::new();
     request_headers.insert("content-type".to_string(), "application/json".to_string());
@@ -367,7 +370,7 @@ fn delivery_attempt_serialization_roundtrip() {
         response_status: Some(422),
         response_headers: Some(HashMap::new()),
         response_body: Some(b"Unprocessable Entity".to_vec()),
-        attempted_at: Utc::now(),
+        attempted_at: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         succeeded: false,
         error_message: Some("Unprocessable Entity".to_string()),
     };
@@ -448,7 +451,7 @@ fn webhook_event_handles_complex_payload() {
     let event_id = EventId::new();
     let tenant_id = TenantId::new();
     let endpoint_id = EndpointId::new();
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     // Test with JSON payload
     let json_payload = json!({
@@ -525,7 +528,7 @@ fn webhook_event_handles_complex_payload() {
 /// Verifies that model fields respect database constraints and business rules.
 #[test]
 fn model_field_constraints_and_validation() {
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     // Test WebhookEvent payload size constraints
     let small_payload = b"small";
@@ -587,6 +590,8 @@ fn webhook_event_new_enforces_business_rules() {
     let large_body = vec![0u8; 10_000_000]; // 10MB
 
     // Test empty payload gets minimum size of 1
+    let clock = Arc::new(TestClock::new());
+    let now = DateTime::<Utc>::from(clock.now_system());
     let empty_event = WebhookEvent::new(
         EventId::new(),
         TenantId::new(),
@@ -595,12 +600,13 @@ fn webhook_event_new_enforces_business_rules() {
         headers.clone(),
         empty_body,
         "application/json".to_string(),
+        now,
     );
 
     assert_eq!(empty_event.payload_size, 1); // Enforced minimum
     assert_eq!(empty_event.status, EventStatus::Received); // Correct initial status
     assert_eq!(empty_event.failure_count, 0); // No failures initially
-    assert!(empty_event.received_at <= Utc::now()); // Reasonable timestamp
+    assert!(empty_event.received_at <= chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()); // Reasonable timestamp
     assert_eq!(empty_event.idempotency_strategy, IdempotencyStrategy::Header); // Default strategy
 
     // Test normal payload
@@ -612,6 +618,7 @@ fn webhook_event_new_enforces_business_rules() {
         headers.clone(),
         normal_body.clone(),
         "application/json".to_string(),
+        now,
     );
 
     assert_eq!(normal_event.payload_size, i32::try_from(normal_body.len()).unwrap());
@@ -624,7 +631,8 @@ fn webhook_event_new_enforces_business_rules() {
         "large_test".to_string(),
         headers,
         large_body,
-        "application/octet-stream".to_string(),
+        "application/json".to_string(),
+        now,
     );
 
     assert_eq!(large_event.payload_size, 10_000_000);
@@ -637,6 +645,8 @@ fn webhook_event_new_enforces_business_rules() {
 #[test]
 fn webhook_event_body_access_consistency() {
     let test_payload = b"consistency test payload \x00\x01\x02";
+    let clock = Arc::new(TestClock::new());
+    let now = DateTime::<Utc>::from(clock.now_system());
     let event = WebhookEvent::new(
         EventId::new(),
         TenantId::new(),
@@ -645,6 +655,7 @@ fn webhook_event_body_access_consistency() {
         HashMap::new(),
         test_payload.to_vec(),
         "application/octet-stream".to_string(),
+        now,
     );
 
     // All access methods should return the same data
@@ -661,6 +672,7 @@ fn webhook_event_body_access_consistency() {
         HashMap::new(),
         Vec::new(),
         "text/plain".to_string(),
+        now,
     );
 
     assert_eq!(empty_event.body(), &[] as &[u8]);
@@ -674,7 +686,7 @@ fn webhook_event_body_access_consistency() {
 /// failure patterns and success criteria.
 #[test]
 fn endpoint_circuit_breaker_state_transitions() {
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     // Test closed circuit (normal operation)
     let closed_endpoint = Endpoint {
@@ -771,7 +783,7 @@ fn endpoint_circuit_breaker_state_transitions() {
 /// business constraints.
 #[test]
 fn endpoint_retry_configuration_validation() {
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
     // Test reasonable retry configuration
     let reasonable_endpoint = Endpoint {
@@ -864,7 +876,7 @@ fn endpoint_retry_configuration_validation() {
 /// and duration constraints.
 #[test]
 fn delivery_attempt_timing_constraints() {
-    let now = Utc::now();
+    let now = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
     let event_id = EventId::new();
 
     // Test successful quick delivery
@@ -937,7 +949,8 @@ fn delivery_attempt_timing_constraints() {
 /// and unusual but valid configurations.
 #[test]
 fn domain_model_invariants_and_edge_cases() {
-    let now = Utc::now();
+    let clock = Arc::new(TestClock::new());
+    let now = DateTime::<Utc>::from(clock.now_system());
 
     // Test WebhookEvent with maximum payload size
     let max_payload = vec![0u8; i32::MAX as usize - 1]; // Near max i32
@@ -949,6 +962,7 @@ fn domain_model_invariants_and_edge_cases() {
         HashMap::new(),
         max_payload,
         "application/octet-stream".to_string(),
+        now,
     );
 
     // Should handle large payloads gracefully

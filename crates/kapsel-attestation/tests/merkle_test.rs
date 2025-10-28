@@ -7,8 +7,9 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use kapsel_attestation::LeafData;
+use kapsel_core::Clock;
 use kapsel_testing::TestEnv;
 use uuid::Uuid;
 
@@ -24,7 +25,7 @@ async fn merkle_service_adds_leaf_to_pending_queue() {
         [0x42u8; 32],
         1,
         Some(200),
-        Utc::now(),
+        chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
     )
     .unwrap();
 
@@ -69,7 +70,7 @@ async fn merkle_service_commits_batch_atomically() {
         response_status: Some(200),
         response_headers: Some(std::collections::HashMap::new()),
         response_body: Some(b"response_body".to_vec()),
-        attempted_at: chrono::Utc::now(),
+        attempted_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
         succeeded: true,
         error_message: None,
     };
@@ -152,7 +153,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
             response_status: Some(200),
             response_headers: Some(std::collections::HashMap::new()),
             response_body: Some(b"response_body".to_vec()),
-            attempted_at: chrono::Utc::now(),
+            attempted_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
             succeeded: true,
             error_message: None,
         };
@@ -268,7 +269,7 @@ async fn merkle_service_stores_batch_metadata() {
         response_status: Some(200),
         response_headers: Some(std::collections::HashMap::new()),
         response_body: Some(b"response_body".to_vec()),
-        attempted_at: chrono::Utc::now(),
+        attempted_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
         succeeded: true,
         error_message: None,
     };
@@ -286,7 +287,7 @@ async fn merkle_service_stores_batch_metadata() {
         [0x33u8; 32],
         1,
         Some(200),
-        Utc::now(),
+        chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
     )
     .unwrap();
 
@@ -327,7 +328,7 @@ async fn merkle_service_rejects_invalid_attempt_numbers() {
         [0x42u8; 32],
         0, // Invalid: not positive
         Some(200),
-        Utc::now(),
+        chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
     );
 
     assert!(result.is_err(), "Zero attempt number should be rejected");
@@ -339,7 +340,7 @@ async fn merkle_service_rejects_invalid_attempt_numbers() {
         [0x42u8; 32],
         -1, // Invalid: negative
         Some(200),
-        Utc::now(),
+        chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
     );
 
     assert!(result.is_err(), "Negative attempt number should be rejected");
@@ -388,7 +389,7 @@ async fn merkle_service_preserves_leaf_ordering() {
             response_status: Some(200),
             response_headers: Some(std::collections::HashMap::new()),
             response_body: Some(b"response_body".to_vec()),
-            attempted_at: chrono::Utc::now(),
+            attempted_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
             succeeded: true,
             error_message: None,
         };
@@ -400,7 +401,7 @@ async fn merkle_service_preserves_leaf_ordering() {
     // Create attestation service using TestEnv for proper isolation
     let mut service = env.create_test_attestation_service().await.unwrap();
 
-    let timestamp = Utc::now();
+    let timestamp = chrono::DateTime::<chrono::Utc>::from(env.clock.now_system());
 
     // Add leaves in specific order
     for (i, (delivery_id, event_id)) in

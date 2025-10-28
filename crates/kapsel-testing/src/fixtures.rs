@@ -287,6 +287,8 @@ pub struct TestEndpoint {
 
 /// Factory functions for common test scenarios.
 pub mod scenarios {
+    use chrono::DateTime;
+
     use super::{
         json, Bytes, EndpointBuilder, TestEndpoint, TestWebhook, Utc, Uuid, WebhookBuilder,
     };
@@ -386,11 +388,18 @@ pub mod scenarios {
                     .tenant(tenant_id)
                     .endpoint(endpoint_id)
                     .source_event(format!("batch_evt_{i}"))
-                    .json_body(&json!({
-                        "batch_index": i,
-                        "timestamp": Utc::now().to_rfc3339(),
-                        "data": format!("test_data_{}", i)
-                    }))
+                    .json_body({
+                        use kapsel_core::Clock;
+
+                        use crate::TestClock;
+                        let clock = TestClock::new();
+                        let timestamp = DateTime::<Utc>::from(clock.now_system()).to_rfc3339();
+                        &json!({
+                            "batch_index": i,
+                            "timestamp": timestamp,
+                            "data": format!("test_data_{}", i)
+                        })
+                    })
                     .build()
             })
             .collect()

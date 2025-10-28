@@ -3,6 +3,8 @@
 //! Tests the `/ingest/{endpoint_id}` endpoint with authentication, payload
 //! validation, signature verification, and error handling scenarios.
 
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     http::{header::AUTHORIZATION, Request, StatusCode},
@@ -33,7 +35,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
 
     tx.commit().await.expect("commit transaction");
 
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Prepare webhook payload
     let payload = json!({
@@ -93,7 +95,7 @@ async fn ingest_webhook_succeeds_with_valid_request() {
 #[tokio::test]
 async fn ingest_webhook_fails_with_invalid_auth() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let endpoint_id = Uuid::new_v4();
     let payload = json!({"event": "test"});
@@ -118,7 +120,7 @@ async fn ingest_webhook_fails_with_invalid_auth() {
 #[tokio::test]
 async fn ingest_webhook_fails_without_auth() {
     let env = TestEnv::new_isolated().await.expect("test env setup");
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let endpoint_id = Uuid::new_v4();
     let payload = json!({"event": "test"});
@@ -151,7 +153,7 @@ async fn ingest_webhook_fails_with_nonexistent_endpoint() {
         env.create_api_key_tx(&mut tx, tenant_id, "test-key").await.expect("create api key");
     tx.commit().await.expect("commit transaction");
 
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Use non-existent endpoint ID
     let endpoint_id = Uuid::new_v4();
@@ -190,7 +192,7 @@ async fn ingest_webhook_enforces_payload_size_limit() {
         .expect("create endpoint");
     tx.commit().await.expect("commit transaction");
 
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Create payload larger than 10MB limit
     let large_payload = vec![b'x'; 11 * 1024 * 1024]; // 11MB
@@ -234,7 +236,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
 
     // First request with idempotency key
-    let app1 = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let request1 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{endpoint_id}"))
@@ -244,7 +246,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
         .body(Body::from(payload_bytes.clone()))
         .expect("build first request");
 
-    let response1 = app1.oneshot(request1).await.expect("execute first request");
+    let response1 = app.clone().oneshot(request1).await.expect("execute first request");
     assert_eq!(response1.status(), StatusCode::OK);
 
     let body1 = axum::body::to_bytes(response1.into_body(), usize::MAX)
@@ -256,7 +258,7 @@ async fn ingest_webhook_handles_idempotency_correctly() {
     let first_event_id = response1_json["event_id"].as_str().expect("extract event ID");
 
     // Second request with same idempotency key
-    let app2 = create_test_router(env.pool().clone());
+    let app2 = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let request2 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{endpoint_id}"))
@@ -310,7 +312,7 @@ async fn ingest_webhook_handles_different_content_types() {
     tx.commit().await.expect("commit transaction");
 
     // Test JSON content type
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let json_payload = json!({"type": "json"});
     let json_bytes = serde_json::to_vec(&json_payload).expect("serialize json");
 
@@ -341,7 +343,7 @@ async fn ingest_webhook_handles_different_content_types() {
     assert_eq!(stored_content_type, "application/json");
 
     // Test plain text content type
-    let app = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let text_payload = "plain text payload";
 
     let request = Request::builder()
@@ -394,7 +396,7 @@ async fn ingest_webhook_without_idempotency_key() {
     let payload_bytes = serde_json::to_vec(&payload).expect("serialize payload");
 
     // First request without idempotency key
-    let app1 = create_test_router(env.pool().clone());
+    let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let request1 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{endpoint_id}"))
@@ -403,11 +405,11 @@ async fn ingest_webhook_without_idempotency_key() {
         .body(Body::from(payload_bytes.clone()))
         .expect("build first request");
 
-    let response1 = app1.oneshot(request1).await.expect("execute first request");
+    let response1 = app.clone().oneshot(request1).await.expect("execute first request");
     assert_eq!(response1.status(), StatusCode::OK);
 
     // Second identical request without idempotency key
-    let app2 = create_test_router(env.pool().clone());
+    let app2 = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
     let request2 = Request::builder()
         .method("POST")
         .uri(format!("/ingest/{endpoint_id}"))

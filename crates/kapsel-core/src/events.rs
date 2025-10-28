@@ -38,7 +38,10 @@ use tokio::time::Duration;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::models::{EventId, TenantId};
+use crate::{
+    models::{EventId, TenantId},
+    Clock,
+};
 
 /// Maximum time to wait for any single event handler to complete.
 /// This timeout prevents misbehaving subscribers from blocking deliveries.
@@ -200,12 +203,13 @@ impl EventHandler for NoOpEventHandler {
 #[derive(Debug, Clone)]
 pub struct MulticastEventHandler {
     handlers: Vec<Arc<dyn EventHandler>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl MulticastEventHandler {
     /// Creates a new multicast handler with no subscribers.
-    pub fn new() -> Self {
-        Self { handlers: Vec::new() }
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self { handlers: Vec::new(), clock }
     }
 
     /// Adds a subscriber to receive delivery events.
@@ -216,12 +220,6 @@ impl MulticastEventHandler {
     /// Returns the number of registered subscribers.
     pub fn subscriber_count(&self) -> usize {
         self.handlers.len()
-    }
-}
-
-impl Default for MulticastEventHandler {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -238,17 +236,20 @@ impl EventHandler for MulticastEventHandler {
             // Detached task: fire-and-forget execution
             // By adding a timeout, we prevent a hanging subscriber
             // from keeping a task alive indefinitely
+            let clock = Arc::clone(&self.clock);
             tokio::spawn(async move {
-                if tokio::time::timeout(EVENT_HANDLER_TIMEOUT, handler.handle_event(event.clone()))
-                    .await
-                    .is_err()
-                {
-                    error!(
-                        handler = ?handler,
-                        event_id = ?event.id(),
-                        timeout_secs = EVENT_HANDLER_TIMEOUT.as_secs(),
-                        "Event handler execution timed out"
-                    );
+                tokio::select! {
+                    () = handler.handle_event(event.clone()) => {
+                        // Finished in time, do nothing
+                    },
+                    () = clock.sleep(EVENT_HANDLER_TIMEOUT) => {
+                        error!(
+                            handler = ?handler,
+                            event_id = ?event.id(),
+                            timeout_secs = EVENT_HANDLER_TIMEOUT.as_secs(),
+                            "Event handler execution timed out"
+                        );
+                    }
                 }
             });
         }
@@ -258,6 +259,8 @@ impl EventHandler for MulticastEventHandler {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use chrono::TimeZone;
 
     use super::*;
 
@@ -303,7 +306,8 @@ mod tests {
 
     #[tokio::test]
     async fn multicast_handler_forwards_to_all_subscribers() {
-        let mut multicast = MulticastEventHandler::new();
+        let clock = Arc::new(crate::time::TestClock::new());
+        let mut multicast = MulticastEventHandler::new(clock.clone());
 
         let (handler1, counter1) = CountingHandler::new();
         let (handler2, counter2) = CountingHandler::new();
@@ -317,7 +321,7 @@ mod tests {
         multicast.handle_event(event).await;
 
         // Give spawned tasks minimal time to execute
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        clock.sleep(Duration::from_millis(10)).await;
 
         assert_eq!(counter1.load(Ordering::SeqCst), 1);
         assert_eq!(counter2.load(Ordering::SeqCst), 1);
@@ -325,7 +329,8 @@ mod tests {
 
     #[tokio::test]
     async fn handler_panics_do_not_break_multicast() {
-        let mut multicast = MulticastEventHandler::new();
+        let clock = Arc::new(crate::time::TestClock::new());
+        let mut multicast = MulticastEventHandler::new(clock.clone());
 
         let (normal_handler, counter) = CountingHandler::new();
 
@@ -338,7 +343,7 @@ mod tests {
         multicast.handle_event(event).await;
 
         // Give normal handler time to execute
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        clock.sleep(Duration::from_millis(10)).await;
 
         // Verify the normal handler still executed
         assert_eq!(
@@ -350,11 +355,12 @@ mod tests {
 
     #[tokio::test]
     async fn multicast_handler_spawns_tasks_for_parallelism() {
-        let multicast = MulticastEventHandler::new();
+        let clock = Arc::new(crate::time::TestClock::new());
+        let multicast = MulticastEventHandler::new(clock.clone());
 
         let event = create_test_delivery_succeeded_event();
 
-        let start = tokio::time::Instant::now();
+        let start = clock.now();
         multicast.handle_event(event).await;
         let elapsed = start.elapsed();
 
@@ -373,7 +379,7 @@ mod tests {
             endpoint_url: "https://example.com/webhook".to_string(),
             response_status: 200,
             attempt_number: 1,
-            delivered_at: chrono::Utc::now(),
+            delivered_at: chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             payload_hash: [0u8; 32],
             payload_size: 1024,
         })

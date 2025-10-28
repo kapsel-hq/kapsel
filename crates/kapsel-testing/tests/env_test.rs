@@ -1,6 +1,9 @@
 //! Tests for TestEnv core functionality.
 
+use std::sync::Arc;
+
 use anyhow::Result;
+use kapsel_core::{storage::Storage, Clock};
 use kapsel_testing::TestEnv;
 use sqlx::Row;
 use uuid::Uuid;
@@ -129,7 +132,8 @@ async fn test_api_key_creation() -> Result<()> {
     tx.commit().await?;
 
     // Also verify using repository (tests both SQL and repository layer)
-    let storage = kapsel_core::storage::Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(kapsel_core::TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
     let found_api_key = storage.api_keys.find_by_hash(&key_hash).await?;
     assert!(found_api_key.is_some(), "Expected API key to exist in repository");
 

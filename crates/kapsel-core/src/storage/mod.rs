@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::{time::RealClock, Clock};
+use crate::Clock;
 
 pub mod api_keys;
 pub mod attestation_keys;
@@ -58,30 +58,24 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// Creates a new storage instance with the given connection pool.
-    ///
-    /// Uses the system clock for time-dependent operations like retry
-    /// scheduling. For tests requiring deterministic time, use
-    /// `with_clock()` instead.
-    pub fn new(pool: PgPool) -> Self {
-        Self::with_clock(pool, Arc::new(RealClock::new()))
-    }
-
     /// Creates a new storage instance with the given connection pool and clock.
     ///
     /// All repositories share the same pool with Arc for efficient resource
     /// usage. The clock is used for time-dependent operations like retry
-    /// scheduling.
-    pub fn with_clock(pool: PgPool, clock: Arc<dyn Clock>) -> Self {
+    /// scheduling and timestamp generation.
+    pub fn new(pool: PgPool, clock: &Arc<dyn Clock>) -> Self {
         let pool = Arc::new(pool);
 
         Self {
-            webhook_events: Arc::new(webhook_events::Repository::new(pool.clone(), clock)),
+            webhook_events: Arc::new(webhook_events::Repository::new(pool.clone(), clock.clone())),
             delivery_attempts: Arc::new(delivery_attempts::Repository::new(pool.clone())),
-            endpoints: Arc::new(endpoints::Repository::new(pool.clone())),
-            tenants: Arc::new(tenants::Repository::new(pool.clone())),
-            api_keys: Arc::new(api_keys::Repository::new(pool.clone())),
-            attestation_keys: Arc::new(attestation_keys::Repository::new(pool.clone())),
+            endpoints: Arc::new(endpoints::Repository::new(pool.clone(), clock.clone())),
+            tenants: Arc::new(tenants::Repository::new(pool.clone(), clock.clone())),
+            api_keys: Arc::new(api_keys::Repository::new(pool.clone(), clock.clone())),
+            attestation_keys: Arc::new(attestation_keys::Repository::new(
+                pool.clone(),
+                clock.clone(),
+            )),
             merkle_leaves: Arc::new(merkle_leaves::Repository::new(pool.clone())),
             signed_tree_heads: Arc::new(signed_tree_heads::Repository::new(pool)),
         }
@@ -112,6 +106,7 @@ mod tests {
         // This test verifies the Storage struct can be instantiated
         // Actual database testing happens in integration tests
         let pool = sqlx::PgPool::connect_lazy("postgresql://test").unwrap();
-        let _storage = Storage::new(pool);
+        let clock: Arc<dyn Clock> = Arc::new(crate::time::TestClock::new());
+        let _storage = Storage::new(pool, &clock);
     }
 }

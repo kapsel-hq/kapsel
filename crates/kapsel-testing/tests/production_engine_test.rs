@@ -92,7 +92,7 @@ async fn database_operations_work() -> Result<()> {
     // Create multiple webhooks
     let mut event_ids = Vec::new();
     for i in 0..3 {
-        let payload = format!("payload-{}", i);
+        let payload = format!("payload-{i}");
         event_ids.push(env.ingest_webhook_simple(endpoint_id, payload.as_bytes()).await?);
     }
 

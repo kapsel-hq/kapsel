@@ -17,7 +17,7 @@ use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
 /// the event status is updated to "delivered".
 #[tokio::test]
 async fn production_engine_successful_delivery() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(10)
         .poll_interval(Duration::from_millis(100))
@@ -73,7 +73,7 @@ async fn production_engine_successful_delivery() -> Result<()> {
 /// Verifies that 5xx responses trigger retry scheduling and eventual success.
 #[tokio::test]
 async fn production_engine_retryable_error() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(15)
         .poll_interval(Duration::from_millis(100))
@@ -131,7 +131,7 @@ async fn production_engine_retryable_error() -> Result<()> {
 /// and mark the event as failed immediately.
 #[tokio::test]
 async fn production_engine_non_retryable_error() -> Result<()> {
-    let mut env = TestEnv::builder().worker_count(1).isolated().build().await?;
+    let env = TestEnv::builder().worker_count(1).isolated().build().await?;
 
     // Setup mock endpoint that returns 400 Bad Request
     let mock_server = MockServer::start().await;
@@ -172,7 +172,7 @@ async fn production_engine_non_retryable_error() -> Result<()> {
 /// in a single processing batch.
 #[tokio::test]
 async fn production_engine_batch_processing() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(10) // Ensure all webhooks fit in one batch
         .poll_interval(Duration::from_millis(100))
@@ -198,8 +198,8 @@ async fn production_engine_batch_processing() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant.0)
             .endpoint(endpoint.0)
-            .source_event(&format!("prod-batch-{:03}", i))
-            .body(format!("batch payload {}", i).as_bytes().to_vec())
+            .source_event(format!("prod-batch-{i:03}"))
+            .body(format!("batch payload {i}").as_bytes().to_vec())
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -234,7 +234,7 @@ async fn production_engine_batch_processing() -> Result<()> {
 /// for processed events.
 #[tokio::test]
 async fn production_engine_stats_tracking() -> Result<()> {
-    let mut env = TestEnv::builder().worker_count(1).batch_size(5).isolated().build().await?;
+    let env = TestEnv::builder().worker_count(1).batch_size(5).isolated().build().await?;
 
     let mock_server = MockServer::start().await;
 
@@ -285,7 +285,7 @@ async fn production_engine_stats_tracking() -> Result<()> {
 /// endpoint.
 #[tokio::test]
 async fn production_engine_webhook_headers() -> Result<()> {
-    let mut env = TestEnv::builder().worker_count(1).isolated().build().await?;
+    let env = TestEnv::builder().worker_count(1).isolated().build().await?;
 
     let mock_server = MockServer::start().await;
 
@@ -318,8 +318,7 @@ async fn production_engine_webhook_headers() -> Result<()> {
     let status = env.event_status(event_id).await?;
     assert!(
         status == EventStatus::Delivered || status == EventStatus::Pending,
-        "event should be processed, got status: {:?}",
-        status
+        "event should be processed, got status: {status:?}"
     );
 
     mock_server.verify().await;
@@ -332,7 +331,7 @@ async fn production_engine_webhook_headers() -> Result<()> {
 /// eventually marks events as failed after retries are exhausted.
 #[tokio::test]
 async fn production_engine_retry_exhaustion() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(10)
         .poll_interval(Duration::from_millis(100))
@@ -374,8 +373,7 @@ async fn production_engine_retry_exhaustion() -> Result<()> {
     let status = env.event_status(event_id).await?;
     assert!(
         status == EventStatus::Failed || status == EventStatus::Pending,
-        "event should be failed or still pending after retry exhaustion, got: {:?}",
-        status
+        "event should be failed or still pending after retry exhaustion, got status: {status:?}"
     );
 
     let attempts = env.count_delivery_attempts(event_id).await?;
@@ -390,7 +388,7 @@ async fn production_engine_retry_exhaustion() -> Result<()> {
 /// prevent further requests until recovery timeout.
 #[tokio::test]
 async fn production_engine_circuit_breaker() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(3)
         .batch_size(5)
         .poll_interval(Duration::from_millis(50))
@@ -416,8 +414,8 @@ async fn production_engine_circuit_breaker() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant.0)
             .endpoint(endpoint.0)
-            .source_event(&format!("circuit-{:03}", i))
-            .body(format!("circuit test {}", i).as_bytes().to_vec())
+            .source_event(format!("circuit-{i:03}"))
+            .body(format!("circuit test {i}").as_bytes().to_vec())
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -451,7 +449,7 @@ async fn production_engine_circuit_breaker() -> Result<()> {
 /// without conflicts or data races.
 #[tokio::test]
 async fn production_engine_concurrent_processing() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(2) // Multiple workers for concurrency
         .batch_size(10)
         .poll_interval(Duration::from_millis(50))
@@ -477,8 +475,8 @@ async fn production_engine_concurrent_processing() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant.0)
             .endpoint(endpoint.0)
-            .source_event(&format!("concurrent-{:03}", i))
-            .body(format!("concurrent payload {}", i).as_bytes().to_vec())
+            .source_event(format!("concurrent-{i:03}"))
+            .body(format!("concurrent payload {i}").as_bytes().to_vec())
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -513,7 +511,7 @@ async fn production_engine_concurrent_processing() -> Result<()> {
 /// marks events for retry appropriately.
 #[tokio::test]
 async fn production_engine_timeout_handling() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(5)
         .poll_interval(Duration::from_millis(100))
@@ -564,7 +562,7 @@ async fn production_engine_timeout_handling() -> Result<()> {
 /// gracefully without crashing.
 #[tokio::test]
 async fn production_engine_database_resilience() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(5)
         .poll_interval(Duration::from_millis(100))
@@ -596,8 +594,8 @@ async fn production_engine_database_resilience() -> Result<()> {
     env.process_batch().await?;
 
     // Engine should remain functional
-    let stats = env.get_delivery_stats().await;
-    assert!(stats.is_some(), "engine should remain responsive despite database pressure");
+    let delivery_stats = env.get_delivery_stats().await;
+    assert!(delivery_stats.is_some(), "engine should remain responsive despite database pressure");
 
     // Event should be processed or at least attempted
     let status = env.event_status(event_id).await?;
@@ -605,8 +603,7 @@ async fn production_engine_database_resilience() -> Result<()> {
         status == EventStatus::Delivered
             || status == EventStatus::Pending
             || status == EventStatus::Delivering,
-        "event should be in valid state, got: {:?}",
-        status
+        "event should be in valid state, got: {status:?}"
     );
 
     Ok(())
@@ -618,7 +615,7 @@ async fn production_engine_database_resilience() -> Result<()> {
 /// in-flight deliveries before terminating.
 #[tokio::test]
 async fn production_engine_graceful_shutdown() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(5)
         .poll_interval(Duration::from_millis(100))
@@ -643,8 +640,8 @@ async fn production_engine_graceful_shutdown() -> Result<()> {
         let webhook = WebhookBuilder::new()
             .tenant(tenant.0)
             .endpoint(endpoint.0)
-            .source_event(&format!("shutdown-{:03}", i))
-            .body(format!("shutdown payload {}", i).as_bytes().to_vec())
+            .source_event(format!("shutdown-{i:03}"))
+            .body(format!("shutdown payload {i}").as_bytes().to_vec())
             .build();
 
         let event_id = env.ingest_webhook(&webhook).await?;
@@ -683,7 +680,7 @@ async fn production_engine_graceful_shutdown() -> Result<()> {
 /// proper exponential backoff timing and max retry limits.
 #[tokio::test]
 async fn production_engine_precise_retry_exhaustion() -> Result<()> {
-    let mut env = TestEnv::builder()
+    let env = TestEnv::builder()
         .worker_count(1)
         .batch_size(5)
         .poll_interval(Duration::from_millis(100))
@@ -738,8 +735,7 @@ async fn production_engine_precise_retry_exhaustion() -> Result<()> {
     // Should be failed or pending (engine might need more time)
     assert!(
         final_status == EventStatus::Failed || final_status == EventStatus::Pending,
-        "should be failed or pending after retry exhaustion, got: {:?}",
-        final_status
+        "should be failed or pending after retry exhaustion, got: {final_status:?}"
     );
     assert_eq!(final_attempts, 3u32, "should have exactly 3 delivery attempts");
 

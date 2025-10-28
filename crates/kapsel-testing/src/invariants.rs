@@ -600,7 +600,13 @@ pub mod strategies {
                         headers,
                         body,
                         content_type,
-                        received_at: chrono::Utc::now(),
+                        received_at: {
+                            use kapsel_core::Clock;
+
+                            use crate::TestClock;
+                            let clock = TestClock::new();
+                            chrono::DateTime::<chrono::Utc>::from(clock.now_system())
+                        },
                         delivered_at: None,
                     }
                 },
@@ -673,7 +679,14 @@ pub mod strategies {
 
     /// Strategy for generating timestamps.
     pub fn timestamp_strategy() -> impl Strategy<Value = chrono::DateTime<chrono::Utc>> {
-        (0i64..86400).prop_map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs))
+        (0i64..86400).prop_map(|secs| {
+            use kapsel_core::Clock;
+
+            use crate::TestClock;
+            let clock = TestClock::new();
+            chrono::DateTime::<chrono::Utc>::from(clock.now_system())
+                + chrono::Duration::seconds(secs)
+        })
     }
 
     /// Strategy for retry scenarios.

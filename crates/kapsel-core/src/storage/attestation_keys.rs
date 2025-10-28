@@ -9,7 +9,10 @@ use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::error::{CoreError, Result};
+use crate::{
+    error::{CoreError, Result},
+    Clock,
+};
 
 /// Attestation key data structure for database operations.
 #[derive(Debug, Clone)]
@@ -44,12 +47,13 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for AttestationKey {
 /// activation management, and key rotation with proper uniqueness constraints.
 pub struct Repository {
     pool: Arc<PgPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Repository {
     /// Creates a new repository instance.
-    pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<PgPool>, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Returns a reference to the database pool.
@@ -167,13 +171,15 @@ impl Repository {
     where
         E: Executor<'e, Database = Postgres>,
     {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         let result = sqlx::query(
             r"
             UPDATE attestation_keys
-            SET is_active = FALSE, deactivated_at = NOW()
+            SET is_active = FALSE, deactivated_at = $1
             WHERE is_active = TRUE
             ",
         )
+        .bind(now)
         .execute(executor)
         .await?;
 
@@ -269,7 +275,7 @@ impl Repository {
             id: key_id,
             public_key,
             is_active: true,
-            created_at: Utc::now(),
+            created_at: DateTime::<Utc>::from(self.clock.now_system()),
             deactivated_at: None,
         };
 
@@ -368,7 +374,8 @@ mod tests {
     #[tokio::test]
     async fn create_and_find_active_key() {
         let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let repo = Repository::new(Arc::new(env.pool().clone()), clock);
 
         let public_key = vec![1u8; 32];
         let key_id = repo.create_and_activate(public_key.clone()).await.unwrap();
@@ -382,7 +389,8 @@ mod tests {
     #[tokio::test]
     async fn key_rotation_deactivates_old_keys() {
         let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let repo = Repository::new(Arc::new(env.pool().clone()), clock);
 
         // Create first key
         let key1 = vec![1u8; 32];

@@ -101,17 +101,20 @@ impl DeliveryEngine {
     ///
     /// Returns error if the delivery client cannot be initialized.
     pub fn new(pool: PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
-        let client = Arc::new(DeliveryClient::new(config.client_config.clone())?);
+        let client = Arc::new(DeliveryClient::new(config.client_config.clone(), clock.clone())?);
         let circuit_manager =
             Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default())));
         let stats = Arc::new(RwLock::new(EngineStats::default()));
         let cancellation_token = CancellationToken::new();
 
-        let mut event_handler = MulticastEventHandler::new();
+        let mut event_handler = MulticastEventHandler::new(clock.clone());
         let signing_service = SigningService::ephemeral();
-        let storage = Arc::new(Storage::new(pool.clone()));
-        let merkle_service =
-            Arc::new(tokio::sync::RwLock::new(MerkleService::new(storage, signing_service)));
+        let storage = Arc::new(Storage::new(pool.clone(), &clock.clone()));
+        let merkle_service = Arc::new(tokio::sync::RwLock::new(MerkleService::new(
+            storage,
+            signing_service,
+            clock.clone(),
+        )));
         let attestation_subscriber = Arc::new(AttestationEventSubscriber::new(merkle_service));
         event_handler.add_subscriber(attestation_subscriber);
 
@@ -199,7 +202,7 @@ impl DeliveryEngine {
     ///
     /// Returns error if batch processing fails.
     pub async fn process_batch(&self) -> Result<usize> {
-        let storage = Arc::new(Storage::with_clock(self.pool.clone(), self.clock.clone()));
+        let storage = Arc::new(Storage::new(self.pool.clone(), &self.clock.clone()));
 
         // Create a temporary worker for this batch
         let worker = DeliveryWorker::new(
@@ -409,7 +412,7 @@ impl DeliveryWorker {
     /// database update fails.
     #[allow(clippy::too_many_lines)]
     async fn attempt_delivery(&self, event: &WebhookEvent) -> Result<()> {
-        let start_time = std::time::Instant::now();
+        let start_time = self.clock.now();
         let endpoint_key = event.endpoint_id.to_string();
         let attempt_number = u32::try_from(event.failure_count + 1).unwrap_or(u32::MAX);
 
@@ -479,7 +482,7 @@ impl DeliveryWorker {
                         endpoint_url: endpoint_url.clone(),
                         response_status: response.status_code,
                         attempt_number,
-                        delivered_at: Utc::now(),
+                        delivered_at: DateTime::<Utc>::from(self.clock.now_system()),
                         payload_hash: Self::compute_payload_hash(&event.body),
                         payload_size: event.payload_size,
                     });
@@ -523,7 +526,7 @@ impl DeliveryWorker {
                         endpoint_url: endpoint_url.clone(),
                         response_status: Some(response.status_code),
                         attempt_number,
-                        failed_at: Utc::now(),
+                        failed_at: DateTime::<Utc>::from(self.clock.now_system()),
                         error_message: error.to_string(),
                         is_retryable: error.is_retryable(),
                     });
@@ -550,7 +553,7 @@ impl DeliveryWorker {
                     endpoint_url: endpoint_url.clone(),
                     response_status: None,
                     attempt_number,
-                    failed_at: Utc::now(),
+                    failed_at: DateTime::<Utc>::from(self.clock.now_system()),
                     error_message: error.to_string(),
                     is_retryable: error.is_retryable(),
                 });
@@ -587,7 +590,7 @@ impl DeliveryWorker {
             let retry_context = RetryContext::new(
                 attempt_number,
                 error.clone(),
-                Utc::now(),
+                DateTime::<Utc>::from(self.clock.now_system()),
                 self.config.default_retry_policy.clone(),
             );
 
@@ -595,11 +598,14 @@ impl DeliveryWorker {
                 crate::retry::RetryDecision::Retry { mut next_attempt_at } => {
                     // Check for Retry-After header to override calculated delay
                     if let Some(headers) = response_headers {
-                        if let Some(retry_after_seconds) = extract_retry_after_seconds(headers) {
+                        if let Some(retry_after_seconds) =
+                            extract_retry_after_seconds(headers, self.clock.as_ref())
+                        {
                             let retry_after_duration = chrono::Duration::seconds(
                                 i64::try_from(retry_after_seconds).unwrap_or(i64::MAX),
                             );
-                            let retry_after_time = Utc::now() + retry_after_duration;
+                            let retry_after_time = DateTime::<Utc>::from(self.clock.now_system())
+                                + retry_after_duration;
 
                             // Use the later of the two times to respect server's preference
                             if retry_after_time > next_attempt_at {
@@ -745,7 +751,7 @@ impl DeliveryWorker {
             response_status,
             response_headers: None, // Empty response headers for now
             response_body,
-            attempted_at: chrono::Utc::now(),
+            attempted_at: DateTime::<Utc>::from(self.clock.now_system()),
             succeeded,
             error_message,
         };
@@ -773,7 +779,7 @@ impl DeliveryWorker {
 #[cfg(test)]
 mod tests {
 
-    use kapsel_core::{models::EventStatus, time::RealClock, IdempotencyStrategy};
+    use kapsel_core::{models::EventStatus, time::TestClock, IdempotencyStrategy};
     use kapsel_testing::TestEnv;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -996,7 +1002,8 @@ mod tests {
 
         // Insert second event under same tenant/endpoint
         let event2_id = uuid::Uuid::new_v4();
-        let now = Utc::now();
+        let clock = Arc::new(TestClock::new());
+        let now = DateTime::<Utc>::from(clock.now_system());
         let webhook_event2 = WebhookEvent {
             id: event2_id.into(),
             tenant_id: tenant_id.into(),
@@ -1118,7 +1125,8 @@ mod tests {
         tx.commit().await.expect("failed to commit transaction");
 
         // Insert webhook event using repository
-        let now = Utc::now();
+        let clock = Arc::new(TestClock::new());
+        let now = DateTime::<Utc>::from(clock.now_system());
         let webhook_event = WebhookEvent {
             id: event_id.into(),
             tenant_id,
@@ -1154,17 +1162,23 @@ mod tests {
     }
 
     fn create_test_worker_with_pool(pool: &PgPool) -> DeliveryWorker {
-        let storage = Arc::new(Storage::new(pool.clone()));
+        let storage = Arc::new(Storage::new(pool.clone(), &{
+            let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+            clock
+        }));
         DeliveryWorker::new(
             0,
             storage,
             DeliveryConfig::default(),
-            Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
+            Arc::new(
+                DeliveryClient::with_defaults(Arc::new(TestClock::new()))
+                    .expect("failed to create client"),
+            ),
             Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
             Arc::new(RwLock::new(EngineStats::default())),
             CancellationToken::new(),
-            Arc::new(MulticastEventHandler::default()),
-            Arc::new(RealClock::new()),
+            Arc::new(MulticastEventHandler::new(Arc::new(TestClock::new()))),
+            Arc::new(TestClock::new()),
         )
     }
 
@@ -1172,17 +1186,23 @@ mod tests {
         pool: &PgPool,
         config: DeliveryConfig,
     ) -> DeliveryWorker {
-        let storage = Arc::new(Storage::new(pool.clone()));
+        let storage = Arc::new(Storage::new(pool.clone(), &{
+            let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+            clock
+        }));
         DeliveryWorker::new(
             0,
             storage,
             config,
-            Arc::new(DeliveryClient::with_defaults().expect("failed to create client")),
+            Arc::new(
+                DeliveryClient::with_defaults(Arc::new(TestClock::new()))
+                    .expect("failed to create client"),
+            ),
             Arc::new(RwLock::new(CircuitBreakerManager::new(CircuitConfig::default()))),
             Arc::new(RwLock::new(EngineStats::default())),
             CancellationToken::new(),
-            Arc::new(MulticastEventHandler::default()),
-            Arc::new(RealClock::new()),
+            Arc::new(MulticastEventHandler::new(Arc::new(TestClock::new()))),
+            Arc::new(TestClock::new()),
         )
     }
 

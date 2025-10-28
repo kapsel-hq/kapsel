@@ -174,6 +174,8 @@ impl LeafData {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     fn create_test_leaf() -> LeafData {
@@ -184,7 +186,7 @@ mod tests {
             [0x42u8; 32], // Test payload hash
             1,
             Some(200),
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap()
     }
@@ -268,7 +270,7 @@ mod tests {
             [0xFFu8; 32],
             999,
             None, // Network error case
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap();
 
@@ -313,7 +315,7 @@ mod tests {
     fn network_error_vs_status_code_hashes_differ() {
         let attempt_id = uuid::Uuid::new_v4();
         let event_id = uuid::Uuid::new_v4();
-        let timestamp = chrono::Utc::now();
+        let timestamp = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
         let success_leaf = LeafData::new(
             attempt_id,
@@ -353,7 +355,7 @@ mod tests {
             [0u8; 32],
             0, // Invalid: not positive
             Some(200),
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         );
 
         assert!(result.is_err(), "Zero attempt number should be rejected");
@@ -365,7 +367,7 @@ mod tests {
             [0u8; 32],
             -1, // Invalid: negative
             Some(200),
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         );
 
         assert!(result.is_err(), "Negative attempt number should be rejected");
@@ -380,7 +382,7 @@ mod tests {
             [0u8; 32],
             1,
             Some(201), // Created
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap();
 
@@ -394,7 +396,7 @@ mod tests {
             [0u8; 32],
             1,
             Some(500), // Server error
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap();
 
@@ -408,7 +410,7 @@ mod tests {
             [0u8; 32],
             1,
             None, // Network failure
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap();
 
@@ -426,7 +428,7 @@ mod tests {
             [0u8; 32],
             1,
             Some(200),
-            chrono::Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         )
         .unwrap();
 

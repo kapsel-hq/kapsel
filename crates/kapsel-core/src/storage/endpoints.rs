@@ -12,6 +12,7 @@ use sqlx::{Executor, PgPool, Postgres, Transaction};
 use crate::{
     error::Result,
     models::{CircuitState, Endpoint, EndpointId, SignatureConfig, TenantId},
+    Clock,
 };
 
 /// Parameters for updating circuit breaker state.
@@ -36,12 +37,13 @@ pub struct CircuitStateUpdate {
 /// statistics.
 pub struct Repository {
     pool: Arc<PgPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Repository {
     /// Creates a new repository instance.
-    pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<PgPool>, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Returns a reference to the database pool.
@@ -395,6 +397,7 @@ impl Repository {
     where
         E: Executor<'e, Database = Postgres>,
     {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         sqlx::query(
             r"
             UPDATE endpoints
@@ -403,7 +406,7 @@ impl Repository {
                 circuit_success_count = $4,
                 circuit_last_failure_at = $5,
                 circuit_half_open_at = $6,
-                updated_at = NOW()
+                updated_at = $7
             WHERE id = $1
             ",
         )
@@ -413,6 +416,7 @@ impl Repository {
         .bind(update.success_count)
         .bind(update.last_failure_at)
         .bind(update.half_open_at)
+        .bind(now)
         .execute(executor)
         .await?;
 
@@ -591,13 +595,14 @@ impl Repository {
         events_delivered: i64,
         events_failed: i64,
     ) -> Result<()> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         sqlx::query(
             r"
             UPDATE endpoints
             SET total_events_received = total_events_received + $2,
                 total_events_delivered = total_events_delivered + $3,
                 total_events_failed = total_events_failed + $4,
-                updated_at = NOW()
+                updated_at = $5
             WHERE id = $1
             ",
         )
@@ -605,6 +610,7 @@ impl Repository {
         .bind(events_received)
         .bind(events_delivered)
         .bind(events_failed)
+        .bind(now)
         .execute(&*self.pool)
         .await?;
 
@@ -675,6 +681,7 @@ mod tests {
     #[tokio::test]
     async fn repository_can_be_created() {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test").unwrap();
-        let _repo = Repository::new(Arc::new(pool));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let _repo = Repository::new(Arc::new(pool), clock);
     }
 }

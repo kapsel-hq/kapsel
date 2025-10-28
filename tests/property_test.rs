@@ -6,10 +6,12 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 
-use kapsel_core::models::EventStatus;
+use chrono::{DateTime, Utc};
+use kapsel_core::{models::EventStatus, Clock, TestClock};
 use kapsel_testing::{
     fixtures::WebhookBuilder,
     invariants::{strategies, CircuitState, WebhookEvent},
@@ -270,12 +272,13 @@ proptest! {
     #[test]
     fn rate_limits_are_enforced(
         request_count in 1usize..1000,
-        rate_limit in 10usize..100,
-        window_seconds in 1u64..60
+        rate_limit in 1usize..100,
+        window_seconds in 1u64..300
     ) {
+        let clock = Arc::new(TestClock::new());
         let window = Duration::from_secs(window_seconds);
         let mut requests = Vec::new();
-        let mut current_time = std::time::Instant::now();
+        let mut current_time = clock.now();
 
         for _ in 0..request_count {
             requests.push(RequestAttempt {
@@ -323,9 +326,10 @@ proptest! {
         let mut endpoint_webhooks: HashMap<Uuid, Vec<WebhookEvent>> = HashMap::new();
 
         for (i, mut webhook) in webhooks.into_iter().enumerate() {
+            let clock = Arc::new(TestClock::new());
             let endpoint = endpoints[i % endpoints.len()];
             webhook.endpoint_id = endpoint;
-            webhook.received_at = chrono::Utc::now() + chrono::Duration::milliseconds(i as i64);
+            webhook.received_at = DateTime::<Utc>::from(clock.now_system()) + chrono::Duration::milliseconds(i as i64);
             endpoint_webhooks.entry(endpoint).or_default().push(webhook);
         }
 
@@ -428,7 +432,7 @@ fn create_test_event() -> WebhookEvent {
         headers: HashMap::new(),
         body: bytes::Bytes::new(),
         content_type: "application/json".to_string(),
-        received_at: chrono::Utc::now(),
+        received_at: DateTime::<Utc>::from(TestClock::new().now_system()),
         delivered_at: None,
     }
 }

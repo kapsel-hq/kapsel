@@ -24,8 +24,12 @@ async fn complete_attestation_workflow() {
 
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service =
-        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
+    let mut merkle_service = MerkleService::new(
+        Arc::new(Storage::new(db.pool().clone(), &clock)),
+        signing_service,
+        clock,
+    );
 
     // Create test leaf data
     let leaf_data = kapsel_attestation::LeafData::new(
@@ -74,8 +78,12 @@ async fn incremental_batch_processing_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service =
-        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
+    let mut merkle_service = MerkleService::new(
+        Arc::new(Storage::new(db.pool().clone(), &clock)),
+        signing_service,
+        clock,
+    );
 
     // First batch: 3 events
     let base_leaf = kapsel_attestation::LeafData::new(
@@ -129,9 +137,11 @@ async fn mixed_success_failure_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
     let merkle_service_shared = Arc::new(RwLock::new(MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone())),
+        Arc::new(Storage::new(db.pool().clone(), &clock)),
         signing_service,
+        clock,
     )));
     let subscriber = AttestationEventSubscriber::new(merkle_service_shared.clone());
 
@@ -168,9 +178,11 @@ async fn empty_batch_commit_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone())),
+        Arc::new(Storage::new(db.pool().clone(), &clock)),
         signing_service,
+        clock,
     )));
 
     // Try to commit with no pending events
@@ -198,8 +210,12 @@ async fn large_batch_processing_workflow() {
     let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
-    let mut merkle_service =
-        MerkleService::new(Arc::new(Storage::new(db.pool().clone())), signing_service);
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
+    let mut merkle_service = MerkleService::new(
+        Arc::new(Storage::new(db.pool().clone(), &clock)),
+        signing_service,
+        clock,
+    );
 
     // Process a larger batch (50 events - reduced for test speed)
     let base_leaf = kapsel_attestation::LeafData::new(
@@ -239,7 +255,8 @@ async fn store_signing_key_in_db(
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let public_key_bytes = signing_service.public_key_as_bytes();
 
-    let storage = Storage::new(pool.clone());
+    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
+    let storage = Storage::new(pool.clone(), &clock);
 
     // Use repository to create and activate new key (automatically deactivates old
     // keys)

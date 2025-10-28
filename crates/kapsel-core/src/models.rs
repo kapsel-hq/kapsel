@@ -411,6 +411,7 @@ impl WebhookEvent {
     }
 
     /// Create a WebhookEvent with the given data.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: EventId,
         tenant_id: TenantId,
@@ -419,6 +420,7 @@ impl WebhookEvent {
         headers: HashMap<String, String>,
         body: Vec<u8>,
         content_type: String,
+        received_at: DateTime<Utc>,
     ) -> Self {
         let payload_size = i32::try_from(body.len())
             .unwrap_or(i32::MAX) // Use i32::MAX on casting failure
@@ -437,7 +439,7 @@ impl WebhookEvent {
             headers: sqlx::types::Json(headers),
             body,
             content_type,
-            received_at: Utc::now(),
+            received_at,
             delivered_at: None,
             failed_at: None,
             payload_size,

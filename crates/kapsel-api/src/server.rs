@@ -28,13 +28,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use kapsel_core::storage::Storage;
+use kapsel_core::{storage::Storage, Clock};
 use sqlx::PgPool;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{config::Config, handlers, middleware::auth::auth_middleware};
+use crate::{config::Config, handlers, middleware::auth::auth_middleware, AppState};
 
 /// Creates the Axum router with all routes and middleware.
 ///
@@ -55,17 +55,19 @@ use crate::{config::Config, handlers, middleware::auth::auth_middleware};
 ///     // Serve the app...
 /// }
 /// ```
-pub fn create_router(storage: Arc<Storage>, config: &Config) -> Router {
+pub fn create_router(storage: Arc<Storage>, clock: Arc<dyn Clock>, config: &Config) -> Router {
+    let app_state = AppState::new(storage.clone(), clock);
+
     let health_routes = Router::new()
         .route("/health", get(handlers::health_check))
         .route("/ready", get(handlers::readiness_check))
         .route("/live", get(handlers::liveness_check))
-        .with_state(storage.clone());
+        .with_state(app_state.clone());
 
     let api_routes = Router::new()
         .route("/ingest/{endpoint_id}", post(handlers::ingest_webhook))
         .layer(middleware::from_fn_with_state(storage.clone(), auth_middleware))
-        .with_state(storage.clone());
+        .with_state(app_state);
 
     Router::new()
         .merge(health_routes)
@@ -124,13 +126,15 @@ async fn inject_request_id(req: Request, next: Next) -> Response {
 ///     Ok(())
 /// }
 /// ```
+/// Starts the HTTP server on the specified address.
 pub async fn start_server(
     db: PgPool,
+    clock: Arc<dyn Clock>,
     config: &Config,
     addr: SocketAddr,
 ) -> Result<(), std::io::Error> {
-    let storage = Arc::new(Storage::new(db));
-    let app = create_router(storage, config);
+    let storage = Arc::new(Storage::new(db, &clock));
+    let app = create_router(storage, clock, config);
 
     info!("Starting HTTP server on {}", addr);
 
@@ -185,8 +189,8 @@ async fn shutdown_signal() {
 }
 
 /// Test helper to create router with default config.
-pub fn create_test_router(db: PgPool) -> Router {
+pub fn create_test_router(pool: PgPool, clock: Arc<dyn Clock>) -> Router {
+    let storage = Arc::new(Storage::new(pool, &clock));
     let config = Config::default();
-    let storage = Arc::new(Storage::new(db));
-    create_router(storage, &config)
+    create_router(storage, clock, &config)
 }

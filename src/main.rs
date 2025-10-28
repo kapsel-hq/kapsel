@@ -3,11 +3,11 @@
 //! Main entry point for the Kapsel server. Initializes all subsystems
 //! and coordinates graceful startup and shutdown.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use kapsel_api::Config;
-use kapsel_core::time::RealClock;
+use kapsel_core::{time::RealClock, Clock};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
 
@@ -33,10 +33,12 @@ async fn main() -> Result<()> {
     run_migrations(&db_pool).await?;
     info!("Database migrations completed");
 
+    let clock: Arc<dyn Clock> = Arc::new(RealClock::new());
+
     let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
         db_pool.clone(),
         config.to_delivery_config(),
-        std::sync::Arc::new(RealClock::new()),
+        clock.clone(),
     )?;
 
     delivery_engine.start().await.context("Failed to start delivery engine")?;
@@ -46,8 +48,9 @@ async fn main() -> Result<()> {
         let db_pool = db_pool.clone();
         let config = config.clone();
         let addr = config.parse_server_addr().context("Invalid server address")?;
+        let clock = clock.clone();
         async move {
-            if let Err(e) = kapsel_api::start_server(db_pool, &config, addr).await {
+            if let Err(e) = kapsel_api::start_server(db_pool, clock, &config, addr).await {
                 error!(error = %e, "Server failed");
             }
         }

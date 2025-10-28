@@ -3,12 +3,13 @@
 //! Tests all database operations using the production Storage repositories
 //! to ensure correctness of SQL queries and data integrity.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kapsel_core::{
     models::{CircuitState, DeliveryAttempt, EventStatus},
     storage::Storage,
+    Clock, TestClock,
 };
 use kapsel_testing::{events::test_events, TestEnv};
 use uuid::Uuid;
@@ -16,7 +17,8 @@ use uuid::Uuid;
 #[tokio::test]
 async fn storage_health_check() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     // Health check should succeed
     assert!(storage.health_check().await.is_ok());
@@ -25,7 +27,8 @@ async fn storage_health_check() {
 #[tokio::test]
 async fn tenant_repository_crud_operations() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -61,7 +64,8 @@ async fn tenant_repository_crud_operations() {
 #[tokio::test]
 async fn endpoint_repository_crud_operations() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -99,7 +103,7 @@ async fn endpoint_repository_crud_operations() {
     assert_eq!(active.len(), 0);
 
     // Test update circuit state
-    let now = Utc::now();
+    let now = DateTime::<Utc>::from(env.clock.now_system());
     storage
         .endpoints
         .update_circuit_state(endpoint_id, CircuitState::Open, 5, 0, Some(now), None)
@@ -123,7 +127,8 @@ async fn endpoint_repository_crud_operations() {
 #[tokio::test]
 async fn webhook_event_repository_crud_operations() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -173,7 +178,8 @@ async fn webhook_event_repository_crud_operations() {
 #[tokio::test]
 async fn webhook_event_claim_and_delivery_flow() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -211,7 +217,7 @@ async fn webhook_event_claim_and_delivery_flow() {
     assert_eq!(delivered.status, EventStatus::Delivered);
     assert!(delivered.delivered_at.is_some());
     // Test mark failed with retry
-    let next_retry = Utc::now() + chrono::Duration::seconds(60);
+    let next_retry = DateTime::<Utc>::from(env.clock.now_system()) + chrono::Duration::seconds(60);
     storage.webhook_events.mark_failed(claimed[1].id, 1, Some(next_retry)).await.unwrap();
 
     let failed = storage.webhook_events.find_by_id(claimed[1].id).await.unwrap().unwrap();
@@ -241,7 +247,8 @@ async fn webhook_event_claim_and_delivery_flow() {
 #[tokio::test]
 async fn concurrent_event_claiming() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -289,7 +296,8 @@ async fn concurrent_event_claiming() {
 #[tokio::test]
 async fn delivery_attempt_repository_operations() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -319,7 +327,7 @@ async fn delivery_attempt_repository_operations() {
         response_status: Some(200),
         response_headers: Some(response_headers.clone()),
         response_body: Some(b"OK".to_vec()),
-        attempted_at: Utc::now(),
+        attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
         succeeded: true,
         error_message: None,
     };
@@ -359,10 +367,10 @@ async fn delivery_attempt_repository_operations() {
         endpoint_id,
         request_headers,
         request_body: b"test request 2".to_vec(),
-        response_status: Some(500),
+        response_status: Some(404),
         response_headers: Some(response_headers),
-        response_body: Some(b"Internal Server Error".to_vec()),
-        attempted_at: Utc::now(),
+        response_body: Some(b"Not Found".to_vec()),
+        attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
         succeeded: false,
         error_message: Some("Server error".to_string()),
     };
@@ -383,7 +391,7 @@ async fn delivery_attempt_repository_operations() {
         .delivery_attempts
         .find_recent_failures_by_endpoint(
             endpoint_id,
-            Utc::now() - chrono::Duration::hours(1),
+            DateTime::<Utc>::from(env.clock.now_system()) - chrono::Duration::hours(1),
             Some(10),
         )
         .await
@@ -395,7 +403,8 @@ async fn delivery_attempt_repository_operations() {
 #[tokio::test]
 async fn transactional_operations_rollback() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     // Create tenant in a transaction that will be rolled back
     let tenant_id = {
@@ -415,7 +424,8 @@ async fn transactional_operations_rollback() {
 #[tokio::test]
 async fn constraint_violation_handling() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -434,7 +444,8 @@ async fn constraint_violation_handling() {
 #[tokio::test]
 async fn system_tenant_operations() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     // Ensure system tenant exists
     let system_id = storage.tenants.ensure_system_tenant().await.unwrap();
@@ -458,7 +469,8 @@ async fn system_tenant_operations() {
 #[tokio::test]
 async fn storage_repository_isolation() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -496,7 +508,8 @@ async fn storage_repository_isolation() {
 #[tokio::test]
 async fn webhook_events_dead_letter_queue_workflow() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -550,7 +563,8 @@ async fn webhook_events_dead_letter_queue_workflow() {
 #[tokio::test]
 async fn webhook_events_delete_by_tenant() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -594,7 +608,8 @@ async fn webhook_events_delete_by_tenant() {
 #[tokio::test]
 async fn endpoint_soft_delete_and_recovery() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -644,7 +659,8 @@ async fn endpoint_soft_delete_and_recovery() {
 #[tokio::test]
 async fn endpoint_statistics_increment() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -721,7 +737,8 @@ async fn endpoint_statistics_increment() {
 #[tokio::test]
 async fn endpoint_find_with_open_circuits() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -777,7 +794,8 @@ async fn endpoint_find_with_open_circuits() {
 #[tokio::test]
 async fn endpoint_reset_circuit_breaker() {
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -815,7 +833,8 @@ async fn api_key_tenant_lifecycle_management() {
     use kapsel_core::storage::api_keys::ApiKey;
 
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -824,8 +843,8 @@ async fn api_key_tenant_lifecycle_management() {
 
     tx.commit().await.unwrap();
 
-    let now = Utc::now();
-    let future = now + Duration::hours(24);
+    let now = DateTime::<Utc>::from(env.clock.now_system());
+    let future = now + chrono::Duration::hours(24);
 
     // Create API keys for tenant1
     let key1 = ApiKey {
@@ -910,15 +929,16 @@ async fn api_key_cleanup_expired() {
     use kapsel_core::storage::api_keys::ApiKey;
 
     let env = TestEnv::new_isolated().await.unwrap();
-    let storage = Storage::new(env.pool().clone());
+    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+    let storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
     let tenant_id = env.create_tenant_tx(&mut tx, "cleanup-tenant").await.unwrap();
     tx.commit().await.unwrap();
 
-    let now = Utc::now();
-    let past = now - Duration::hours(1);
-    let future = now + Duration::hours(1);
+    let now = DateTime::<Utc>::from(env.clock.now_system());
+    let past = now - chrono::Duration::hours(1);
+    let future = now + chrono::Duration::hours(1);
 
     // Create keys with different expiration states
     let expired_key = ApiKey {

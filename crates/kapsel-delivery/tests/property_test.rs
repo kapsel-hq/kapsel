@@ -3,9 +3,10 @@
 //! Uses randomly generated inputs to verify delivery invariants always
 //! hold regardless of input data or internal state.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use kapsel_core::{Clock, TestClock};
 use kapsel_delivery::{
     circuit::{CircuitBreakerManager, CircuitConfig},
     error::DeliveryError,
@@ -42,6 +43,7 @@ proptest! {
             BackoffStrategy::Fixed,
         ])
     ) {
+        let clock = Arc::new(TestClock::new());
         let policy = RetryPolicy {
             max_attempts,
             base_delay: Duration::from_secs(1),
@@ -54,7 +56,7 @@ proptest! {
         let context = RetryContext::new(
             failure_count,
             error.clone(),
-            Utc::now(),
+            DateTime::<Utc>::from(clock.now_system()),
             policy,
         );
 
@@ -87,6 +89,7 @@ proptest! {
         max_delay_secs in 30u64..600,
         jitter_factor in 0.0f64..0.5
     ) {
+        let clock = Arc::new(TestClock::new());
         let policy = RetryPolicy {
             max_attempts: 10,
             base_delay: Duration::from_secs(base_delay_secs),
@@ -99,12 +102,12 @@ proptest! {
         let context = RetryContext::new(
             attempt,
             error,
-            Utc::now(),
+            DateTime::<Utc>::from(clock.now_system()),
             policy,
         );
 
         if let kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } = context.decide_retry() {
-            let delay = next_attempt_at.signed_duration_since(Utc::now());
+            let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
             let delay_secs = u64::try_from(delay.num_seconds().max(0)).unwrap_or(0);
 
             // Delay should be at least 0 and at most max_delay (with some tolerance for jitter)
@@ -246,6 +249,7 @@ proptest! {
         max_delay_ms in 1u64..86_400_000, // Up to 24 hours
         jitter_factor in 0.0f64..1.0
     ) {
+        let clock = Arc::new(TestClock::new());
         let base_delay = Duration::from_millis(base_delay_ms);
         let max_delay = Duration::from_millis(max_delay_ms.max(base_delay_ms));
 
@@ -261,7 +265,7 @@ proptest! {
         let context = RetryContext::new(
             attempt,
             error,
-            Utc::now(),
+            DateTime::<Utc>::from(clock.now_system()),
             policy,
         );
 
@@ -270,7 +274,7 @@ proptest! {
         // Should always produce valid decision
         match decision {
             kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } => {
-                let delay = next_attempt_at.signed_duration_since(Utc::now());
+                let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
                 // Delay should never be negative or significantly exceed max_delay
                 prop_assert!(delay.num_milliseconds() >= 0);
                 // Allow some tolerance for jitter and timing
@@ -369,6 +373,7 @@ proptest! {
             BackoffStrategy::Fixed,
         ])
     ) {
+        let clock = Arc::new(TestClock::new());
         let base_delay = Duration::from_nanos(base_delay_ns);
         let max_delay = Duration::from_nanos(max_delay_ns.max(base_delay_ns));
 
@@ -384,7 +389,7 @@ proptest! {
         let context = RetryContext::new(
             attempt,
             error,
-            Utc::now(),
+            DateTime::<Utc>::from(clock.now_system()),
             policy,
         );
 
@@ -393,7 +398,7 @@ proptest! {
 
         match decision {
             kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } => {
-                let delay = next_attempt_at.signed_duration_since(Utc::now());
+                let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
 
                 // For very small delays (especially 0 from Linear strategy with attempt=1),
                 // the next_attempt_at might be in the past due to test execution time.

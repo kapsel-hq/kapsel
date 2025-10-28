@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kapsel_core::{
     models::{
         BackoffStrategy, CircuitState, Endpoint, EventStatus, IdempotencyStrategy, SignatureConfig,
         Tenant, WebhookEvent,
     },
     storage::api_keys::ApiKey,
+    Clock,
 };
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -41,7 +42,7 @@ impl TestEnv {
     ) -> Result<TenantId> {
         let tenant_id = TenantId::new();
         let unique_name = format!("{}-{}-{}", name, self.test_run_id, tenant_id.0.simple());
-        let now = Utc::now();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
 
         let tenant = Tenant {
             id: tenant_id,
@@ -88,7 +89,7 @@ impl TestEnv {
     ) -> Result<EndpointId> {
         let endpoint_id = EndpointId::new();
         let unique_name = format!("{}-{}-{}", name, self.test_run_id, endpoint_id.0.simple());
-        let now = Utc::now();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
 
         let endpoint = Endpoint {
             id: endpoint_id,
@@ -134,7 +135,7 @@ impl TestEnv {
         let unique_suffix = Uuid::new_v4().simple();
         let api_key = format!("{}-{}-{}", name, self.test_run_id, unique_suffix);
         let key_hash = sha256::digest(api_key.as_bytes());
-        let now = chrono::Utc::now();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
 
         let api_key_record = ApiKey {
             id: Uuid::new_v4(),
@@ -193,7 +194,7 @@ impl TestEnv {
             headers: sqlx::types::Json(webhook.headers.clone()),
             body: body_bytes,
             content_type: webhook.content_type.clone(),
-            received_at: Utc::now(),
+            received_at: DateTime::<Utc>::from(self.clock.now_system()),
             delivered_at: None,
             failed_at: None,
             payload_size,
@@ -260,7 +261,7 @@ impl TestEnv {
         expected_status: EventStatus,
         timeout: Duration,
     ) -> Result<()> {
-        let start = std::time::Instant::now();
+        let start = self.clock.now();
 
         loop {
             match self.find_webhook_status(event_id).await {
@@ -289,7 +290,7 @@ impl TestEnv {
             }
 
             // Short sleep to avoid hammering the database
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.clock.sleep(Duration::from_millis(50)).await;
         }
     }
 

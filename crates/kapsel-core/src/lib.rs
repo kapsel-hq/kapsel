@@ -23,4 +23,4 @@ pub use models::{
     BackoffStrategy, CircuitState, DeliveryAttempt, DeliveryAttemptErrorType, Endpoint, EndpointId,
     EventId, EventStatus, HttpMethod, IdempotencyStrategy, SignatureConfig, TenantId, WebhookEvent,
 };
-pub use time::Clock;
+pub use time::{Clock, RealClock, TestClock};

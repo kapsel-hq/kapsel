@@ -209,12 +209,14 @@ pub fn batch_processing_policy() -> RetryPolicy {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     #[test]
     fn exponential_backoff_increases_correctly() {
         let policy = default_exponential_policy();
-        let base_time = Utc::now();
+        let base_time = chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
 
         // Test progression without jitter for predictability
         let mut policy_no_jitter = policy;
@@ -247,7 +249,7 @@ mod tests {
         let context = RetryContext::new(
             3, // At maximum attempts
             DeliveryError::timeout(30),
-            Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             policy,
         );
 
@@ -266,7 +268,7 @@ mod tests {
         let context = RetryContext::new(
             1,
             DeliveryError::client_error(404, "not found"),
-            Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             default_exponential_policy(),
         );
 
@@ -285,7 +287,7 @@ mod tests {
         let context = RetryContext::new(
             1,
             DeliveryError::rate_limited(120), // 2 minutes
-            Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             default_exponential_policy(),
         );
 
@@ -330,7 +332,7 @@ mod tests {
         let context = RetryContext::new(
             10, // High attempt number for large exponential delay
             DeliveryError::timeout(30),
-            Utc::now(),
+            chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             policy,
         );
 
@@ -352,7 +354,7 @@ mod tests {
                 let context = RetryContext::new(
                     attempt,
                     DeliveryError::timeout(30),
-                    Utc::now(),
+                    chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
                     policy.clone(),
                 );
                 context.calculate_delay()
@@ -380,7 +382,7 @@ mod tests {
                 let context = RetryContext::new(
                     attempt,
                     DeliveryError::timeout(30),
-                    Utc::now(),
+                    chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
                     policy.clone(),
                 );
                 context.calculate_delay()

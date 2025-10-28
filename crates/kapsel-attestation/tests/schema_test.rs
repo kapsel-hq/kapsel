@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use kapsel_core::models::DeliveryAttempt;
+use kapsel_core::{models::DeliveryAttempt, Clock};
 use kapsel_testing::TestEnv;
 
 #[tokio::test]
@@ -46,7 +46,7 @@ async fn only_one_active_attestation_key_allowed() {
         id: uuid::Uuid::new_v4(),
         public_key: key1.clone(),
         is_active: true,
-        created_at: chrono::Utc::now(),
+        created_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
         deactivated_at: None,
     };
     env.storage().attestation_keys.create_in_tx(&mut tx, &attestation_key1).await.unwrap();
@@ -57,7 +57,7 @@ async fn only_one_active_attestation_key_allowed() {
         id: uuid::Uuid::new_v4(),
         public_key: key2,
         is_active: true,
-        created_at: chrono::Utc::now(),
+        created_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
         deactivated_at: None,
     };
     let result = env.storage().attestation_keys.create_in_tx(&mut tx, &attestation_key2).await;
@@ -151,7 +151,7 @@ async fn create_test_delivery_attempt(
         response_status: Some(200),
         response_headers: Some(HashMap::new()),
         response_body: Some(b"response".to_vec()),
-        attempted_at: chrono::Utc::now(),
+        attempted_at: chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()),
         succeeded: true,
         error_message: None,
     };

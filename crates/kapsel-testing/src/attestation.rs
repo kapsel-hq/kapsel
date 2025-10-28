@@ -1,5 +1,7 @@
 //! Attestation service methods for TestEnv
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
@@ -82,7 +84,12 @@ impl TestEnv {
         // Generate unique lock ID based on test_run_id to prevent concurrent
         // advisory lock conflicts between isolated tests
         let lock_id = self.generate_unique_lock_id();
-        let merkle_service = MerkleService::with_lock_id(self.storage(), signing_service, lock_id);
+        let merkle_service = MerkleService::with_lock_id(
+            self.storage(),
+            signing_service,
+            Arc::new(self.clock.clone()),
+            lock_id,
+        );
 
         tracing::debug!("MerkleService created with key_id: {} and lock_id: {}", key_id, lock_id);
 

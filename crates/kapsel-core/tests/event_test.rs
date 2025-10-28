@@ -12,7 +12,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use kapsel_core::events::{DeliveryEvent, EventHandler};
+use kapsel_core::{
+    events::{DeliveryEvent, EventHandler},
+    Clock, TestClock,
+};
 use kapsel_testing::events::{test_events, EventHandlerTester};
 use tokio::sync::Mutex;
 
@@ -24,16 +27,18 @@ struct RealisticEventHandler {
     should_fail: Arc<AtomicBool>,
     processing_delay: Duration,
     failure_count: Arc<AtomicUsize>,
+    clock: Arc<dyn Clock>,
 }
 
 impl RealisticEventHandler {
-    fn new(id: &str, processing_delay: Duration) -> Self {
+    fn new(id: &str, processing_delay: Duration, clock: Arc<dyn Clock>) -> Self {
         Self {
             _id: id.to_string(),
             processed_events: Arc::new(Mutex::new(Vec::new())),
             should_fail: Arc::new(AtomicBool::new(false)),
             processing_delay,
             failure_count: Arc::new(AtomicUsize::new(0)),
+            clock,
         }
     }
 
@@ -59,7 +64,7 @@ impl EventHandler for RealisticEventHandler {
     async fn handle_event(&self, event: DeliveryEvent) {
         // Simulate processing delay
         if !self.processing_delay.is_zero() {
-            tokio::time::sleep(self.processing_delay).await;
+            self.clock.sleep(self.processing_delay).await;
         }
 
         // Simulate failures when enabled
@@ -135,7 +140,8 @@ async fn multicast_isolates_handler_panics() {
     let mut tester = EventHandlerTester::new();
 
     // Add panicking handler and normal handler
-    let normal_handler = Arc::new(RealisticEventHandler::new("normal", Duration::ZERO));
+    let normal_handler =
+        Arc::new(RealisticEventHandler::new("normal", Duration::ZERO, Arc::new(TestClock::new())));
     let normal_count_before = normal_handler.processed_count().await;
 
     tester.add_named_subscriber("panicking", Arc::new(PanickingHandler));
@@ -160,8 +166,13 @@ async fn concurrent_multicast_maintains_event_integrity() {
     let mut tester = EventHandlerTester::new();
 
     // Add multiple handlers with different processing characteristics
-    let fast_handler = Arc::new(RealisticEventHandler::new("fast", Duration::ZERO));
-    let slow_handler = Arc::new(RealisticEventHandler::new("slow", Duration::from_millis(10)));
+    let fast_handler =
+        Arc::new(RealisticEventHandler::new("fast", Duration::ZERO, Arc::new(TestClock::new())));
+    let slow_handler = Arc::new(RealisticEventHandler::new(
+        "slow",
+        Duration::from_millis(10),
+        Arc::new(TestClock::new()),
+    ));
 
     tester.add_named_subscriber("fast", fast_handler.clone());
     tester.add_named_subscriber("slow", slow_handler.clone());
@@ -227,7 +238,13 @@ async fn multicast_scales_with_subscriber_count() {
 
         // Add subscribers
         let handlers: Vec<Arc<RealisticEventHandler>> = (0..count)
-            .map(|i| Arc::new(RealisticEventHandler::new(&format!("handler-{i}"), Duration::ZERO)))
+            .map(|i| {
+                Arc::new(RealisticEventHandler::new(
+                    &format!("handler-{i}"),
+                    Duration::ZERO,
+                    Arc::new(TestClock::new()),
+                ))
+            })
             .collect();
 
         for (i, handler) in handlers.iter().enumerate() {
@@ -253,7 +270,11 @@ async fn multicast_scales_with_subscriber_count() {
 async fn event_history_tracks_processed_events() {
     let mut tester = EventHandlerTester::new();
 
-    let handler = Arc::new(RealisticEventHandler::new("tracking", Duration::ZERO));
+    let handler = Arc::new(RealisticEventHandler::new(
+        "tracking",
+        Duration::ZERO,
+        Arc::new(TestClock::new()),
+    ));
     tester.add_named_subscriber("tracking", handler);
 
     // Verify empty history initially
@@ -285,8 +306,13 @@ async fn event_history_tracks_processed_events() {
 async fn handler_failures_do_not_affect_other_handlers() {
     let mut tester = EventHandlerTester::new();
 
-    let reliable_handler = Arc::new(RealisticEventHandler::new("reliable", Duration::ZERO));
-    let failing_handler = Arc::new(RealisticEventHandler::new("failing", Duration::ZERO));
+    let reliable_handler = Arc::new(RealisticEventHandler::new(
+        "reliable",
+        Duration::ZERO,
+        Arc::new(TestClock::new()),
+    ));
+    let failing_handler =
+        Arc::new(RealisticEventHandler::new("failing", Duration::ZERO, Arc::new(TestClock::new())));
 
     // Configure one handler to fail
     failing_handler.enable_failures();

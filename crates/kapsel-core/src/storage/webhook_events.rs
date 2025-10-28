@@ -760,6 +760,7 @@ mod tests {
     #[tokio::test]
     async fn repository_can_be_created() {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test").unwrap();
-        let _repo = Repository::new(Arc::new(pool));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let _repo = Repository::new(Arc::new(pool), clock);
     }
 }

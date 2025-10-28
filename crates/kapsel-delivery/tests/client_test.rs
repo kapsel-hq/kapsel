@@ -7,15 +7,16 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http::StatusCode;
+use kapsel_core::Clock;
 use kapsel_delivery::{
     client::{ClientConfig, DeliveryClient, DeliveryRequest},
     DeliveryError,
 };
-use kapsel_testing::{http::MockResponse, TestEnv};
+use kapsel_testing::{http::MockResponse, TestClock, TestEnv};
 use serde_json::json;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -33,7 +34,8 @@ async fn delivers_webhook_successfully() {
         .await;
 
     let config = ClientConfig { timeout: Duration::from_secs(30), ..Default::default() };
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -65,7 +67,9 @@ async fn handles_connection_timeout() {
         timeout: Duration::from_millis(100), // Short timeout
         ..Default::default()
     };
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -103,7 +107,8 @@ async fn handles_http_error_responses() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -136,7 +141,8 @@ async fn respects_retry_after_header() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -162,7 +168,8 @@ async fn respects_retry_after_header() {
 #[tokio::test]
 async fn handles_connection_refused() {
     let config = ClientConfig { timeout: Duration::from_secs(5), ..Default::default() };
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -198,7 +205,8 @@ async fn validates_request_format() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -235,7 +243,8 @@ async fn tracks_request_duration() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock.clone()).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -248,7 +257,7 @@ async fn tracks_request_duration() {
         attempt_number: 1,
     };
 
-    let start = std::time::Instant::now();
+    let start = clock.now();
     let response = client.deliver(request).await.expect("Delivery should succeed");
     let total_duration = start.elapsed();
 
@@ -273,7 +282,8 @@ async fn handles_large_response_bodies() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),
@@ -308,7 +318,8 @@ async fn limits_response_body_size() {
         .await;
 
     let config = ClientConfig::default();
-    let client = DeliveryClient::new(config).expect("Failed to create client");
+    let clock = Arc::new(TestClock::new());
+    let client = DeliveryClient::new(config, clock).expect("Failed to create client");
 
     let request = DeliveryRequest {
         delivery_id: Uuid::new_v4(),

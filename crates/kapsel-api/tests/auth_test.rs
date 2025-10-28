@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 use kapsel_api::middleware::auth::auth_middleware;
-use kapsel_core::storage::Storage;
+use kapsel_core::{storage::Storage, Clock};
 use kapsel_testing::TestEnv;
 use serde_json::json;
 use tower::ServiceExt;
@@ -183,7 +183,8 @@ async fn authenticate_request_fails_with_expired_key() {
     tx.commit().await.expect("commit transaction");
 
     // Mark the key as expired
-    let expired_at = chrono::Utc::now() - chrono::Duration::days(1);
+    let expired_at =
+        chrono::DateTime::<chrono::Utc>::from(env.clock.now_system()) - chrono::Duration::days(1);
     env.storage()
         .api_keys
         .set_expiration(&key_hash, Some(expired_at))
@@ -263,7 +264,10 @@ fn create_test_app(pool: sqlx::PgPool) -> Router {
     Router::new()
         .route("/test", get(test_handler))
         .layer(middleware::from_fn_with_state(
-            Arc::new(Storage::new(pool.clone())),
+            {
+                let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
+                Arc::new(Storage::new(pool.clone(), &clock))
+            },
             auth_middleware,
         ))
         .with_state(pool)

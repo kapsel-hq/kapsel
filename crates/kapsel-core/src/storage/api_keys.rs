@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{error::Result, models::TenantId};
+use crate::{error::Result, models::TenantId, Clock};
 
 /// API key data structure for database operations.
 #[derive(Debug, Clone)]
@@ -55,12 +55,13 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ApiKey {
 /// expiration.
 pub struct Repository {
     pool: Arc<PgPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Repository {
     /// Creates a new repository instance.
-    pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<PgPool>, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Returns a reference to the database pool.
@@ -144,29 +145,33 @@ impl Repository {
     ///
     /// Returns error if query fails.
     pub async fn validate(&self, key_hash: &str) -> Result<Option<TenantId>> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         let row: Option<(Uuid,)> = sqlx::query_as(
             r"
             SELECT tenant_id
             FROM api_keys
             WHERE key_hash = $1
               AND revoked_at IS NULL
-              AND (expires_at IS NULL OR expires_at > NOW())
+              AND (expires_at IS NULL OR expires_at > $2)
             ",
         )
         .bind(key_hash)
+        .bind(now)
         .fetch_optional(&*self.pool)
         .await?;
 
         if let Some((tenant_id,)) = row {
             // Update last_used_at timestamp
+            let now = DateTime::<Utc>::from(self.clock.now_system());
             let _ = sqlx::query(
                 r"
                 UPDATE api_keys
-                SET last_used_at = NOW()
+                SET last_used_at = $2
                 WHERE key_hash = $1
                 ",
             )
             .bind(key_hash)
+            .bind(now)
             .execute(&*self.pool)
             .await;
 
@@ -182,14 +187,16 @@ impl Repository {
     ///
     /// Returns error if update fails.
     pub async fn revoke(&self, key_hash: &str) -> Result<()> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         sqlx::query(
             r"
             UPDATE api_keys
-            SET revoked_at = NOW()
+            SET revoked_at = $2
             WHERE key_hash = $1
             ",
         )
         .bind(key_hash)
+        .bind(now)
         .execute(&*self.pool)
         .await?;
 
@@ -308,12 +315,14 @@ impl Repository {
     ///
     /// Returns error if delete fails.
     pub async fn cleanup_expired(&self) -> Result<u64> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         let result = sqlx::query(
             r"
             DELETE FROM api_keys
-            WHERE expires_at IS NOT NULL AND expires_at < NOW()
+            WHERE expires_at IS NOT NULL AND expires_at < $1
             ",
         )
+        .bind(now)
         .execute(&*self.pool)
         .await?;
 
@@ -328,6 +337,7 @@ mod tests {
     #[tokio::test]
     async fn repository_can_be_created() {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test").unwrap();
-        let _repo = Repository::new(Arc::new(pool));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let _repo = Repository::new(Arc::new(pool), clock);
     }
 }

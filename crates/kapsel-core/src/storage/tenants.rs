@@ -6,12 +6,14 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
     error::Result,
     models::{Tenant, TenantId},
+    Clock,
 };
 
 /// Repository for tenant database operations.
@@ -20,12 +22,13 @@ use crate::{
 /// operations and tier-based feature flags.
 pub struct Repository {
     pool: Arc<PgPool>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Repository {
     /// Creates a new repository instance.
-    pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+    pub fn new(pool: Arc<PgPool>, clock: Arc<dyn Clock>) -> Self {
+        Self { pool, clock }
     }
 
     /// Returns a reference to the database pool.
@@ -150,16 +153,18 @@ impl Repository {
     ///
     /// Returns error if update fails.
     pub async fn update(&self, tenant: &Tenant) -> Result<()> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         sqlx::query(
             r"
             UPDATE tenants
-            SET name = $2, tier = $3, updated_at = NOW()
+            SET name = $2, tier = $3, updated_at = $4
             WHERE id = $1
             ",
         )
         .bind(tenant.id.0)
         .bind(&tenant.name)
         .bind(&tenant.tier)
+        .bind(now)
         .execute(&*self.pool)
         .await?;
 
@@ -269,15 +274,17 @@ impl Repository {
     ///
     /// Returns error if update fails.
     pub async fn update_tier(&self, tenant_id: TenantId, tier: &str) -> Result<()> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
         sqlx::query(
             r"
             UPDATE tenants
-            SET tier = $2, updated_at = NOW()
+            SET tier = $2, updated_at = $3
             WHERE id = $1
             ",
         )
         .bind(tenant_id.0)
         .bind(tier)
+        .bind(now)
         .execute(&*self.pool)
         .await?;
 
@@ -295,16 +302,18 @@ impl Repository {
     pub async fn ensure_system_tenant(&self) -> Result<TenantId> {
         // The system tenant has a fixed ID: 00000000-0000-0000-0000-000000000000
         let system_id = Uuid::nil();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
 
         let id = sqlx::query_scalar(
             r"
             INSERT INTO tenants (id, name, tier)
             VALUES ($1, 'system', 'system')
-            ON CONFLICT (id) DO UPDATE SET updated_at = NOW()
+            ON CONFLICT (id) DO UPDATE SET updated_at = $2
             RETURNING id
             ",
         )
         .bind(system_id)
+        .bind(now)
         .fetch_one(&*self.pool)
         .await?;
 
@@ -319,6 +328,7 @@ mod tests {
     #[tokio::test]
     async fn repository_can_be_created() {
         let pool = sqlx::PgPool::connect_lazy("postgresql://test").unwrap();
-        let _repo = Repository::new(Arc::new(pool));
+        let clock = Arc::new(crate::time::TestClock::new());
+        let _repo = Repository::new(Arc::new(pool), clock);
     }
 }

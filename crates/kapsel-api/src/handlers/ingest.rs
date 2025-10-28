@@ -13,14 +13,72 @@ use axum::{
 };
 use bytes::Bytes;
 use kapsel_core::{
-    error::CoreError, storage::Storage, EndpointId, EventId, EventStatus, IdempotencyStrategy,
-    KapselError, Result, SignatureConfig, TenantId, WebhookEvent,
+    error::CoreError, storage::Storage, Clock, EndpointId, EventId, EventStatus, KapselError,
+    Result, SignatureConfig, TenantId, WebhookEvent,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::crypto::{validate_signature, ValidationResult};
+use crate::{
+    crypto::{validate_signature, ValidationResult},
+    AppState,
+};
+
+/// Ingestion service that encapsulates clock dependency for webhook processing.
+pub struct IngestService {
+    clock: Arc<dyn Clock>,
+}
+
+impl IngestService {
+    /// Creates a new ingestion service with the given clock.
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self { clock }
+    }
+
+    /// Persists a webhook event to the database.
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_event(
+        &self,
+        storage: &Storage,
+        event_id: EventId,
+        tenant_id: TenantId,
+        endpoint_id: EndpointId,
+        idempotency_key: String,
+        headers: serde_json::Value,
+        body: Bytes,
+        content_type: String,
+        signature_valid: Option<bool>,
+        signature_error: Option<String>,
+    ) -> Result<()> {
+        let received_at = chrono::DateTime::<chrono::Utc>::from(self.clock.now_system());
+
+        let event = WebhookEvent::new(
+            event_id,
+            tenant_id,
+            EndpointId(endpoint_id.0),
+            idempotency_key.clone(),
+            serde_json::from_value(headers).unwrap_or_default(),
+            body.to_vec(),
+            content_type,
+            received_at,
+        );
+
+        // Create the full event struct with additional fields
+        let full_event = WebhookEvent { signature_valid, signature_error, ..event };
+
+        storage.webhook_events.create(&full_event).await?;
+        info!(
+            event_id = ?event_id,
+            tenant_id = ?tenant_id,
+            endpoint_id = ?endpoint_id,
+            payload_size = body.len(),
+            "webhook event persisted successfully"
+        );
+
+        Ok(())
+    }
+}
 
 /// Request body for webhook ingestion.
 ///
@@ -71,7 +129,7 @@ pub struct ErrorDetail {
 /// - 500: Database or internal errors
 #[instrument(
     name = "ingest_webhook",
-    skip(storage, headers, body),
+    skip(app_state, headers, body),
     fields(
         endpoint_id = %endpoint_id,
         content_length = headers.get("content-length").and_then(|v| v.to_str().ok()).unwrap_or("unknown"),
@@ -80,8 +138,8 @@ pub struct ErrorDetail {
 )]
 #[allow(clippy::too_many_lines)]
 pub async fn ingest_webhook(
+    State(app_state): State<AppState>,
     Path(endpoint_id): Path<Uuid>,
-    State(storage): State<Arc<Storage>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -97,7 +155,7 @@ pub async fn ingest_webhook(
     }
 
     let endpoint_id = EndpointId::from(endpoint_id);
-    let endpoint_result = fetch_endpoint(&storage, endpoint_id).await;
+    let endpoint_result = fetch_endpoint(&app_state.storage, endpoint_id).await;
 
     let tenant_id = match endpoint_result {
         Ok(tenant_id) => tenant_id,
@@ -118,7 +176,7 @@ pub async fn ingest_webhook(
         .to_string();
 
     if !idempotency_key.is_empty() {
-        match check_duplicate(&storage, &idempotency_key, endpoint_id).await {
+        match check_duplicate(&app_state.storage, &idempotency_key, endpoint_id).await {
             Ok(Some(existing_id)) => {
                 info!(
                     existing_event_id = %existing_id,
@@ -147,7 +205,7 @@ pub async fn ingest_webhook(
     }
 
     let (signature_valid, signature_error) =
-        match validate_webhook_signature(&storage, endpoint_id, &headers, &body).await {
+        match validate_webhook_signature(&app_state.storage, endpoint_id, &headers, &body).await {
             Ok(validation_result) => {
                 (Some(validation_result.is_valid), validation_result.error_message)
             },
@@ -189,19 +247,21 @@ pub async fn ingest_webhook(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let insert_result = persist_event(
-        &storage,
-        event_id,
-        tenant_id,
-        endpoint_id,
-        idempotency_key,
-        headers_json,
-        body.clone(),
-        content_type,
-        signature_valid,
-        signature_error,
-    )
-    .await;
+    let ingest_service = IngestService::new(app_state.clock.clone());
+    let insert_result = ingest_service
+        .persist_event(
+            &app_state.storage,
+            event_id,
+            tenant_id,
+            endpoint_id,
+            idempotency_key,
+            headers_json,
+            body.clone(),
+            content_type,
+            signature_valid,
+            signature_error,
+        )
+        .await;
 
     match insert_result {
         Ok(()) => {
@@ -246,54 +306,6 @@ async fn check_duplicate(
         storage.webhook_events.find_duplicate(endpoint_id, idempotency_key).await?;
 
     Ok(duplicate_event.map(|event| event.id))
-}
-
-/// Persists a webhook event to the database.
-#[allow(clippy::too_many_arguments)]
-async fn persist_event(
-    storage: &Storage,
-    event_id: EventId,
-    tenant_id: TenantId,
-    endpoint_id: EndpointId,
-    idempotency_key: String,
-    headers: serde_json::Value,
-    body: Bytes,
-    content_type: String,
-    signature_valid: Option<bool>,
-    signature_error: Option<String>,
-) -> Result<()> {
-    let payload_size = i32::try_from(body.len()).unwrap_or(i32::MAX).max(1);
-
-    let event = WebhookEvent {
-        id: event_id,
-        tenant_id,
-        endpoint_id,
-        source_event_id: idempotency_key,
-        idempotency_strategy: IdempotencyStrategy::SourceId,
-        status: EventStatus::Pending,
-        failure_count: 0,
-        last_attempt_at: None,
-        next_retry_at: None,
-        headers: sqlx::types::Json({
-            if let Some(obj) = headers.as_object() {
-                obj.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()
-            } else {
-                error!("headers field is not an object");
-                return Err(CoreError::InvalidInput("headers must be an object".to_string()));
-            }
-        }),
-        body: body.to_vec(),
-        content_type,
-        received_at: chrono::Utc::now(),
-        delivered_at: None,
-        failed_at: None,
-        payload_size,
-        signature_valid,
-        signature_error,
-    };
-
-    storage.webhook_events.create(&event).await?;
-    Ok(())
 }
 
 /// Extracts headers into a HashMap for storage.

@@ -5,7 +5,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use kapsel_core::{Clock, EventHandler, NoOpEventHandler};
+use kapsel_core::{storage::Storage, Clock, EventHandler, NoOpEventHandler};
 use sqlx::PgPool;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -103,7 +103,7 @@ impl WorkerPool {
         }
 
         for worker_id in 0..self.config.worker_count {
-            let storage = Arc::new(kapsel_core::storage::Storage::new(self.pool.clone()));
+            let storage = Arc::new(Storage::new(self.pool.clone(), &self.clock.clone()));
             let worker = DeliveryWorker::new(
                 worker_id,
                 storage,
@@ -202,8 +202,9 @@ impl WorkerPool {
             results
         };
 
-        match tokio::time::timeout(timeout, shutdown_future).await {
-            Ok(results) => {
+        tokio::select! {
+            biased;
+            results = shutdown_future => {
                 let error_count = results.iter().filter(|r| r.is_err()).count();
                 if error_count > 0 {
                     warn!(
@@ -215,13 +216,13 @@ impl WorkerPool {
                 info!("worker pool shutdown completed");
                 Ok(())
             },
-            Err(_timeout) => {
+            () = self.clock.sleep(timeout) => {
                 error!(
                     timeout_seconds = timeout.as_secs(),
                     "worker shutdown timed out, some workers may still be running"
                 );
                 Err(DeliveryError::ShutdownTimeout { timeout })
-            },
+            }
         }
     }
 

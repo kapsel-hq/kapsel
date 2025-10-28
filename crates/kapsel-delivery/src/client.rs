@@ -3,7 +3,7 @@
 //! Handles request construction, response processing, and error categorization
 //! for retry logic and circuit breaker integration.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use reqwest::{header::HeaderMap, Response};
@@ -46,6 +46,7 @@ impl Default for ClientConfig {
 pub struct DeliveryClient {
     client: reqwest::Client,
     config: ClientConfig,
+    clock: Arc<dyn kapsel_core::Clock>,
 }
 
 /// Request context for a webhook delivery.
@@ -91,7 +92,7 @@ impl DeliveryClient {
     ///
     /// Returns `DeliveryError::ConfigurationError` if the HTTP client cannot
     /// be configured with the provided settings.
-    pub fn new(config: ClientConfig) -> Result<Self> {
+    pub fn new(config: ClientConfig, clock: Arc<dyn kapsel_core::Clock>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .user_agent(&config.user_agent)
@@ -102,12 +103,12 @@ impl DeliveryClient {
                 DeliveryError::configuration(format!("failed to build HTTP client: {e}"))
             })?;
 
-        Ok(Self { client, config })
+        Ok(Self { client, config, clock })
     }
 
     /// Creates a new delivery client with default configuration.
-    pub fn with_defaults() -> Result<Self> {
-        Self::new(ClientConfig::default())
+    pub fn with_defaults(clock: Arc<dyn kapsel_core::Clock>) -> Result<Self> {
+        Self::new(ClientConfig::default(), clock)
     }
 
     /// Delivers a webhook to the specified endpoint.
@@ -125,7 +126,7 @@ impl DeliveryClient {
     /// - `ServerError` for 5xx responses
     /// - `RateLimited` for 429 responses with Retry-After header
     pub async fn deliver(&self, request: DeliveryRequest) -> Result<DeliveryResponse> {
-        let start_time = std::time::Instant::now();
+        let start_time = self.clock.now();
 
         let span = info_span!(
             "webhook_delivery",
@@ -154,7 +155,10 @@ impl DeliveryClient {
                 .header("X-Kapsel-Event-Id", request.event_id.to_string())
                 .header("X-Kapsel-Delivery-Id", request.delivery_id.to_string())
                 .header("X-Kapsel-Delivery-Attempt", request.attempt_number.to_string())
-                .header("X-Kapsel-Original-Timestamp", chrono::Utc::now().to_rfc3339());
+                .header(
+                    "X-Kapsel-Original-Timestamp",
+                    chrono::DateTime::<chrono::Utc>::from(self.clock.now_system()).to_rfc3339(),
+                );
 
             let response = match http_request.send().await {
                 Ok(response) => response,
@@ -281,6 +285,7 @@ fn is_managed_header(header_name: &str) -> bool {
 /// seconds, or a default value (60s) if parsing fails.
 pub fn extract_retry_after_seconds<S: std::hash::BuildHasher>(
     headers: &HashMap<String, String, S>,
+    clock: &dyn kapsel_core::Clock,
 ) -> Option<u64> {
     const DEFAULT_RETRY_AFTER: u64 = 60;
 
@@ -290,7 +295,7 @@ pub fn extract_retry_after_seconds<S: std::hash::BuildHasher>(
         }
 
         if let Ok(date_time) = chrono::DateTime::parse_from_rfc2822(retry_after) {
-            let now = chrono::Utc::now();
+            let now = chrono::DateTime::<chrono::Utc>::from(clock.now_system());
             let retry_time = date_time.with_timezone(&chrono::Utc);
 
             if retry_time > now {
@@ -309,6 +314,7 @@ pub fn extract_retry_after_seconds<S: std::hash::BuildHasher>(
 
 #[cfg(test)]
 mod tests {
+    use kapsel_core::TestClock;
     use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -339,7 +345,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -360,7 +366,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -381,7 +387,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -406,7 +412,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -431,7 +437,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -448,7 +454,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = DeliveryClient::with_defaults().unwrap();
+        let client = DeliveryClient::with_defaults(Arc::new(TestClock::new())).unwrap();
         let request = create_test_request(format!("{}/webhook", mock_server.uri()));
 
         let result = client.deliver(request).await;
@@ -457,19 +463,20 @@ mod tests {
 
     #[test]
     fn retry_after_parsing() {
+        let clock = Arc::new(TestClock::new());
         let mut headers = HashMap::new();
 
         // Test seconds format
         headers.insert("retry-after".to_string(), "120".to_string());
-        assert_eq!(extract_retry_after_seconds(&headers), Some(120));
+        assert_eq!(extract_retry_after_seconds(&headers, clock.as_ref()), Some(120));
 
         // Test None when missing
         headers.clear();
-        assert_eq!(extract_retry_after_seconds(&headers), None);
+        assert_eq!(extract_retry_after_seconds(&headers, clock.as_ref()), None);
 
         // Test invalid format falls back to default
         headers.insert("retry-after".to_string(), "invalid".to_string());
-        assert_eq!(extract_retry_after_seconds(&headers), Some(60));
+        assert_eq!(extract_retry_after_seconds(&headers, clock.as_ref()), Some(60));
     }
 
     #[test]

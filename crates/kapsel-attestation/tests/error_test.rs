@@ -23,7 +23,11 @@ async fn attestation_errors_do_not_affect_delivery_processing() {
 
     // Create attestation subscriber
     let signing_service = SigningService::ephemeral();
-    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(
+        env.storage(),
+        signing_service,
+        Arc::new(env.clock.clone()),
+    )));
     let subscriber = AttestationEventSubscriber::new(merkle_service);
 
     // Create an event with invalid data that might cause attestation to fail
@@ -51,7 +55,11 @@ async fn handles_corrupted_event_data_gracefully() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(
+        env.storage(),
+        signing_service,
+        Arc::new(env.clock.clone()),
+    )));
     let subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Create event with various invalid fields
@@ -84,7 +92,11 @@ async fn handles_signing_service_failures() {
 
     // Create a signing service that will fail
     let signing_service = SigningService::ephemeral();
-    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(
+        env.storage(),
+        signing_service,
+        Arc::new(env.clock.clone()),
+    )));
     let subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Add some events
@@ -127,7 +139,11 @@ async fn handles_database_connection_issues() {
     let env = TestEnv::new_isolated().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
-    let merkle_service = Arc::new(RwLock::new(MerkleService::new(env.storage(), signing_service)));
+    let merkle_service = Arc::new(RwLock::new(MerkleService::new(
+        env.storage(),
+        signing_service,
+        Arc::new(env.clock.clone()),
+    )));
     let subscriber = AttestationEventSubscriber::new(merkle_service.clone());
 
     // Process a valid event first
