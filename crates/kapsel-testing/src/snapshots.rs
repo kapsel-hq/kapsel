@@ -74,12 +74,12 @@ impl TestEnv {
         struct DeliveryAttempt {
             attempt_number: i32,
             response_status: Option<i32>,
-            duration_ms: i32,
-            error_type: Option<String>,
+            succeeded: bool,
+            request_body: Option<Vec<u8>>,
         }
 
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
-            "SELECT attempt_number, response_status, duration_ms, error_type
+            "SELECT attempt_number, response_status, succeeded, request_body
              FROM delivery_attempts
              ORDER BY attempt_number ASC",
         )
@@ -96,8 +96,12 @@ impl TestEnv {
             let _ = writeln!(output, "Attempt {}:", i + 1);
             let _ = writeln!(output, "  attempt_number: {}", attempt.attempt_number);
             let _ = writeln!(output, "  response_status: {:?}", attempt.response_status);
-            let _ = writeln!(output, "  duration_ms: {}", attempt.duration_ms);
-            let _ = writeln!(output, "  error_type: {:?}", attempt.error_type);
+            let _ = writeln!(output, "  succeeded: {}", attempt.succeeded);
+            let _ = writeln!(
+                output,
+                "  request_body_size: {}",
+                attempt.request_body.as_ref().map_or(0, Vec::len)
+            );
             output.push('\n');
         }
 
