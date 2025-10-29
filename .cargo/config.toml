@@ -6,7 +6,7 @@
 [env]
 # Database URL for sqlx compile-time query checking
 # This allows rust-analyzer to validate sqlx macros without running tests
-DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/kapsel_test"
+DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/kapsel_test?sslmode=disable"
 
 [target.'cfg(target_os = "macos")']
 # macOS-specific settings for better performance
