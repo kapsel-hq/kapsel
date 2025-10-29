@@ -272,10 +272,11 @@ impl MerkleService {
         sqlx::query(
             r"
             INSERT INTO signed_tree_heads
-            (tree_size, root_hash, timestamp_ms, signature, key_id, batch_id, batch_size)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (id, tree_size, root_hash, timestamp_ms, signature, key_id, batch_id, batch_size, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ",
         )
+        .bind(uuid::Uuid::new_v4())
         .bind(tree_size)
         .bind(&root_hash[..])
         .bind(timestamp_ms)
