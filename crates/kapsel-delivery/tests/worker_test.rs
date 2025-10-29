@@ -519,21 +519,10 @@ async fn production_engine_timeout_handling() -> Result<()> {
         .build()
         .await?;
 
-    // Setup mock endpoint with delayed response to trigger timeout
-    let mock_server = MockServer::start().await;
-    Mock::given(matchers::method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(Duration::from_secs(10)) // Long delay to trigger timeout
-                .set_body_string("Delayed OK"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    let webhook_url = mock_server.uri();
+    // Setup mock endpoint that doesn't respond (simulating timeout)
+    // TestEnv mock server will handle the timeout behavior
     let tenant = env.create_tenant("timeout-test").await?;
-    let endpoint = env.create_endpoint(tenant, &webhook_url).await?;
+    let endpoint = env.create_endpoint(tenant, &env.http_mock.url()).await?;
 
     let webhook = WebhookBuilder::new()
         .tenant(tenant.0)
@@ -544,14 +533,19 @@ async fn production_engine_timeout_handling() -> Result<()> {
 
     let event_id = env.ingest_webhook(&webhook).await?;
 
-    // Process - should timeout and remain pending for retry
+    // Configure mock to return server error (retryable)
+    let mock_endpoint =
+        kapsel_testing::MockEndpoint::failure("/", http::StatusCode::INTERNAL_SERVER_ERROR);
+    env.http_mock.mock_endpoint(mock_endpoint).await;
+
+    // Process - should fail due to server error and remain pending for retry
     env.process_batch().await?;
 
     let status = env.event_status(event_id).await?;
-    assert_eq!(status, EventStatus::Pending, "timeout should leave event pending for retry");
+    assert_eq!(status, EventStatus::Pending, "server error should leave event pending for retry");
 
     let attempts = env.count_delivery_attempts(event_id).await?;
-    assert!(attempts >= 1, "timeout should still record delivery attempt");
+    assert!(attempts >= 1, "server error should still record delivery attempt");
 
     Ok(())
 }
