@@ -160,6 +160,227 @@ show_connections() {
     echo ""
 }
 
+# Show detailed connection analysis for debugging
+show_connection_details() {
+    log_header "=== CONNECTION POOL ANALYSIS ==="
+    echo ""
+
+    echo "Connection states and timing:"
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            datname as \"Database\",
+            state,
+            count(*) as \"Count\",
+            application_name as \"App\",
+            CASE
+                WHEN state_change IS NOT NULL THEN
+                    EXTRACT(EPOCH FROM (now() - state_change))::int || 's'
+                ELSE 'unknown'
+            END as \"State Duration\"
+         FROM pg_stat_activity
+         WHERE datname IS NOT NULL
+         GROUP BY datname, state, application_name, state_change
+         ORDER BY datname, count(*) DESC;" 2>/dev/null
+
+    echo ""
+
+    echo "Long-running connections (>30s in same state):"
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            datname as \"Database\",
+            pid,
+            state,
+            application_name as \"App\",
+            EXTRACT(EPOCH FROM (now() - state_change))::int as \"Duration (s)\",
+            CASE
+                WHEN query_start IS NOT NULL THEN
+                    substring(query, 1, 80) || '...'
+                ELSE 'No query'
+            END as \"Current Query\"
+         FROM pg_stat_activity
+         WHERE datname IS NOT NULL
+           AND state_change < now() - interval '30 seconds'
+         ORDER BY state_change;" 2>/dev/null
+
+    echo ""
+
+    echo "Connection acquisition patterns:"
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            application_name as \"Application\",
+            count(*) as \"Total Conns\",
+            count(*) FILTER (WHERE state = 'active') as \"Active\",
+            count(*) FILTER (WHERE state = 'idle') as \"Idle\",
+            count(*) FILTER (WHERE state = 'idle in transaction') as \"Idle in TX\",
+            count(*) FILTER (WHERE state = 'idle in transaction (aborted)') as \"Aborted TX\"
+         FROM pg_stat_activity
+         WHERE datname IS NOT NULL
+         GROUP BY application_name
+         ORDER BY count(*) DESC;" 2>/dev/null
+
+    echo ""
+}
+
+# Monitor test processes and their database usage
+show_test_processes() {
+    log_header "=== TEST PROCESS MONITORING ==="
+    echo ""
+
+    echo "Rust test processes currently running:"
+    local rust_processes=$(pgrep -f "cargo.*test\|nextest\|test.*kapsel" 2>/dev/null || true)
+
+    if [[ -n "$rust_processes" ]]; then
+        echo "Found test processes:"
+        for pid in $rust_processes; do
+            local cmd=$(ps -p $pid -o pid,ppid,time,command --no-headers 2>/dev/null || echo "Process exited")
+            echo "  $cmd"
+        done
+    else
+        echo "No active test processes found"
+    fi
+
+    echo ""
+
+    echo "Database connections from test processes:"
+    # This shows connections that look like they're from test binaries
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            datname as \"Database\",
+            application_name as \"Application\",
+            count(*) as \"Connections\",
+            string_agg(DISTINCT state, ', ') as \"States\",
+            min(backend_start) as \"Oldest Connection\",
+            max(backend_start) as \"Newest Connection\"
+         FROM pg_stat_activity
+         WHERE datname IS NOT NULL
+           AND (application_name LIKE '%test%'
+                OR application_name = ''
+                OR application_name IS NULL)
+         GROUP BY datname, application_name
+         ORDER BY count(*) DESC;" 2>/dev/null
+
+    echo ""
+}
+
+# Monitor connection churn and retry patterns
+monitor_connection_churn() {
+    log_header "=== CONNECTION CHURN MONITORING ==="
+    echo ""
+
+    echo "Starting 30-second connection monitoring (shows connection pattern changes)..."
+    echo "Timestamp | Total Conns | Active | Idle | Idle in TX | Applications"
+    echo "----------|-------------|--------|------|------------|-------------"
+
+    local prev_total=0
+    local start_time=$(date +%s)
+    local end_time=$((start_time + 30))
+
+    while [[ $(date +%s) -lt $end_time ]]; do
+        local timestamp=$(date '+%H:%M:%S')
+
+        local stats=$(docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -t -c \
+            "SELECT
+                count(*) as total,
+                count(*) FILTER (WHERE state = 'active') as active,
+                count(*) FILTER (WHERE state = 'idle') as idle,
+                count(*) FILTER (WHERE state = 'idle in transaction') as idle_tx,
+                count(DISTINCT application_name) as apps
+             FROM pg_stat_activity
+             WHERE datname IS NOT NULL;" 2>/dev/null | tr -d '\n' | sed 's/|/ /g')
+
+        if [[ -n "$stats" ]]; then
+            read -r total active idle idle_tx apps <<< "$stats"
+            local change=""
+            if [[ $total -ne $prev_total ]]; then
+                local diff=$((total - prev_total))
+                if [[ $diff -gt 0 ]]; then
+                    change=" (+$diff)"
+                else
+                    change=" ($diff)"
+                fi
+            fi
+
+            printf "%-9s | %-11s | %-6s | %-4s | %-10s | %-5s%s\n" \
+                "$timestamp" "$total" "$active" "$idle" "$idle_tx" "$apps" "$change"
+
+            prev_total=$total
+        fi
+
+        sleep 2
+    done
+
+    echo ""
+    echo "Monitoring complete. Look for:"
+    echo "- Sudden spikes in connection count (indicates connection leaks)"
+    echo "- High 'Idle in TX' counts (indicates transaction leaks)"
+    echo "- Frequent +/- changes (indicates connection churn/retry loops)"
+    echo ""
+}
+
+# Debug connection acquisition timeouts
+debug_connection_timeouts() {
+    log_header "=== CONNECTION TIMEOUT DEBUGGING ==="
+    echo ""
+
+    echo "Current connection limits and usage:"
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            'max_connections' as setting,
+            setting::int as value,
+            'Total connection limit' as description
+         FROM pg_settings WHERE name = 'max_connections'
+         UNION ALL
+         SELECT
+            'current_connections',
+            count(*)::int,
+            'Currently active connections'
+         FROM pg_stat_activity WHERE datname IS NOT NULL
+         UNION ALL
+         SELECT
+            'available_connections',
+            (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') - count(*)::int,
+            'Available connection slots'
+         FROM pg_stat_activity WHERE datname IS NOT NULL;" 2>/dev/null
+
+    echo ""
+
+    echo "Connection wait states (potential bottlenecks):"
+    docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -c \
+        "SELECT
+            datname as \"Database\",
+            state,
+            wait_event_type,
+            wait_event,
+            count(*) as \"Count\",
+            avg(EXTRACT(EPOCH FROM (now() - state_change)))::int as \"Avg Duration (s)\"
+         FROM pg_stat_activity
+         WHERE datname IS NOT NULL
+           AND (wait_event_type IS NOT NULL OR state != 'active')
+         GROUP BY datname, state, wait_event_type, wait_event
+         ORDER BY count(*) DESC;" 2>/dev/null
+
+    echo ""
+
+    echo "Recommendations:"
+    local total=$(docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -t -c \
+        "SELECT count(*) FROM pg_stat_activity WHERE datname IS NOT NULL;" 2>/dev/null | tr -d ' ')
+    local max=$(docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -t -c \
+        "SHOW max_connections;" 2>/dev/null | tr -d ' ')
+    local usage_pct=$((total * 100 / max))
+
+    if [[ $usage_pct -gt 80 ]]; then
+        echo "     HIGH: Connection usage at ${usage_pct}% - likely cause of timeouts"
+        echo "     - Reduce test parallelism or pool sizes"
+        echo "     - Check for connection leaks in test cleanup"
+    elif [[ $usage_pct -gt 60 ]]; then
+        echo "     MEDIUM: Connection usage at ${usage_pct}% - monitor for spikes"
+        echo "     - Consider reducing max_connections per pool"
+    else
+        echo "     LOW: Connection usage at ${usage_pct}% - healthy"
+    fi
+    echo ""
+}
+
 # Show resource usage
 show_resource_usage() {
     log_header "=== RESOURCE USAGE ==="
@@ -318,6 +539,83 @@ watch_database_state() {
     done
 }
 
+# Watch connection pools during test runs
+watch_connection_pools() {
+    log_info "Starting connection pool monitoring for test runs (Ctrl+C to exit)..."
+    echo ""
+    echo "This monitor shows real-time connection patterns during test execution."
+    echo "Start your tests in another terminal to see the patterns."
+    echo ""
+    echo "Timestamp | DBs | Total | Active | Idle | TX | Apps | Test Procs | Pattern"
+    echo "----------|-----|-------|--------|------|----|----- |-----------|--------"
+
+    local prev_total=0
+    local pattern_buffer=""
+    local buffer_size=10
+
+    while true; do
+        local timestamp=$(date '+%H:%M:%S')
+
+        # Get database and connection stats
+        local db_count=$(docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -t -c \
+            "SELECT count(*) FROM pg_database WHERE datname LIKE 'test_%';" 2>/dev/null | tr -d ' ')
+
+        local conn_stats=$(docker exec "${CONTAINER_NAME}" psql -U "${POSTGRES_USER}" -d postgres -t -c \
+            "SELECT
+                count(*) as total,
+                count(*) FILTER (WHERE state = 'active') as active,
+                count(*) FILTER (WHERE state = 'idle') as idle,
+                count(*) FILTER (WHERE state = 'idle in transaction') as idle_tx,
+                count(DISTINCT application_name) as apps
+             FROM pg_stat_activity
+             WHERE datname IS NOT NULL;" 2>/dev/null | tr -d '\n' | sed 's/|/ /g')
+
+        # Count test processes
+        local test_proc_count=$(pgrep -f "cargo.*test\|nextest\|test.*kapsel" 2>/dev/null | wc -l)
+
+        if [[ -n "$conn_stats" ]]; then
+            read -r total active idle idle_tx apps <<< "$conn_stats"
+
+            # Determine pattern
+            local change=$((total - prev_total))
+            local pattern_char="="
+            if [[ $change -gt 5 ]]; then
+                pattern_char="↑"  # Sudden increase
+            elif [[ $change -lt -5 ]]; then
+                pattern_char="↓"  # Sudden decrease
+            elif [[ $change -gt 0 ]]; then
+                pattern_char="+"  # Gradual increase
+            elif [[ $change -lt 0 ]]; then
+                pattern_char="-"  # Gradual decrease
+            fi
+
+            # Add to pattern buffer
+            pattern_buffer="${pattern_buffer}${pattern_char}"
+            if [[ ${#pattern_buffer} -gt $buffer_size ]]; then
+                pattern_buffer="${pattern_buffer: -$buffer_size}"
+            fi
+
+            # Color code based on connection usage
+            local color=""
+            local usage_pct=$((total * 100 / 100))  # Assuming max 100 connections
+            if [[ $usage_pct -gt 80 ]]; then
+                color="${RED}"
+            elif [[ $usage_pct -gt 60 ]]; then
+                color="${YELLOW}"
+            else
+                color="${GREEN}"
+            fi
+
+            printf "${color}%-9s${NC} | %-3s | %-5s | %-6s | %-4s | %-2s | %-4s | %-9s | %-10s\n" \
+                "$timestamp" "$db_count" "$total" "$active" "$idle" "$idle_tx" "$apps" "$test_proc_count" "$pattern_buffer"
+
+            prev_total=$total
+        fi
+
+        sleep 1
+    done
+}
+
 # Display full inspection report
 full_inspection() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -344,16 +642,23 @@ Commands:
   overview, o     Show database overview (default)
   counts, c       Show database counts by type
   connections     Show active connections
+  conn-details    Show detailed connection pool analysis
+  test-procs      Show test process monitoring
+  conn-churn      Monitor connection churn for 30s
+  conn-debug      Debug connection acquisition timeouts
   resources, r    Show resource usage
   activity, a     Show database activity and locks
   cleanup         Clean up orphaned test databases
   watch, w        Continuous monitoring mode
+  watch-pools     Watch connection pools during test runs
   full, f         Full detailed inspection
   help, h         Show this help
 
 Examples:
   $0               # Show overview
   $0 watch         # Continuous monitoring
+  $0 watch-pools   # Monitor connections during test runs
+  $0 conn-debug    # Debug connection timeouts
   $0 cleanup       # Clean up orphaned databases
   $0 full          # Full detailed report
 
@@ -382,6 +687,18 @@ main() {
         connections)
             show_connections
             ;;
+        conn-details)
+            show_connection_details
+            ;;
+        test-procs)
+            show_test_processes
+            ;;
+        conn-churn)
+            monitor_connection_churn
+            ;;
+        conn-debug)
+            debug_connection_timeouts
+            ;;
         resources|r)
             show_resource_usage
             ;;
@@ -393,6 +710,9 @@ main() {
             ;;
         watch|w)
             watch_database_state
+            ;;
+        watch-pools)
+            watch_connection_pools
             ;;
         full|f)
             full_inspection
