@@ -110,7 +110,7 @@ impl TestEnv {
         // Use repository to find leaves for the specific event
         let leaves =
             self.storage().merkle_leaves.find_attestation_leaf_info_by_event(event_id.0).await?;
-        let count = if leaves.is_some() { 1 } else { 0 };
+        let count = i64::from(leaves.is_some());
 
         tracing::debug!(
             event_id = %event_id.0,

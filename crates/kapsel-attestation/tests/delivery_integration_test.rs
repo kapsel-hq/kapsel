@@ -17,7 +17,7 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
 
     // Set up attestation service
     let merkle_service = env.create_test_attestation_service().await?;
-    env.enable_attestation(merkle_service);
+    env.enable_attestation(merkle_service)?;
 
     // Create tenant and endpoint first
     let mut tx = env.pool().begin().await?;
@@ -56,7 +56,7 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let merkle_service = env.create_test_attestation_service().await?;
-    env.enable_attestation(merkle_service);
+    env.enable_attestation(merkle_service)?;
 
     // Create tenant and endpoint first
     let mut tx = env.pool().begin().await?;
@@ -147,7 +147,7 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let merkle_service = env.create_test_attestation_service().await?;
-    env.enable_attestation(merkle_service);
+    env.enable_attestation(merkle_service)?;
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
@@ -193,7 +193,7 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
     let mut env = TestEnv::new().await?;
 
     let merkle_service = env.create_test_attestation_service().await?;
-    env.enable_attestation(merkle_service);
+    env.enable_attestation(merkle_service)?;
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
@@ -241,7 +241,7 @@ async fn attestation_batch_commitment_scenario() -> Result<()> {
     let mut env = TestEnv::new_isolated().await?;
 
     let merkle_service = env.create_test_attestation_service().await?;
-    env.enable_attestation(merkle_service);
+    env.enable_attestation(merkle_service)?;
 
     // Create tenant and endpoint
     let mut tx = env.pool().begin().await?;
