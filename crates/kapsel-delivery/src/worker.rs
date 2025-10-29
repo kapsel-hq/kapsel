@@ -415,11 +415,6 @@ impl DeliveryWorker {
             let mut stats = self.stats.write().await;
             stats.in_flight_deliveries -= 1;
             stats.events_processed += 1;
-
-            match &result {
-                Ok(()) => stats.successful_deliveries += 1,
-                Err(_) => stats.failed_deliveries += 1,
-            }
         }
 
         result
@@ -437,18 +432,38 @@ impl DeliveryWorker {
         let endpoint_key = event.endpoint_id.to_string();
         let attempt_number = u32::try_from(event.failure_count + 1).unwrap_or(u32::MAX);
 
-        // 1. Check circuit breaker state BEFORE we do anything else
+        // 1. Get endpoint URL from database first (needed for audit trail)
+        let endpoint_url = self.endpoint_url(&event.endpoint_id).await?;
+
+        // 2. Check circuit breaker state
         let should_allow =
             self.circuit_manager.read().await.should_allow_request(&endpoint_key).await;
 
         if !should_allow {
-            // Circuit breaker is open - don't change event status, just return error
-            // Event should remain in its current state for later retry
-            return Err(DeliveryError::circuit_open(endpoint_key));
-        }
+            // Circuit breaker is open - record attempt for audit trail before failing
+            let delivery_attempt_id = Uuid::new_v4();
+            let circuit_error = DeliveryError::circuit_open(endpoint_key.clone());
 
-        // 2. Get endpoint URL from database
-        let endpoint_url = self.endpoint_url(&event.endpoint_id).await?;
+            // Record the blocked attempt
+            self.record_delivery_attempt(
+                event,
+                &endpoint_url,
+                attempt_number,
+                &Err(circuit_error.clone()),
+                start_time.elapsed(),
+                delivery_attempt_id,
+            )
+            .await;
+
+            // Update failure statistics
+            {
+                let mut stats = self.stats.write().await;
+                stats.failed_deliveries += 1;
+            }
+
+            // Event should remain in its current state for later retry
+            return Err(circuit_error);
+        }
 
         debug!(
             worker_id = self.id,
@@ -504,9 +519,15 @@ impl DeliveryWorker {
         match delivery_result {
             Ok(response) => {
                 if response.is_success {
-                    // Success - update circuit breaker and mark event delivered
+                    // Success - update circuit breaker, mark event delivered, and update stats
                     self.circuit_manager.write().await.record_success(&endpoint_key).await;
                     self.mark_event_delivered(&event.id).await?;
+
+                    // Update success statistics
+                    {
+                        let mut stats = self.stats.write().await;
+                        stats.successful_deliveries += 1;
+                    }
 
                     // Publish delivery success event
                     let success_event = DeliveryEvent::Succeeded(DeliverySucceededEvent {
@@ -548,6 +569,12 @@ impl DeliveryWorker {
                         ),
                     };
 
+                    // Update failure statistics
+                    {
+                        let mut stats = self.stats.write().await;
+                        stats.failed_deliveries += 1;
+                    }
+
                     self.handle_failed_delivery(
                         &event.id,
                         &endpoint_key,
@@ -574,7 +601,12 @@ impl DeliveryWorker {
                 }
             },
             Err(error) => {
-                // Failure - update circuit breaker and handle retry logic
+                // Failure - update failure statistics, circuit breaker and handle retry logic
+                {
+                    let mut stats = self.stats.write().await;
+                    stats.failed_deliveries += 1;
+                }
+
                 self.handle_failed_delivery(
                     &event.id,
                     &endpoint_key,
