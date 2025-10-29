@@ -4,11 +4,13 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use kapsel_attestation::{AttestationEventSubscriber, MerkleService};
 use kapsel_core::{storage::Storage, Clock};
 use kapsel_delivery::{
     retry::{BackoffStrategy, RetryPolicy},
     ClientConfig, DeliveryConfig, DeliveryEngine,
 };
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{database::TestDatabase, http, TestClock, TestEnv};
@@ -359,13 +361,7 @@ impl TestEnv {
     ///
     /// This rebuilds the delivery engine with attestation event handler to
     /// ensure delivery attempts are captured for attestation.
-    pub fn enable_attestation(&mut self, service: kapsel_attestation::MerkleService) {
-        use std::sync::Arc;
-
-        use kapsel_attestation::AttestationEventSubscriber;
-        use kapsel_delivery::DeliveryConfig;
-        use tokio::sync::RwLock;
-
+    pub fn enable_attestation(&mut self, service: MerkleService) -> anyhow::Result<()> {
         tracing::debug!("Enabling attestation service - rebuilding delivery engine");
 
         // Store the attestation service
@@ -397,23 +393,13 @@ impl TestEnv {
                 delivery_config,
                 Arc::new(self.clock.clone()) as Arc<dyn Clock>,
                 Arc::new(attestation_subscriber),
-            )
-            .expect("failed to recreate delivery engine with attestation");
+            )?;
 
             // Install the new engine
             self.delivery_engine = Some(new_engine);
             tracing::debug!("Successfully created new delivery engine with attestation");
         }
-    }
-}
 
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        // Note: We can't do async cleanup in Drop. The production delivery
-        // engine will cancel its workers when dropped, providing basic cleanup.
-        // process_batch() handles proper graceful shutdown after each batch.
-        if let Some(ref _engine) = self.delivery_engine {
-            tracing::debug!("TestEnv dropped - delivery engine will cancel workers");
-        }
+        Ok(())
     }
 }
