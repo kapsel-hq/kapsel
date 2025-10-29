@@ -29,20 +29,23 @@ async fn only_one_active_key_at_a_time() {
     let key1 = vec![1u8; 32];
     let key2 = vec![2u8; 32];
 
-    // Insert first active key using repository
+    // Create first active key using repository
     let _key1_id = env.storage().attestation_keys.create_and_activate(key1).await.unwrap();
 
-    // Attempt to create second active key should fail due to unique constraint
-    let result = env.storage().attestation_keys.create_and_activate(key2).await;
+    // Verify only one active key exists
+    let active_count = env.storage().attestation_keys.count_active().await.unwrap();
+    assert_eq!(active_count, 1);
 
-    assert!(result.is_err(), "Should not allow multiple active keys");
+    // Create second key - should automatically deactivate first key
+    let _key2_id = env.storage().attestation_keys.create_and_activate(key2.clone()).await.unwrap();
 
-    // Verify the constraint name in error message
-    let error_msg = result.unwrap_err().to_string();
-    assert!(
-        error_msg.contains("idx_attestation_keys_public_key"),
-        "Error should reference unique constraint violation: {error_msg}"
-    );
+    // Verify still only one active key exists
+    let active_count = env.storage().attestation_keys.count_active().await.unwrap();
+    assert_eq!(active_count, 1);
+
+    // Verify the active key is the second key
+    let active_key = env.storage().attestation_keys.find_active().await.unwrap().unwrap();
+    assert_eq!(active_key.public_key, key2);
 }
 
 #[tokio::test]
