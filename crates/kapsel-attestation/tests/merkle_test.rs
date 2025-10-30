@@ -125,7 +125,7 @@ async fn merkle_service_commits_batch_atomically() {
 
 #[tokio::test]
 async fn merkle_service_handles_multiple_leaves_in_batch() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
@@ -176,10 +176,8 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     let delivery_attempt_id_2 = delivery_attempt_ids[1];
     let event_id_2 = event_ids[1];
 
-    tx.commit().await.unwrap();
-
-    // Create attestation service using TestEnv for proper isolation
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    // Create attestation service within transaction
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     let timestamp = DateTime::from_timestamp(1_640_995_200, 0).unwrap().with_timezone(&Utc);
 
@@ -210,8 +208,8 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     service.add_leaf(leaf2).unwrap();
     assert_eq!(service.pending_count(), 2);
 
-    // Commit batch
-    let signed_head = service.try_commit_pending().await.unwrap();
+    // Commit batch within transaction
+    let signed_head = service.try_commit_pending_in_tx(&mut tx).await.unwrap();
 
     // Verify tree head reflects both leaves - should be at least 2
     assert!(signed_head.tree_size >= 2);
@@ -220,7 +218,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
     let tree_indices = env
         .storage()
         .merkle_leaves
-        .find_tree_indices_by_attempts(&delivery_attempt_ids)
+        .find_tree_indices_by_attempts_in_tx(&mut tx, &delivery_attempt_ids)
         .await
         .unwrap();
 
@@ -243,7 +241,7 @@ async fn merkle_service_fails_commit_with_empty_pending_queue() {
 
 #[tokio::test]
 async fn merkle_service_stores_batch_metadata() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
@@ -283,10 +281,8 @@ async fn merkle_service_stores_batch_metadata() {
     };
     env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
 
-    tx.commit().await.unwrap();
-
-    // Create attestation service using TestEnv for proper isolation
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    // Create attestation service within transaction
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     let leaf = LeafData::new(
         delivery_attempt_id,
@@ -300,7 +296,7 @@ async fn merkle_service_stores_batch_metadata() {
     .unwrap();
 
     service.add_leaf(leaf).unwrap();
-    let signed_head = service.try_commit_pending().await.unwrap();
+    let signed_head = service.try_commit_pending_in_tx(&mut tx).await.unwrap();
 
     // Verify signed tree head contains expected batch metadata - should be at least
     // 1
@@ -312,7 +308,7 @@ async fn merkle_service_stores_batch_metadata() {
     let leaf_batch_id = env
         .storage()
         .merkle_leaves
-        .find_batch_id_by_delivery_attempt(delivery_attempt_id)
+        .find_batch_id_by_delivery_attempt_in_tx(&mut tx, delivery_attempt_id)
         .await
         .unwrap()
         .unwrap(); // Unwrap the Option since we expect it to exist
@@ -320,15 +316,19 @@ async fn merkle_service_stores_batch_metadata() {
     assert!(!leaf_batch_id.is_nil());
 
     // Verify tree head exists for this batch
-    let batch_exists =
-        env.storage().signed_tree_heads.exists_for_batch(leaf_batch_id).await.unwrap();
+    let batch_exists = env
+        .storage()
+        .signed_tree_heads
+        .exists_for_batch_in_tx(&mut tx, leaf_batch_id)
+        .await
+        .unwrap();
 
     assert!(batch_exists);
 }
 
 #[tokio::test]
 async fn merkle_service_preserves_leaf_ordering() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
@@ -376,10 +376,8 @@ async fn merkle_service_preserves_leaf_ordering() {
         env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
     }
 
-    tx.commit().await.unwrap();
-
-    // Create attestation service using TestEnv for proper isolation
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    // Create attestation service within transaction
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     let timestamp = chrono::DateTime::<chrono::Utc>::from(env.clock.now_system());
 
@@ -401,14 +399,14 @@ async fn merkle_service_preserves_leaf_ordering() {
         service.add_leaf(leaf).unwrap();
     }
 
-    // Commit batch
-    service.try_commit_pending().await.unwrap();
+    // Commit batch within transaction
+    service.try_commit_pending_in_tx(&mut tx).await.unwrap();
 
     // Verify leaves are stored in correct order
     let stored_leaves = env
         .storage()
         .merkle_leaves
-        .find_attempts_with_tree_indices(&delivery_attempt_ids)
+        .find_attempts_with_tree_indices_in_tx(&mut tx, &delivery_attempt_ids)
         .await
         .unwrap();
 

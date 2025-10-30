@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService, SigningService};
 use kapsel_core::{storage::Storage, EventHandler};
-use kapsel_testing::{database::TestDatabase, events::test_events};
+use kapsel_testing::{events::test_events, TestEnv};
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 
@@ -17,19 +17,10 @@ use tokio::sync::RwLock;
 /// to signed tree head generation.
 #[tokio::test]
 async fn complete_attestation_workflow() {
-    let db = TestDatabase::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
 
-    let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
-
-    let signing_service = signing_service.with_key_id(key_id);
-
-    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
-    let mut merkle_service = MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone(), &clock)),
-        signing_service,
-        clock,
-    );
+    let mut merkle_service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     // Create test leaf data
     let leaf_data = kapsel_attestation::LeafData::new(
@@ -54,8 +45,9 @@ async fn complete_attestation_workflow() {
     // Verify pending count
     assert_eq!(merkle_service.pending_count(), 5);
 
-    // Commit leaves - this will create its own transaction
-    let signed_tree_head = merkle_service.try_commit_pending().await.unwrap();
+    // Commit leaves within transaction
+    let signed_tree_head = merkle_service.try_commit_pending_in_tx(&mut tx).await.unwrap();
+    merkle_service.clear_pending();
 
     // Verify the signed tree head properties
     assert!(signed_tree_head.tree_size >= 5);
@@ -72,18 +64,10 @@ async fn complete_attestation_workflow() {
 /// proper tree state between commits.
 #[tokio::test]
 async fn incremental_batch_processing_workflow() {
-    let db = TestDatabase::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
 
-    let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
-    let signing_service = signing_service.with_key_id(key_id);
-
-    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
-    let mut merkle_service = MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone(), &clock)),
-        signing_service,
-        clock,
-    );
+    let mut merkle_service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     // First batch: 3 events
     let base_leaf = kapsel_attestation::LeafData::new(
@@ -105,7 +89,8 @@ async fn incremental_batch_processing_workflow() {
     }
 
     // Commit first batch
-    let tree_head_1 = merkle_service.try_commit_pending().await.unwrap();
+    let tree_head_1 = merkle_service.try_commit_pending_in_tx(&mut tx).await.unwrap();
+    merkle_service.clear_pending();
     assert!(tree_head_1.tree_size >= 3);
 
     // Second batch: 2 more events
@@ -117,7 +102,8 @@ async fn incremental_batch_processing_workflow() {
     }
 
     // Commit second batch
-    let tree_head_2 = merkle_service.try_commit_pending().await.unwrap();
+    let tree_head_2 = merkle_service.try_commit_pending_in_tx(&mut tx).await.unwrap();
+    merkle_service.clear_pending();
     assert!(tree_head_2.tree_size >= 5);
 
     // Tree should have grown incrementally
@@ -131,15 +117,15 @@ async fn incremental_batch_processing_workflow() {
 /// attestation tree while failures are properly ignored.
 #[tokio::test]
 async fn mixed_success_failure_workflow() {
-    let db = TestDatabase::new_isolated().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
+    let key_id = store_signing_key_in_db(env.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
     let merkle_service_shared = Arc::new(RwLock::new(MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone(), &clock)),
+        Arc::new(Storage::new(env.pool().clone(), &clock)),
         signing_service,
         clock,
     )));
@@ -172,15 +158,15 @@ async fn mixed_success_failure_workflow() {
 /// behaves correctly without creating invalid tree states.
 #[tokio::test]
 async fn empty_batch_commit_workflow() {
-    let db = TestDatabase::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
+    let key_id = store_signing_key_in_db(env.pool(), &signing_service).await.unwrap();
     let signing_service = signing_service.with_key_id(key_id);
 
     let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone(), &clock)),
+        Arc::new(Storage::new(env.pool().clone(), &clock)),
         signing_service,
         clock,
     )));
@@ -204,18 +190,10 @@ async fn empty_batch_commit_workflow() {
 #[tokio::test]
 async fn large_batch_processing_workflow() {
     const BATCH_SIZE: usize = 50;
-    let db = TestDatabase::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
 
-    let signing_service = SigningService::ephemeral();
-    let key_id = store_signing_key_in_db(db.pool(), &signing_service).await.unwrap();
-    let signing_service = signing_service.with_key_id(key_id);
-
-    let clock: Arc<dyn kapsel_core::Clock> = Arc::new(kapsel_core::TestClock::new());
-    let mut merkle_service = MerkleService::new(
-        Arc::new(Storage::new(db.pool().clone(), &clock)),
-        signing_service,
-        clock,
-    );
+    let mut merkle_service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     // Process a larger batch (50 events - reduced for test speed)
     let base_leaf = kapsel_attestation::LeafData::new(
@@ -241,7 +219,8 @@ async fn large_batch_processing_workflow() {
     assert_eq!(merkle_service.pending_count(), BATCH_SIZE);
 
     // Commit large batch
-    let tree_head = merkle_service.try_commit_pending().await.unwrap();
+    let tree_head = merkle_service.try_commit_pending_in_tx(&mut tx).await.unwrap();
+    merkle_service.clear_pending();
 
     assert!(tree_head.tree_size >= BATCH_SIZE as u64);
     assert_eq!(tree_head.signature.len(), 64);

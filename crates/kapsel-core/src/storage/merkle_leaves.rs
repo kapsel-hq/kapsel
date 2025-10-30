@@ -196,34 +196,89 @@ impl Repository {
         Ok(indices.into_iter().map(|(idx,)| idx).collect())
     }
 
-    /// Finds batch ID for a specific delivery attempt.
+    /// Finds tree indices for specific delivery attempts within transaction.
     ///
-    /// Used to verify batch processing and grouping.
+    /// Used to verify leaf ordering and tree structure.
     ///
     /// # Errors
     ///
-    /// Returns error if query fails or leaf not found.
+    /// Returns error if query fails.
+    pub async fn find_tree_indices_by_attempts_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        delivery_attempt_ids: &[Uuid],
+    ) -> Result<Vec<i64>> {
+        let indices: Vec<(i64,)> = sqlx::query_as(
+            r"
+            SELECT tree_index FROM merkle_leaves
+            WHERE delivery_attempt_id = ANY($1)
+            AND tree_index IS NOT NULL
+            ORDER BY tree_index ASC
+            ",
+        )
+        .bind(delivery_attempt_ids)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(indices.into_iter().map(|(idx,)| idx).collect())
+    }
+
+    /// Finds batch ID for a specific delivery attempt.
+    ///
+    /// Returns None if no leaf exists for the delivery attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
     pub async fn find_batch_id_by_delivery_attempt(
         &self,
         delivery_attempt_id: Uuid,
     ) -> Result<Option<Uuid>> {
-        let batch_id: Option<Uuid> = sqlx::query_scalar(
+        let batch_id: Option<(Uuid,)> = sqlx::query_as(
             r"
             SELECT batch_id FROM merkle_leaves
             WHERE delivery_attempt_id = $1
+            LIMIT 1
             ",
         )
         .bind(delivery_attempt_id)
         .fetch_optional(&*self.pool)
         .await?;
 
-        Ok(batch_id)
+        Ok(batch_id.map(|(id,)| id))
+    }
+
+    /// Finds batch ID for a specific delivery attempt within transaction.
+    ///
+    /// Returns None if no leaf exists for the delivery attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_batch_id_by_delivery_attempt_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        delivery_attempt_id: Uuid,
+    ) -> Result<Option<Uuid>> {
+        let batch_id: Option<(Uuid,)> = sqlx::query_as(
+            r"
+            SELECT batch_id FROM merkle_leaves
+            WHERE delivery_attempt_id = $1
+            LIMIT 1
+            ",
+        )
+        .bind(delivery_attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(batch_id.map(|(id,)| id))
     }
 
     /// Finds delivery attempts and their tree indices for verification.
+    /// Finds delivery attempt IDs with their tree indices for ordering
+    /// verification.
     ///
-    /// Returns pairs of (delivery_attempt_id, tree_index) ordered by tree_index
-    /// for verifying proper leaf ordering in the merkle tree.
+    /// Returns pairs of (delivery_attempt_id, tree_index) sorted by tree_index.
     ///
     /// # Errors
     ///
@@ -242,6 +297,34 @@ impl Repository {
         )
         .bind(delivery_attempt_ids)
         .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(results)
+    }
+
+    /// Finds delivery attempt IDs with their tree indices for ordering
+    /// verification within transaction.
+    ///
+    /// Returns pairs of (delivery_attempt_id, tree_index) sorted by tree_index.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_attempts_with_tree_indices_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        delivery_attempt_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, i64)>> {
+        let results: Vec<(Uuid, i64)> = sqlx::query_as(
+            r"
+            SELECT delivery_attempt_id, tree_index FROM merkle_leaves
+            WHERE delivery_attempt_id = ANY($1)
+            AND tree_index IS NOT NULL
+            ORDER BY tree_index ASC
+            ",
+        )
+        .bind(delivery_attempt_ids)
+        .fetch_all(&mut **tx)
         .await?;
 
         Ok(results)

@@ -95,6 +95,59 @@ impl Repository {
         Ok(events)
     }
 
+    /// Claims pending webhook events for processing within an existing
+    /// transaction.
+    ///
+    /// Uses FOR UPDATE SKIP LOCKED to enable concurrent workers to claim
+    /// different events without blocking. Events are marked as 'delivering'.
+    ///
+    /// Returns error if database transaction fails.
+    pub async fn claim_pending_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        batch_size: usize,
+    ) -> Result<Vec<WebhookEvent>> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+
+        // Select events using FOR UPDATE SKIP LOCKED for concurrent processing
+        let event_ids: Vec<Uuid> = sqlx::query_scalar(
+            r"
+            SELECT id FROM webhook_events
+            WHERE status = 'pending'
+              AND (next_retry_at IS NULL OR next_retry_at <= $1)
+            ORDER BY next_retry_at ASC NULLS FIRST
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            ",
+        )
+        .bind(now)
+        .bind(i32::try_from(batch_size).unwrap_or(i32::MAX))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Update status and fetch full event data
+        let events = sqlx::query_as::<_, WebhookEvent>(
+            r"
+            UPDATE webhook_events
+            SET status = 'delivering', last_attempt_at = NOW()
+            WHERE id = ANY($1)
+            RETURNING id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                      status, failure_count, last_attempt_at, next_retry_at,
+                      headers, body, content_type, received_at, delivered_at, failed_at,
+                      payload_size, signature_valid, signature_error
+            ",
+        )
+        .bind(&event_ids)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(events)
+    }
+
     /// Creates a new webhook event.
     ///
     /// # Errors
@@ -439,6 +492,27 @@ impl Repository {
         )
         .bind(status.to_string())
         .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts events by status within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_status_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        status: EventStatus,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM webhook_events
+            WHERE status = $1
+            ",
+        )
+        .bind(status.to_string())
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(count.0)

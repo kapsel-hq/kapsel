@@ -156,7 +156,7 @@ async fn webhook_event_repository_crud_operations() {
 
 #[tokio::test]
 async fn webhook_event_claim_and_delivery_flow() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
@@ -166,10 +166,7 @@ async fn webhook_event_claim_and_delivery_flow() {
     let endpoint_id =
         env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
-    // Need to commit for claim operations to work
-    tx.commit().await.unwrap();
-
-    // Create multiple events (need new transaction since previous was committed)
+    // Create multiple events within the same transaction
     let mut event_ids = Vec::new();
     for i in 0..3 {
         let webhook = test_events::create_test_webhook_with_payload(
@@ -177,12 +174,12 @@ async fn webhook_event_claim_and_delivery_flow() {
             endpoint_id,
             &format!("{{\"message\": \"test{i}\"}}"),
         );
-        let event_id = env.ingest_webhook(&webhook).await.unwrap();
+        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
         event_ids.push(event_id);
     }
 
-    // Test claim pending events
-    let claimed = storage.webhook_events.claim_pending(2).await.unwrap();
+    // Test claim pending events within transaction
+    let claimed = storage.webhook_events.claim_pending_in_tx(&mut tx, 2).await.unwrap();
     assert_eq!(claimed.len(), 2);
 
     // All claimed events should have status 'delivering'
@@ -192,66 +189,74 @@ async fn webhook_event_claim_and_delivery_flow() {
     }
 
     // Test mark as delivered
-    storage.webhook_events.mark_delivered(event_ids[0]).await.unwrap();
-    let delivered = storage.webhook_events.find_by_id(event_ids[0]).await.unwrap().unwrap();
+    storage.webhook_events.mark_delivered_in_tx(&mut tx, event_ids[0]).await.unwrap();
+    let delivered =
+        storage.webhook_events.find_by_id_in_tx(&mut tx, event_ids[0]).await.unwrap().unwrap();
     assert_eq!(delivered.status, EventStatus::Delivered);
     assert!(delivered.delivered_at.is_some());
 
     // Test mark failed with retry
     let next_retry = DateTime::<Utc>::from(env.clock.now_system()) + chrono::Duration::seconds(60);
-    storage.webhook_events.mark_failed(claimed[1].id, 1, Some(next_retry)).await.unwrap();
+    storage
+        .webhook_events
+        .mark_failed_in_tx(&mut tx, claimed[1].id, 1, Some(next_retry))
+        .await
+        .unwrap();
 
-    let failed = storage.webhook_events.find_by_id(claimed[1].id).await.unwrap().unwrap();
+    let failed =
+        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[1].id).await.unwrap().unwrap();
     assert_eq!(failed.status, EventStatus::Pending); // Should be pending for retry
     assert_eq!(failed.failure_count, 1);
     assert!(failed.next_retry_at.is_some());
 
     // Test mark permanently failed
-    storage.webhook_events.mark_failed(claimed[1].id, 4, None).await.unwrap();
+    storage.webhook_events.mark_failed_in_tx(&mut tx, claimed[1].id, 4, None).await.unwrap();
     let permanently_failed =
-        storage.webhook_events.find_by_id(claimed[1].id).await.unwrap().unwrap();
+        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[1].id).await.unwrap().unwrap();
     assert_eq!(permanently_failed.status, EventStatus::Failed);
     assert!(permanently_failed.failed_at.is_some());
 
     // Verify counts by status
-    let delivered_count =
-        storage.webhook_events.count_by_status(EventStatus::Delivered).await.unwrap();
+    let delivered_count = storage
+        .webhook_events
+        .count_by_status_in_tx(&mut tx, EventStatus::Delivered)
+        .await
+        .unwrap();
     assert_eq!(delivered_count, 1);
 
-    let failed_count = storage.webhook_events.count_by_status(EventStatus::Failed).await.unwrap();
+    let failed_count =
+        storage.webhook_events.count_by_status_in_tx(&mut tx, EventStatus::Failed).await.unwrap();
     assert_eq!(failed_count, 1);
 
-    let pending_count = storage.webhook_events.count_by_status(EventStatus::Pending).await.unwrap();
+    let pending_count =
+        storage.webhook_events.count_by_status_in_tx(&mut tx, EventStatus::Pending).await.unwrap();
     assert_eq!(pending_count, 1); // One remaining unclaimed event
 }
 
 #[tokio::test]
 async fn concurrent_event_claiming() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
-    // Generate unique tenant name for shared database
-    let unique_suffix = Uuid::new_v4().simple().to_string();
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id =
-        env.create_tenant_tx(&mut tx, &format!("test-tenant-{}", unique_suffix)).await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "concurrent-test-tenant").await.unwrap();
     let endpoint_id =
         env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
 
-    // Need to commit for concurrent claiming to work
-    tx.commit().await.unwrap();
-
-    // Create 5 events (use direct methods since transaction was committed)
+    // Create 5 events within transaction
     for i in 0..5 {
         let webhook = test_events::create_test_webhook_with_payload(
             tenant_id,
             endpoint_id,
             &format!("{{\"message\": \"concurrent{i}\"}}"),
         );
-        env.ingest_webhook(&webhook).await.unwrap();
+        env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
     }
+
+    // Commit so concurrent claiming operations can see the events
+    tx.commit().await.unwrap();
 
     // Spawn two concurrent claim operations
     let storage1 = storage.clone();
@@ -688,23 +693,18 @@ async fn endpoint_soft_delete_and_recovery() {
 /// This is critical for monitoring and analytics.
 #[tokio::test]
 async fn endpoint_statistics_increment() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
-    // Generate unique tenant name
-    let suffix = Uuid::new_v4().simple().to_string();
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id =
-        env.create_tenant_tx(&mut tx, &format!("stats-tenant-{}", suffix)).await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "stats-tenant").await.unwrap();
     let endpoint_id =
         env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/stats").await.unwrap();
 
-    tx.commit().await.unwrap();
-
     // Initial stats should be zero
-    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    let endpoint = storage.endpoints.find_by_id_in_tx(&mut tx, endpoint_id).await.unwrap().unwrap();
     assert_eq!(endpoint.total_events_received, 0);
     assert_eq!(endpoint.total_events_delivered, 0);
     assert_eq!(endpoint.total_events_failed, 0);
@@ -712,7 +712,8 @@ async fn endpoint_statistics_increment() {
     // Increment received events
     storage
         .endpoints
-        .increment_stats(
+        .increment_stats_in_tx(
+            &mut tx,
             endpoint_id,
             1, // events_received
             0, // events_delivered
@@ -722,7 +723,7 @@ async fn endpoint_statistics_increment() {
         .unwrap();
 
     // Verify increment
-    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    let endpoint = storage.endpoints.find_by_id_in_tx(&mut tx, endpoint_id).await.unwrap().unwrap();
     assert_eq!(endpoint.total_events_received, 1);
     assert_eq!(endpoint.total_events_delivered, 0);
     assert_eq!(endpoint.total_events_failed, 0);
@@ -730,7 +731,8 @@ async fn endpoint_statistics_increment() {
     // Increment delivered events
     storage
         .endpoints
-        .increment_stats(
+        .increment_stats_in_tx(
+            &mut tx,
             endpoint_id,
             2, // events_received
             1, // events_delivered
@@ -740,28 +742,30 @@ async fn endpoint_statistics_increment() {
         .unwrap();
 
     // Verify cumulative increments
-    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    let endpoint = storage.endpoints.find_by_id_in_tx(&mut tx, endpoint_id).await.unwrap().unwrap();
     assert_eq!(endpoint.total_events_received, 3);
     assert_eq!(endpoint.total_events_delivered, 1);
     assert_eq!(endpoint.total_events_failed, 0);
 
     // Increment failed events
+    // Increment delivered and failed events
     storage
         .endpoints
-        .increment_stats(
+        .increment_stats_in_tx(
+            &mut tx,
             endpoint_id,
             0, // events_received
-            0, // events_delivered
-            2, // events_failed
+            2, // events_delivered
+            1, // events_failed
         )
         .await
         .unwrap();
 
-    // Verify all counters
-    let endpoint = storage.endpoints.find_by_id(endpoint_id).await.unwrap().unwrap();
+    // Final verification
+    let endpoint = storage.endpoints.find_by_id_in_tx(&mut tx, endpoint_id).await.unwrap().unwrap();
     assert_eq!(endpoint.total_events_received, 3);
-    assert_eq!(endpoint.total_events_delivered, 1);
-    assert_eq!(endpoint.total_events_failed, 2);
+    assert_eq!(endpoint.total_events_delivered, 3);
+    assert_eq!(endpoint.total_events_failed, 1);
 }
 
 /// Tests finding endpoints with open circuit breakers.

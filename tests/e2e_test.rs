@@ -15,7 +15,7 @@ use serde_json::json;
 /// Verifies deterministic retry timing, idempotency, and successful delivery.
 #[tokio::test]
 async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_shared().await?;
 
     // Setup test infrastructure
     let mut tx = env.pool().begin().await?;
@@ -129,7 +129,7 @@ async fn verify_idempotency_scenario(
 /// Basic batch processing test (circuit breaker logic not yet implemented).
 #[tokio::test]
 async fn batch_webhook_processing() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;

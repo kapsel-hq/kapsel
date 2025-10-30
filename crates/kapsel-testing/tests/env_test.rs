@@ -221,7 +221,7 @@ async fn test_count_methods() -> Result<()> {
 #[tokio::test]
 async fn test_isolated_vs_shared() -> Result<()> {
     // Test that both initialization methods work
-    let shared_env = TestEnv::new().await?;
+    let shared_env = TestEnv::new_shared().await?;
     let isolated_env = TestEnv::new_isolated().await?;
 
     // Both should have working pool access

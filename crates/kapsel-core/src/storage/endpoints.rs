@@ -668,6 +668,41 @@ impl Repository {
         Ok(())
     }
 
+    /// Increments endpoint statistics within a transaction.
+    ///
+    /// Updates event counters atomically to maintain consistency.
+    ///
+    /// Returns error if update fails.
+    pub async fn increment_stats_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        events_received: i64,
+        events_delivered: i64,
+        events_failed: i64,
+    ) -> Result<()> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+        sqlx::query(
+            r"
+            UPDATE endpoints
+            SET total_events_received = total_events_received + $2,
+                total_events_delivered = total_events_delivered + $3,
+                total_events_failed = total_events_failed + $4,
+                updated_at = $5
+            WHERE id = $1
+            ",
+        )
+        .bind(endpoint_id.0)
+        .bind(events_received)
+        .bind(events_delivered)
+        .bind(events_failed)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     /// Finds endpoints with open circuit breakers.
     ///
     /// Used for monitoring and alerting when endpoints are experiencing issues.

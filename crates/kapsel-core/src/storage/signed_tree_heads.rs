@@ -201,6 +201,31 @@ impl Repository {
         Ok(exists)
     }
 
+    /// Checks if a signed tree head exists for a specific batch within
+    /// transaction.
+    ///
+    /// Used to verify batch commitment and prevent duplicate processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists_for_batch_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        batch_id: Uuid,
+    ) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r"
+            SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE batch_id = $1)
+            ",
+        )
+        .bind(batch_id)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(exists)
+    }
+
     /// Creates a new signed tree head.
     ///
     /// # Errors

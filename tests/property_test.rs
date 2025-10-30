@@ -536,7 +536,7 @@ fn property_webhook_delivery_retry_scenarios() {
     runner
         .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
-                let mut env = TestEnv::new_isolated().await.unwrap();
+                let mut env = TestEnv::new_shared().await.unwrap();
                 let mut tx = env.pool().begin().await.unwrap();
 
                 let tenant_name = "prop-test-tenant";
@@ -618,7 +618,7 @@ fn property_idempotency_under_duress() {
     runner
         .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
-                let mut env = TestEnv::new_isolated().await.unwrap();
+                let mut env = TestEnv::new_shared().await.unwrap();
                 let mut tx = env.pool().begin().await.unwrap();
 
                 let tenant_name = "idempotency-tenant";
@@ -725,7 +725,7 @@ fn property_circuit_breaker_resilience() {
             ),
             |response_sequence| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new_isolated().await.unwrap();
+                    let mut env = TestEnv::new_shared().await.unwrap();
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "circuit-breaker-tenant";
@@ -845,7 +845,7 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new_isolated().await.unwrap();
+                    let mut env = TestEnv::new_shared().await.unwrap();
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "fifo-tenant";

@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn delivers_webhook_successfully() {
-    let env = TestEnv::new_isolated().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server to respond with success
     env.http_mock

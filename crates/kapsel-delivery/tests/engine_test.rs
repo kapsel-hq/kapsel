@@ -15,7 +15,7 @@ use kapsel_testing::{http::MockResponse, TestEnv};
 
 #[tokio::test]
 async fn delivery_engine_processes_pending_events() {
-    let mut env = TestEnv::new_isolated().await.expect("test environment setup failed");
+    let mut env = TestEnv::new_shared().await.expect("test environment setup failed");
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");

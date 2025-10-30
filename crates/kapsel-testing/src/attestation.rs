@@ -118,19 +118,13 @@ impl TestEnv {
             self.is_isolated_test()
         );
 
-        // Deactivate all existing keys within transaction
-        self.storage()
-            .attestation_keys
-            .deactivate_all_in_tx(tx)
-            .await
-            .context("failed to deactivate existing attestation keys")?;
-
-        // Create new key as active within transaction
+        // Create new key as inactive within transaction (avoids concurrent test
+        // conflicts)
         let key_id = uuid::Uuid::new_v4();
         let new_key = AttestationKey {
             id: key_id,
             public_key,
-            is_active: true,
+            is_active: false,
             created_at: chrono::DateTime::<chrono::Utc>::from(self.clock.now_system()),
             deactivated_at: None,
         };
