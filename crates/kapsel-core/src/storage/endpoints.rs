@@ -489,6 +489,57 @@ impl Repository {
         Ok(())
     }
 
+    /// Soft-deletes an endpoint within a transaction.
+    ///
+    /// Soft-deleted endpoints are excluded from active queries but can be
+    /// recovered if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if update fails.
+    pub async fn soft_delete_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE endpoints
+            SET deleted_at = NOW(), is_active = false, updated_at = NOW()
+            WHERE id = $1 AND deleted_at IS NULL
+            ",
+        )
+        .bind(endpoint_id.0)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Recovers a soft-deleted endpoint within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if update fails.
+    pub async fn recover_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE endpoints
+            SET deleted_at = NULL, is_active = true, updated_at = NOW()
+            WHERE id = $1 AND deleted_at IS NOT NULL
+            ",
+        )
+        .bind(endpoint_id.0)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     /// Recovers a soft-deleted endpoint.
     ///
     /// # Errors
@@ -646,6 +697,72 @@ impl Repository {
         Ok(endpoints)
     }
 
+    /// Finds endpoints with open circuit breakers within a transaction.
+    ///
+    /// This is useful for monitoring and alerting on failing endpoints.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_with_open_circuits_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        limit: Option<i64>,
+    ) -> Result<Vec<Endpoint>> {
+        let endpoints = sqlx::query_as::<_, Endpoint>(
+            r"
+            SELECT id, tenant_id, name, url, is_active, signature_config,
+                   max_retries, timeout_seconds, retry_strategy,
+                   circuit_state, circuit_failure_count, circuit_success_count,
+                   circuit_last_failure_at, circuit_half_open_at,
+                   created_at, updated_at, deleted_at,
+                   total_events_received, total_events_delivered, total_events_failed
+            FROM endpoints
+            WHERE circuit_state = 'open' AND deleted_at IS NULL
+            ORDER BY circuit_last_failure_at DESC
+            LIMIT $1
+            ",
+        )
+        .bind(limit.unwrap_or(100))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(endpoints)
+    }
+
+    /// Finds endpoints with open circuit breakers for a specific tenant within
+    /// a transaction.
+    ///
+    /// This is useful for tenant-scoped monitoring and alerting on failing
+    /// endpoints.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_with_open_circuits_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        limit: Option<i64>,
+    ) -> Result<Vec<Endpoint>> {
+        let endpoints = sqlx::query_as::<_, Endpoint>(
+            r"
+            SELECT id, tenant_id, name, url, is_active, signature_config,
+                   max_retries, timeout_seconds, retry_strategy,
+                   circuit_state, circuit_failure_count, circuit_success_count,
+                   circuit_last_failure_at, circuit_half_open_at,
+                   created_at, updated_at, deleted_at,
+                   total_events_received, total_events_delivered, total_events_failed
+            FROM endpoints
+            WHERE tenant_id = $1 AND circuit_state = 'open' AND deleted_at IS NULL
+            ORDER BY circuit_last_failure_at DESC
+            LIMIT $2
+            ",
+        )
+        .bind(tenant_id.0)
+        .bind(limit.unwrap_or(100))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(endpoints)
+    }
+
     /// Resets circuit breaker state to closed.
     ///
     /// Used when manually recovering an endpoint after resolving issues.
@@ -671,6 +788,64 @@ impl Repository {
         .await?;
 
         Ok(())
+    }
+
+    /// Finds endpoints by tenant within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Vec<Endpoint>> {
+        let endpoints = sqlx::query_as::<_, Endpoint>(
+            r"
+            SELECT id, tenant_id, url, name, is_active, signature_config,
+                   max_retries, timeout_seconds, retry_strategy, circuit_state,
+                   circuit_failure_count, circuit_success_count, circuit_last_failure_at,
+                   circuit_half_open_at, created_at, updated_at, deleted_at,
+                   total_events_received, total_events_delivered, total_events_failed
+            FROM endpoints
+            WHERE tenant_id = $1 AND deleted_at IS NULL
+            ORDER BY created_at
+            ",
+        )
+        .bind(tenant_id.0)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(endpoints)
+    }
+
+    /// Finds active endpoints by tenant within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_active_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Vec<Endpoint>> {
+        let endpoints = sqlx::query_as::<_, Endpoint>(
+            r"
+            SELECT id, tenant_id, url, name, is_active, signature_config,
+                   max_retries, timeout_seconds, retry_strategy, circuit_state,
+                   circuit_failure_count, circuit_success_count, circuit_last_failure_at,
+                   circuit_half_open_at, created_at, updated_at, deleted_at,
+                   total_events_received, total_events_delivered, total_events_failed
+            FROM endpoints
+            WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL
+            ORDER BY created_at
+            ",
+        )
+        .bind(tenant_id.0)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(endpoints)
     }
 }
 

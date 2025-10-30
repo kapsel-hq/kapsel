@@ -10,7 +10,7 @@ use kapsel_core::{
         BackoffStrategy, CircuitState, Endpoint, EventStatus, IdempotencyStrategy, SignatureConfig,
         Tenant, WebhookEvent,
     },
-    storage::api_keys::ApiKey,
+    storage::{api_keys::ApiKey, endpoints::CircuitStateUpdate},
     Clock,
 };
 use sqlx::{Postgres, Row, Transaction};
@@ -493,36 +493,225 @@ impl TestEnv {
                 tenant_id: e.tenant_id,
                 endpoint_id: e.endpoint_id.0,
                 source_event_id: e.source_event_id,
-                idempotency_strategy: e.idempotency_strategy.to_string(),
+                idempotency_strategy: match e.idempotency_strategy {
+                    IdempotencyStrategy::Header => "header".to_string(),
+                    IdempotencyStrategy::SourceId => "source_id".to_string(),
+                    IdempotencyStrategy::ContentHash => "content_hash".to_string(),
+                },
+                headers: serde_json::to_value(e.headers.0).unwrap_or_default(),
+                body: e.body,
+                content_type: e.content_type,
                 status: e.status,
                 failure_count: e.failure_count,
                 last_attempt_at: e.last_attempt_at,
                 next_retry_at: e.next_retry_at,
-                headers: serde_json::to_value(e.headers.0).unwrap_or_default(),
-                body: e.body,
-                content_type: e.content_type,
-                payload_size: e.payload_size,
-                signature_valid: e.signature_valid,
-                signature_error: e.signature_error,
                 received_at: e.received_at,
                 delivered_at: e.delivered_at,
                 failed_at: e.failed_at,
+                payload_size: e.payload_size,
+                signature_valid: e.signature_valid,
+                signature_error: e.signature_error,
             })
             .collect();
         Ok(events)
     }
 
-    /// Create endpoint with custom retry configuration.
-    ///
-    /// This creates an endpoint with specified max_retries, useful for testing
-    /// retry exhaustion scenarios.
+    /// Find tenant by ID within a transaction.
+    pub async fn find_tenant_by_id_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Option<Tenant>> {
+        self.storage().tenants.find_by_id_in_tx(tx, tenant_id).await.map_err(Into::into)
+    }
+
+    /// Find tenant by name within a transaction.
+    pub async fn find_tenant_by_name_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        name: &str,
+    ) -> Result<Option<Tenant>> {
+        self.storage().tenants.find_by_name_in_tx(tx, name).await.map_err(Into::into)
+    }
+
+    /// Check if tenant exists within a transaction.
+    pub async fn tenant_exists_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<bool> {
+        self.storage().tenants.exists_in_tx(tx, tenant_id).await.map_err(Into::into)
+    }
+
+    /// Check if tenant name exists within a transaction.
+    pub async fn tenant_name_exists_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        name: &str,
+    ) -> Result<bool> {
+        self.storage().tenants.name_exists_in_tx(tx, name).await.map_err(Into::into)
+    }
+
+    /// Get tenant tier within a transaction.
+    pub async fn get_tenant_tier_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<String> {
+        let tenant = self
+            .find_tenant_by_id_tx(tx, tenant_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Tenant not found: {}", tenant_id.0))?;
+        Ok(tenant.tier)
+    }
+
+    /// Update tenant tier within a transaction.
+    pub async fn update_tenant_tier_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        tier: &str,
+    ) -> Result<()> {
+        self.storage().tenants.update_tier_in_tx(tx, tenant_id, tier).await.map_err(Into::into)
+    }
+
+    /// Find endpoint by ID within a transaction.
+    pub async fn find_endpoint_by_id_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+    ) -> Result<Option<Endpoint>> {
+        self.storage().endpoints.find_by_id_in_tx(tx, endpoint_id).await.map_err(Into::into)
+    }
+
+    /// Find endpoints by tenant within a transaction.
+    pub async fn find_endpoints_by_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Vec<Endpoint>> {
+        self.storage().endpoints.find_by_tenant_in_tx(tx, tenant_id).await.map_err(Into::into)
+    }
+
+    /// Find active endpoints by tenant within a transaction.
+    pub async fn find_active_endpoints_by_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Vec<Endpoint>> {
+        self.storage()
+            .endpoints
+            .find_active_by_tenant_in_tx(tx, tenant_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Set endpoint enabled/disabled within a transaction.
+    pub async fn set_endpoint_enabled_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        enabled: bool,
+    ) -> Result<()> {
+        self.storage()
+            .endpoints
+            .set_enabled_in_tx(tx, endpoint_id, enabled)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Update circuit breaker state within a transaction.
+    pub async fn update_circuit_breaker_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        state: CircuitState,
+        failure_count: i32,
+        success_count: i32,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        let update = CircuitStateUpdate {
+            state,
+            failure_count,
+            success_count,
+            last_failure_at: if state == CircuitState::Open { Some(now) } else { None },
+            half_open_at: if state == CircuitState::HalfOpen { Some(now) } else { None },
+        };
+
+        self.storage()
+            .endpoints
+            .update_circuit_state_in_tx(tx, endpoint_id, update)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Find webhook event by ID within a transaction.
+    pub async fn find_webhook_event_by_id_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+    ) -> Result<Option<WebhookEvent>> {
+        self.storage().webhook_events.find_by_id_in_tx(tx, event_id).await.map_err(Into::into)
+    }
+
+    /// Find webhook event duplicate within a transaction.
+    pub async fn find_webhook_event_duplicate_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        source_event_id: &str,
+    ) -> Result<Option<WebhookEvent>> {
+        self.storage()
+            .webhook_events
+            .find_duplicate_in_tx(tx, endpoint_id, source_event_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Find webhook events by tenant within a transaction.
+    pub async fn find_webhook_events_by_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Vec<WebhookEvent>> {
+        self.storage()
+            .webhook_events
+            .find_by_tenant_in_tx(tx, tenant_id, Some(1000))
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Count webhook events by tenant within a transaction.
+    pub async fn count_webhook_events_by_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<i64> {
+        self.storage().webhook_events.count_by_tenant_in_tx(tx, tenant_id).await.map_err(Into::into)
+    }
+
+    /// Update webhook event status within a transaction.
+    pub async fn update_webhook_event_status_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+        status: EventStatus,
+    ) -> Result<()> {
+        self.storage()
+            .webhook_events
+            .update_status_in_tx(tx, event_id, status)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Create endpoint with specific retry configuration.
     pub async fn create_endpoint_with_retries(
         &self,
         tenant_id: TenantId,
         url: &str,
         max_retries: i32,
     ) -> Result<EndpointId> {
-        let mut tx = self.pool().begin().await.context("failed to begin transaction")?;
+        let mut tx = self.pool().begin().await?;
         let endpoint_id = self
             .create_endpoint_with_config_tx(
                 &mut tx,
@@ -533,7 +722,99 @@ impl TestEnv {
                 30,
             )
             .await?;
-        tx.commit().await.context("failed to commit endpoint creation")?;
+        tx.commit().await?;
         Ok(endpoint_id)
+    }
+
+    /// Clean up tenant and all associated data.
+    pub async fn cleanup_tenant(&self, tenant_id: TenantId) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.cleanup_tenant_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Clean up tenant and all associated data within a transaction.
+    pub async fn cleanup_tenant_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<()> {
+        // Delete in proper order to respect foreign key constraints
+
+        // Delete delivery attempts first
+        sqlx::query("DELETE FROM delivery_attempts WHERE event_id IN (SELECT id FROM webhook_events WHERE tenant_id = $1)")
+            .bind(tenant_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete delivery attempts")?;
+
+        // Delete webhook events
+        sqlx::query("DELETE FROM webhook_events WHERE tenant_id = $1")
+            .bind(tenant_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete webhook events")?;
+
+        // Delete API keys
+        sqlx::query("DELETE FROM api_keys WHERE tenant_id = $1")
+            .bind(tenant_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete API keys")?;
+
+        // Delete endpoints
+        sqlx::query("DELETE FROM endpoints WHERE tenant_id = $1")
+            .bind(tenant_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete endpoints")?;
+
+        // Delete tenant
+        sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(tenant_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete tenant")?;
+
+        Ok(())
+    }
+
+    /// Clean up endpoint and all associated data.
+    pub async fn cleanup_endpoint(&self, endpoint_id: EndpointId) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.cleanup_endpoint_tx(&mut tx, endpoint_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Clean up endpoint and all associated data within a transaction.
+    pub async fn cleanup_endpoint_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+    ) -> Result<()> {
+        // Delete delivery attempts for this endpoint's events
+        sqlx::query("DELETE FROM delivery_attempts WHERE event_id IN (SELECT id FROM webhook_events WHERE endpoint_id = $1)")
+            .bind(endpoint_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete delivery attempts")?;
+
+        // Delete webhook events for this endpoint
+        sqlx::query("DELETE FROM webhook_events WHERE endpoint_id = $1")
+            .bind(endpoint_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete webhook events")?;
+
+        // Delete endpoint
+        sqlx::query("DELETE FROM endpoints WHERE id = $1")
+            .bind(endpoint_id.0)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete endpoint")?;
+
+        Ok(())
     }
 }

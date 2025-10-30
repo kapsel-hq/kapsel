@@ -248,7 +248,7 @@ impl Repository {
     /// # Errors
     ///
     /// Returns error if query fails.
-    pub async fn find_by_tier(&self, tier: &str, limit: Option<i64>) -> Result<Vec<Tenant>> {
+    pub async fn find_by_tier(&self, tier: &str) -> Result<Vec<Tenant>> {
         let tenants = sqlx::query_as::<_, Tenant>(
             r"
             SELECT id, name, tier, max_events_per_month, max_endpoints,
@@ -256,16 +256,136 @@ impl Repository {
                    stripe_customer_id, stripe_subscription_id
             FROM tenants
             WHERE tier = $1 AND deleted_at IS NULL
-            ORDER BY created_at ASC
-            LIMIT $2
+            ORDER BY created_at
             ",
         )
         .bind(tier)
-        .bind(limit.unwrap_or(100))
         .fetch_all(&*self.pool)
         .await?;
 
         Ok(tenants)
+    }
+
+    /// Finds a tenant by ID within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_id_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<Option<Tenant>> {
+        let tenant = sqlx::query_as::<_, Tenant>(
+            r"
+            SELECT id, name, tier, max_events_per_month, max_endpoints,
+                   events_this_month, created_at, updated_at, deleted_at,
+                   stripe_customer_id, stripe_subscription_id
+            FROM tenants
+            WHERE id = $1 AND deleted_at IS NULL
+            ",
+        )
+        .bind(tenant_id.0)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(tenant)
+    }
+
+    /// Finds a tenant by its name within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_name_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        name: &str,
+    ) -> Result<Option<Tenant>> {
+        let tenant = sqlx::query_as::<_, Tenant>(
+            r"
+            SELECT id, name, tier, max_events_per_month, max_endpoints,
+                   events_this_month, created_at, updated_at, deleted_at,
+                   stripe_customer_id, stripe_subscription_id
+            FROM tenants
+            WHERE name = $1 AND deleted_at IS NULL
+            ",
+        )
+        .bind(name)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(tenant)
+    }
+
+    /// Checks if a tenant exists within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<bool> {
+        let exists: (bool,) = sqlx::query_as(
+            r"
+            SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1 AND deleted_at IS NULL)
+            ",
+        )
+        .bind(tenant_id.0)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(exists.0)
+    }
+
+    /// Checks if a tenant name is already in use within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn name_exists_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        name: &str,
+    ) -> Result<bool> {
+        let exists: (bool,) = sqlx::query_as(
+            r"
+            SELECT EXISTS(SELECT 1 FROM tenants WHERE name = $1 AND deleted_at IS NULL)
+            ",
+        )
+        .bind(name)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(exists.0)
+    }
+
+    /// Updates a tenant's tier within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn update_tier_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: TenantId,
+        tier: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE tenants
+            SET tier = $1, updated_at = NOW()
+            WHERE id = $2
+            ",
+        )
+        .bind(tier)
+        .bind(tenant_id.0)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
     }
 
     /// Updates the tier for a tenant.

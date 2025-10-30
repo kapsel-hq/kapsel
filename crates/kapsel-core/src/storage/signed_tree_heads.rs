@@ -158,6 +158,29 @@ impl Repository {
         Ok(exists)
     }
 
+    /// Checks if a tree head exists with at least the specified size within
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists_with_min_size_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        min_size: i64,
+    ) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r"
+            SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE tree_size >= $1)
+            ",
+        )
+        .bind(min_size)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(exists)
+    }
+
     /// Checks if a tree head exists for the specified batch.
     ///
     /// Used to verify batch commitment and prevent duplicate processing.

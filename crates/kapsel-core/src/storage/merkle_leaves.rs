@@ -147,6 +147,29 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts merkle leaves for a specific delivery attempt within transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_delivery_attempt_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        delivery_attempt_id: Uuid,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM merkle_leaves
+            WHERE delivery_attempt_id = $1
+            ",
+        )
+        .bind(delivery_attempt_id)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
     /// Finds tree indices for specific delivery attempts.
     ///
     /// Used to verify leaf ordering and tree structure.

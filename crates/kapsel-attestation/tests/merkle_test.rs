@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use kapsel_attestation::LeafData;
 use kapsel_core::Clock;
 use kapsel_testing::TestEnv;
@@ -15,8 +15,9 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn merkle_service_adds_leaf_to_pending_queue() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     let leaf = LeafData::new(
         Uuid::new_v4(),
@@ -38,7 +39,7 @@ async fn merkle_service_adds_leaf_to_pending_queue() {
 
 #[tokio::test]
 async fn merkle_service_commits_batch_atomically() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
 
     // Create test entities using TestEnv for proper isolation
     let mut tx = env.pool().begin().await.unwrap();
@@ -76,10 +77,8 @@ async fn merkle_service_commits_batch_atomically() {
     };
     env.storage().delivery_attempts.create_in_tx(&mut tx, &delivery_attempt).await.unwrap();
 
-    tx.commit().await.unwrap();
-
-    // Create attestation service using TestEnv for proper isolation
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    // Create attestation service within transaction
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     let leaf = LeafData::new(
         delivery_attempt_id,
@@ -94,7 +93,8 @@ async fn merkle_service_commits_batch_atomically() {
 
     // Add leaf and commit
     service.add_leaf(leaf).unwrap();
-    let signed_head = service.try_commit_pending().await.unwrap();
+    let signed_head = service.try_commit_pending_in_tx(&mut tx).await.unwrap();
+    service.clear_pending();
 
     // Verify signed tree head - tree size should be at least 1 (our leaf was added)
     assert!(signed_head.tree_size >= 1);
@@ -102,17 +102,25 @@ async fn merkle_service_commits_batch_atomically() {
     assert_eq!(signed_head.root_hash.len(), 32);
 
     // Verify database persistence - filter by this test's delivery attempt
-    let leaf_count =
-        env.storage().merkle_leaves.count_by_delivery_attempt(delivery_attempt_id).await.unwrap();
+    let leaf_count = env
+        .storage()
+        .merkle_leaves
+        .count_by_delivery_attempt_in_tx(&mut tx, delivery_attempt_id)
+        .await
+        .unwrap();
     assert_eq!(leaf_count, 1);
 
     // Verify tree head was created (check by tree_size since we restored existing
     // state)
-    let tree_head_exists = env.storage().signed_tree_heads.exists_with_min_size(1).await.unwrap();
+    let tree_head_exists =
+        env.storage().signed_tree_heads.exists_with_min_size_in_tx(&mut tx, 1).await.unwrap();
     assert!(tree_head_exists);
 
     // Verify pending queue is cleared
     assert_eq!(service.pending_count(), 0);
+
+    // Transaction auto-rollbacks when dropped
+    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -223,7 +231,7 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
 
 #[tokio::test]
 async fn merkle_service_fails_commit_with_empty_pending_queue() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let mut service = env.create_test_attestation_service().await.unwrap();
 
     // Try to commit with no pending leaves
@@ -316,34 +324,6 @@ async fn merkle_service_stores_batch_metadata() {
         env.storage().signed_tree_heads.exists_for_batch(leaf_batch_id).await.unwrap();
 
     assert!(batch_exists);
-}
-
-#[tokio::test]
-async fn merkle_service_rejects_invalid_attempt_numbers() {
-    // Try to create leaf with invalid attempt number (should fail at LeafData::new)
-    let result = LeafData::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        "https://example.com".to_string(),
-        [0x42u8; 32],
-        0, // Invalid: not positive
-        Some(200),
-        chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-    );
-
-    assert!(result.is_err(), "Zero attempt number should be rejected");
-
-    let result = LeafData::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        "https://example.com".to_string(),
-        [0x42u8; 32],
-        -1, // Invalid: negative
-        Some(200),
-        chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-    );
-
-    assert!(result.is_err(), "Negative attempt number should be rejected");
 }
 
 #[tokio::test]

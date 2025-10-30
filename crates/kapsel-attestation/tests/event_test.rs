@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 /// event-driven architecture correctly triggers attestation creation.
 #[tokio::test]
 async fn successful_delivery_events_create_attestation_leaves() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Create attestation infrastructure
     let signing_service = SigningService::ephemeral();
@@ -55,7 +55,7 @@ async fn successful_delivery_events_create_attestation_leaves() {
 /// entries since there was no successful delivery to attest to.
 #[tokio::test]
 async fn failed_delivery_events_do_not_create_attestation_leaves() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -86,7 +86,7 @@ async fn failed_delivery_events_do_not_create_attestation_leaves() {
 /// correctly and create the expected number of attestation leaves.
 #[tokio::test]
 async fn multiple_successful_delivery_events_create_multiple_leaves() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -120,7 +120,7 @@ async fn multiple_successful_delivery_events_create_multiple_leaves() {
 /// attestation strategies.
 #[tokio::test]
 async fn multicast_event_handling_with_multiple_attestation_services() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     // Create two independent attestation services
     let signing_service1 = SigningService::ephemeral();
@@ -182,7 +182,7 @@ async fn multicast_event_handling_with_multiple_attestation_services() {
 /// delivery events without data races or lost attestations.
 #[tokio::test]
 async fn concurrent_delivery_events_create_correct_attestation_count() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -223,7 +223,7 @@ async fn concurrent_delivery_events_create_correct_attestation_count() {
 /// creating attestations only for successful deliveries.
 #[tokio::test]
 async fn mixed_success_failure_events_create_correct_attestations() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -273,7 +273,7 @@ async fn mixed_success_failure_events_create_correct_attestations() {
 /// subscription pipeline without corruption or modification.
 #[tokio::test]
 async fn event_data_integrity_preserved_through_attestation() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(

@@ -126,6 +126,30 @@ impl Repository {
         Ok(key)
     }
 
+    /// Finds the active attestation key within a transaction.
+    ///
+    /// Returns None if no active key exists.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_active_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Option<AttestationKey>> {
+        let key = sqlx::query_as::<_, AttestationKey>(
+            r"
+            SELECT id, public_key, is_active, created_at, deactivated_at
+            FROM attestation_keys
+            WHERE is_active = true
+            ORDER BY created_at DESC
+            LIMIT 1
+            ",
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(key)
+    }
+
     /// Finds an attestation key by its ID.
     ///
     /// # Errors
@@ -304,6 +328,77 @@ impl Repository {
         Ok(keys)
     }
 
+    /// Lists all attestation keys within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn list_all_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<Vec<AttestationKey>> {
+        let keys = sqlx::query_as::<_, AttestationKey>(
+            r"
+            SELECT id, public_key, is_active, created_at, deactivated_at
+            FROM attestation_keys
+            ORDER BY created_at DESC
+            ",
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(keys)
+    }
+
+    /// Finds an attestation key by ID within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_id_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        key_id: Uuid,
+    ) -> Result<Option<AttestationKey>> {
+        let key = sqlx::query_as::<_, AttestationKey>(
+            r"
+            SELECT id, public_key, is_active, created_at, deactivated_at
+            FROM attestation_keys
+            WHERE id = $1
+            ",
+        )
+        .bind(key_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(key)
+    }
+
+    /// Creates and activates a new attestation key atomically within a
+    /// transaction.
+    ///
+    /// This is the recommended way to perform key rotation as it
+    /// deactivates old keys and creates the new one in a single transaction.
+    ///
+    /// Returns error if key creation or rotation fails.
+    pub async fn create_and_activate_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        public_key: Vec<u8>,
+    ) -> Result<Uuid> {
+        // First deactivate all existing keys
+        self.deactivate_all_in_tx(tx).await?;
+
+        // Create new key as active
+        let key_id = Uuid::new_v4();
+        let new_key = AttestationKey {
+            id: key_id,
+            public_key,
+            is_active: true,
+            created_at: DateTime::<Utc>::from(self.clock.now_system()),
+            deactivated_at: None,
+        };
+
+        self.create_in_tx(tx, &new_key).await?;
+        Ok(key_id)
+    }
+
     /// Counts total number of attestation keys.
     ///
     /// # Errors
@@ -321,7 +416,22 @@ impl Repository {
         Ok(count.0)
     }
 
-    /// Counts currently active attestation keys.
+    /// Counts total number of attestation keys within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_all_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM attestation_keys
+            ",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts number of active attestation keys.
     ///
     /// Should typically be 0 or 1 due to unique constraint.
     ///
@@ -335,6 +445,23 @@ impl Repository {
             ",
         )
         .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts number of active attestation keys within a transaction.
+    ///
+    /// Should typically be 0 or 1 due to unique constraint.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_active_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM attestation_keys WHERE is_active = TRUE
+            ",
+        )
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(count.0)
@@ -365,6 +492,34 @@ impl Repository {
 
         Ok(())
     }
+
+    /// Deletes an attestation key by ID within a transaction.
+    ///
+    /// Hard delete - removes the key permanently from database.
+    /// This is typically used for cleanup operations.
+    ///
+    /// Returns error if deletion fails.
+    pub async fn delete_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        key_id: Uuid,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM attestation_keys
+            WHERE id = $1
+            ",
+        )
+        .bind(key_id)
+        .execute(&mut **tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(CoreError::NotFound(format!("attestation_key {key_id}")));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -373,14 +528,15 @@ mod tests {
 
     #[tokio::test]
     async fn create_and_find_active_key() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
+        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
+        let mut tx = env.pool().begin().await.unwrap();
         let clock = Arc::new(crate::time::TestClock::new());
         let repo = Repository::new(Arc::new(env.pool().clone()), clock);
 
         let public_key = vec![1u8; 32];
-        let key_id = repo.create_and_activate(public_key.clone()).await.unwrap();
+        let key_id = repo.create_and_activate_in_tx(&mut tx, public_key.clone()).await.unwrap();
 
-        let active_key = repo.find_active().await.unwrap().unwrap();
+        let active_key = repo.find_active_in_tx(&mut tx).await.unwrap().unwrap();
         assert_eq!(active_key.id, key_id);
         assert_eq!(active_key.public_key, public_key);
         assert!(active_key.is_active);
@@ -388,28 +544,29 @@ mod tests {
 
     #[tokio::test]
     async fn key_rotation_deactivates_old_keys() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
+        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
+        let mut tx = env.pool().begin().await.unwrap();
         let clock = Arc::new(crate::time::TestClock::new());
         let repo = Repository::new(Arc::new(env.pool().clone()), clock);
 
         // Create first key
         let key1 = vec![1u8; 32];
-        let key1_id = repo.create_and_activate(key1).await.unwrap();
+        let key1_id = repo.create_and_activate_in_tx(&mut tx, key1).await.unwrap();
 
         // Create second key - should deactivate first
         let key2 = vec![2u8; 32];
-        let _key2_id = repo.create_and_activate(key2.clone()).await.unwrap();
+        let _key2_id = repo.create_and_activate_in_tx(&mut tx, key2.clone()).await.unwrap();
 
         // First key should be deactivated
-        let key1_after = repo.find_by_id(key1_id).await.unwrap().unwrap();
+        let key1_after = repo.find_by_id_in_tx(&mut tx, key1_id).await.unwrap().unwrap();
         assert!(!key1_after.is_active);
         assert!(key1_after.deactivated_at.is_some());
 
         // Only one active key should exist
-        let active_count = repo.count_active().await.unwrap();
+        let active_count = repo.count_active_in_tx(&mut tx).await.unwrap();
         assert_eq!(active_count, 1);
 
-        let active_key = repo.find_active().await.unwrap().unwrap();
+        let active_key = repo.find_active_in_tx(&mut tx).await.unwrap().unwrap();
         assert_eq!(active_key.public_key, key2);
     }
 }

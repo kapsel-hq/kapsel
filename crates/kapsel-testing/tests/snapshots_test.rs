@@ -75,7 +75,7 @@ async fn snapshot_delivery_attempts_works() -> Result<()> {
 
 #[tokio::test]
 async fn snapshot_database_schema_works() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_shared().await?;
     let snapshot = env.snapshot_database_schema().await?;
     assert!(snapshot.contains("Database Schema Snapshot"));
     assert!(snapshot.contains("Table: webhook_events"));
