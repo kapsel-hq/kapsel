@@ -23,7 +23,6 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 insta = { workspace = true }
 sha256 = "1.5"
-once_cell = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
