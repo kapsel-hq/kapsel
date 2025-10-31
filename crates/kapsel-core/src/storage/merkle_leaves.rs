@@ -392,6 +392,23 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts total number of merkle leaves within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_all_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM merkle_leaves
+            ",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
     /// Counts committed merkle leaves (those with tree indices).
     ///
     /// # Errors
@@ -405,6 +422,73 @@ impl Repository {
             ",
         )
         .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts committed merkle leaves (those with tree indices) within a
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_committed_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM merkle_leaves
+            WHERE tree_index IS NOT NULL
+            ",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts total number of merkle leaves for a specific tenant within a
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_all_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: uuid::Uuid,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM merkle_leaves
+            WHERE tenant_id = $1
+            ",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts committed merkle leaves for a specific tenant within a
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_committed_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: uuid::Uuid,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM merkle_leaves
+            WHERE tenant_id = $1 AND tree_index IS NOT NULL
+            ",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(count.0)
@@ -516,20 +600,26 @@ mod tests {
 
     #[tokio::test]
     async fn count_operations_work() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
+        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
+        let mut tx = env.pool().begin().await.unwrap();
         let repo = Repository::new(Arc::new(env.pool().clone()));
 
-        // Should start with 0 leaves
-        let initial_count = repo.count_all().await.unwrap();
+        // Create a test tenant within our transaction
+        let tenant_id = env.create_tenant_tx(&mut tx, "count-test").await.unwrap();
+
+        // Should start with 0 leaves for this tenant
+        let initial_count = repo.count_all_by_tenant_in_tx(&mut tx, tenant_id.0).await.unwrap();
         assert_eq!(initial_count, 0);
 
-        let committed_count = repo.count_committed().await.unwrap();
+        let committed_count =
+            repo.count_committed_by_tenant_in_tx(&mut tx, tenant_id.0).await.unwrap();
         assert_eq!(committed_count, 0);
     }
 
     #[tokio::test]
     async fn find_batch_id_handles_missing_leaves() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
+        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
+        let mut _tx = env.pool().begin().await.unwrap();
         let repo = Repository::new(Arc::new(env.pool().clone()));
 
         let fake_id = Uuid::new_v4();

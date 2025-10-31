@@ -439,6 +439,36 @@ impl Repository {
 
         Ok(TenantId(id))
     }
+
+    /// Ensure system tenant exists within a transaction.
+    ///
+    /// Creates system tenant if it doesn't exist, or updates its timestamp if
+    /// it does. Uses ON CONFLICT to handle concurrent access safely.
+    ///
+    /// Returns error if creation/retrieval fails.
+    pub async fn ensure_system_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<TenantId> {
+        // The system tenant has a fixed ID: 00000000-0000-0000-0000-000000000000
+        let system_id = Uuid::nil();
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+
+        let id = sqlx::query_scalar(
+            r"
+            INSERT INTO tenants (id, name, tier)
+            VALUES ($1, 'system', 'system')
+            ON CONFLICT (id) DO UPDATE SET updated_at = $2
+            RETURNING id
+            ",
+        )
+        .bind(system_id)
+        .bind(now)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(TenantId(id))
+    }
 }
 
 #[cfg(test)]

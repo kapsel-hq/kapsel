@@ -303,12 +303,12 @@ async fn test_concurrent_transactions_on_shared_pool() -> Result<()> {
     // Commit tx1
     tx1.commit().await?;
 
-    // tx2 still can't see tx1's data in its snapshot (REPEATABLE READ)
+    // tx2 can see tx1's committed data (READ COMMITTED default behavior)
     let count2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
         .bind(tenant1.0)
         .fetch_one(&mut *tx2)
         .await?;
-    assert_eq!(count2, 0, "tx2 maintains its snapshot isolation");
+    assert_eq!(count2, 1, "tx2 sees tx1's committed data in READ COMMITTED mode");
 
     // Rollback tx2
     tx2.rollback().await?;

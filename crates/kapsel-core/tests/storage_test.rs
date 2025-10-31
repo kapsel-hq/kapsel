@@ -110,7 +110,7 @@ async fn endpoint_repository_crud_operations() {
 async fn webhook_event_repository_crud_operations() {
     let env = TestEnv::new_shared().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
+    let _storage = Storage::new(env.pool().clone(), &clock);
 
     let mut tx = env.pool().begin().await.unwrap();
 
@@ -474,18 +474,19 @@ async fn constraint_violation_handling() {
 
 #[tokio::test]
 async fn system_tenant_operations() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
-    // Ensure system tenant exists
-    let system_id = storage.tenants.ensure_system_tenant().await.unwrap();
+    // Ensure system tenant exists within transaction
+    let system_id = storage.tenants.ensure_system_tenant_in_tx(&mut tx).await.unwrap();
 
     // Should be the nil UUID
     assert_eq!(system_id.0, Uuid::nil());
 
-    // Should find the system tenant
-    let system_tenant = storage.tenants.find_by_id(system_id).await.unwrap();
+    // Should find the system tenant within same transaction
+    let system_tenant = storage.tenants.find_by_id_in_tx(&mut tx, system_id).await.unwrap();
     assert!(system_tenant.is_some());
 
     let tenant = system_tenant.unwrap();
@@ -493,7 +494,7 @@ async fn system_tenant_operations() {
     assert_eq!(tenant.tier, "system");
 
     // Calling again should not fail (ON CONFLICT handling)
-    let system_id2 = storage.tenants.ensure_system_tenant().await.unwrap();
+    let system_id2 = storage.tenants.ensure_system_tenant_in_tx(&mut tx).await.unwrap();
     assert_eq!(system_id, system_id2);
 }
 
@@ -527,8 +528,6 @@ async fn storage_repository_isolation() {
     // Cross-tenant queries should return empty results
     assert!(tenant1_endpoints.iter().all(|e| e.tenant_id == tenant1_id));
     assert!(tenant2_endpoints.iter().all(|e| e.tenant_id == tenant2_id));
-
-    // Transaction auto-rollbacks when dropped
 }
 
 /// Tests the complete dead-letter queue workflow.
@@ -631,8 +630,6 @@ async fn webhook_events_delete_by_tenant() {
     // Verify tenant1 events are gone, tenant2 events remain
     assert_eq!(storage.webhook_events.count_by_tenant_in_tx(&mut tx, tenant1_id).await.unwrap(), 0);
     assert_eq!(storage.webhook_events.count_by_tenant_in_tx(&mut tx, tenant2_id).await.unwrap(), 1);
-
-    // Transaction auto-rollbacks when dropped
 }
 
 /// Tests endpoint soft delete and recovery lifecycle.
@@ -860,7 +857,7 @@ async fn endpoint_find_with_open_circuits() {
 async fn endpoint_reset_circuit_breaker() {
     let env = TestEnv::new_shared().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
+    let _storage = Storage::new(env.pool().clone(), &clock);
 
     // Generate unique tenant name
     let suffix = Uuid::new_v4().simple().to_string();
@@ -996,12 +993,12 @@ async fn api_key_cleanup_expired() {
     use chrono::{Duration, Utc};
     use kapsel_core::storage::api_keys::ApiKey;
 
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
-    let suffix = Uuid::new_v4().simple().to_string();
-    let tenant_id = env.create_tenant(&format!("cleanup-tenant-{}", suffix)).await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, "cleanup-tenant").await.unwrap();
 
     let now = DateTime::<Utc>::from(env.clock.now_system());
     let past = now - chrono::Duration::hours(1);
@@ -1041,19 +1038,20 @@ async fn api_key_cleanup_expired() {
         last_used_at: None,
     };
 
-    storage.api_keys.create(&expired_key).await.unwrap();
-    storage.api_keys.create(&valid_key).await.unwrap();
-    storage.api_keys.create(&no_expiry_key).await.unwrap();
+    storage.api_keys.create_in_tx(&mut tx, &expired_key).await.unwrap();
+    storage.api_keys.create_in_tx(&mut tx, &valid_key).await.unwrap();
+    storage.api_keys.create_in_tx(&mut tx, &no_expiry_key).await.unwrap();
 
     // Verify all keys exist
-    assert_eq!(storage.api_keys.count_by_tenant(tenant_id, true).await.unwrap(), 3);
+    assert_eq!(storage.api_keys.count_by_tenant_in_tx(&mut tx, tenant_id, true).await.unwrap(), 3);
 
     // Cleanup expired keys
-    let cleaned_count = storage.api_keys.cleanup_expired().await.unwrap();
+    let cleaned_count = storage.api_keys.cleanup_expired_in_tx(&mut tx).await.unwrap();
     assert_eq!(cleaned_count, 1); // Only expired key should be removed
 
     // Verify only expired key was removed
-    let remaining_keys = storage.api_keys.find_by_tenant(tenant_id, true).await.unwrap();
+    let remaining_keys =
+        storage.api_keys.find_by_tenant_in_tx(&mut tx, tenant_id, true).await.unwrap();
     assert_eq!(remaining_keys.len(), 2);
 
     let remaining_hashes: Vec<_> = remaining_keys.iter().map(|k| &k.key_hash).collect();

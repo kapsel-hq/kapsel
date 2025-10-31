@@ -409,6 +409,29 @@ impl Repository {
 
         Ok(result.rows_affected())
     }
+
+    /// Cleans up expired API keys by deleting them within a transaction.
+    ///
+    /// This is typically run as a background job to remove expired keys
+    /// and reclaim storage space.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if delete fails.
+    pub async fn cleanup_expired_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<u64> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+        let result = sqlx::query(
+            r"
+            DELETE FROM api_keys
+            WHERE expires_at IS NOT NULL AND expires_at < $1
+            ",
+        )
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]

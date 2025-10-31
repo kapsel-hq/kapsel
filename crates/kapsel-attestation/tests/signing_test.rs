@@ -32,8 +32,6 @@ async fn store_and_load_signing_key() {
     assert_eq!(stored_key.public_key, public_key);
     assert_eq!(stored_key.id, key_id);
     assert!(!stored_key.is_active);
-
-    // Transaction auto-rollbacks when dropped
 }
 
 #[tokio::test]
@@ -73,8 +71,6 @@ async fn only_one_active_key_at_a_time() {
     assert!(!stored_key2.is_active);
     assert_eq!(stored_key1.public_key, key1);
     assert_eq!(stored_key2.public_key, key2);
-
-    // Transaction auto-rollbacks when dropped
 }
 
 #[tokio::test]
@@ -126,8 +122,6 @@ async fn deactivate_old_key_when_rotating() {
     assert_eq!(stored_new.public_key, new_key);
     assert!(!stored_old.is_active);
     assert!(!stored_new.is_active);
-
-    // Transaction auto-rollbacks when dropped
 }
 
 #[tokio::test]
@@ -153,7 +147,8 @@ async fn load_active_key_returns_most_recent() {
 
     assert_eq!(stored_key.public_key, key);
     assert_eq!(stored_key.id, key_id);
-    assert_eq!(stored_key.created_at, key_obj.created_at);
-
-    // Transaction auto-rollbacks when dropped
+    // Database timestamps may have different precision, check they're within 1
+    // second
+    let time_diff = (stored_key.created_at - key_obj.created_at).abs();
+    assert!(time_diff < chrono::Duration::seconds(1), "Timestamps should be close");
 }
