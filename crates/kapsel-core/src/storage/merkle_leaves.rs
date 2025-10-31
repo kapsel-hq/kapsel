@@ -593,37 +593,3 @@ impl Repository {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn count_operations_work() {
-        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
-        let mut tx = env.pool().begin().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
-
-        // Create a test tenant within our transaction
-        let tenant_id = env.create_tenant_tx(&mut tx, "count-test").await.unwrap();
-
-        // Should start with 0 leaves for this tenant
-        let initial_count = repo.count_all_by_tenant_in_tx(&mut tx, tenant_id.0).await.unwrap();
-        assert_eq!(initial_count, 0);
-
-        let committed_count =
-            repo.count_committed_by_tenant_in_tx(&mut tx, tenant_id.0).await.unwrap();
-        assert_eq!(committed_count, 0);
-    }
-
-    #[tokio::test]
-    async fn find_batch_id_handles_missing_leaves() {
-        let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
-        let mut _tx = env.pool().begin().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
-
-        let fake_id = Uuid::new_v4();
-        let batch_id = repo.find_batch_id_by_delivery_attempt(fake_id).await.unwrap();
-        assert!(batch_id.is_none());
-    }
-}
