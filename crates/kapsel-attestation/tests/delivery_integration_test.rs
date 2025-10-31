@@ -190,7 +190,7 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
 #[tokio::test]
 #[serial]
 async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
     let merkle_service = env.create_test_attestation_service().await?;
     env.enable_attestation(merkle_service)?;

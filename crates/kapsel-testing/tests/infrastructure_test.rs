@@ -287,7 +287,7 @@ async fn complete_webhook_reliability_workflow() {
 #[tokio::test]
 async fn example_transaction_based_test() {
     // TestEnv::new() now uses the shared database by default
-    let env = kapsel_testing::TestEnv::new().await.unwrap();
+    let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Test data created in transaction

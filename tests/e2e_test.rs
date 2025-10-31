@@ -15,7 +15,7 @@ use serde_json::json;
 /// Verifies deterministic retry timing, idempotency, and successful delivery.
 #[tokio::test]
 async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
-    let mut env = TestEnv::new_shared().await?;
+    let mut env = TestEnv::new_isolated().await?;
 
     // Setup test infrastructure
     let mut tx = env.pool().begin().await?;

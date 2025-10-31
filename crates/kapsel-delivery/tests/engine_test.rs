@@ -15,7 +15,7 @@ use kapsel_testing::{http::MockResponse, TestEnv};
 
 #[tokio::test]
 async fn delivery_engine_processes_pending_events() {
-    let mut env = TestEnv::new_shared().await.expect("test environment setup failed");
+    let mut env = TestEnv::new_isolated().await.expect("test environment setup failed");
 
     // Create test data
     let mut tx = env.pool().begin().await.expect("begin transaction");
@@ -60,7 +60,7 @@ async fn delivery_engine_processes_pending_events() {
 /// the specified number of worker threads for processing webhooks.
 #[tokio::test]
 async fn engine_starts_with_configured_workers() {
-    let env = TestEnv::new().await.expect("test environment setup failed");
+    let env = TestEnv::new_isolated().await.expect("test environment setup failed");
     let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
     let mut engine = DeliveryEngine::new(
@@ -84,7 +84,7 @@ async fn engine_starts_with_configured_workers() {
 /// leaving orphaned workers or causing resource leaks.
 #[tokio::test]
 async fn engine_shuts_down_gracefully() {
-    let env = TestEnv::new().await.expect("test environment setup failed");
+    let env = TestEnv::new_isolated().await.expect("test environment setup failed");
     let config = DeliveryConfig::default();
 
     let mut engine = DeliveryEngine::new(

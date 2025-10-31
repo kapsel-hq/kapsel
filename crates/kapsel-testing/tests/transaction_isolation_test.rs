@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn test_transactions_provide_isolation() -> Result<()> {
     // Both environments use the shared database pool
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Each begins its own transaction on the shared pool
     let mut tx1 = env.pool().begin().await?;
@@ -44,7 +44,7 @@ async fn test_transactions_provide_isolation() -> Result<()> {
 
 #[tokio::test]
 async fn test_rollback_prevents_data_persistence() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     let tenant_id = {
         let mut tx = env.pool().begin().await?;
@@ -74,7 +74,7 @@ async fn test_rollback_prevents_data_persistence() -> Result<()> {
 
 #[tokio::test]
 async fn test_helper_methods_work_with_transactions() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     // Test that we can create tenant within a transaction
@@ -109,7 +109,7 @@ async fn test_helper_methods_work_with_transactions() -> Result<()> {
 
 #[tokio::test]
 async fn test_transaction_aware_helpers() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     // Use the transaction-aware helper methods
@@ -150,7 +150,7 @@ async fn test_transaction_aware_helpers() -> Result<()> {
 
 #[tokio::test]
 async fn test_transaction_commit_persists_data() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Create unique IDs to avoid conflicts in shared database
     let unique_suffix = Uuid::new_v4().simple().to_string();
@@ -197,7 +197,7 @@ async fn test_transaction_commit_persists_data() -> Result<()> {
 
 #[tokio::test]
 async fn test_transaction_rollback_isolation() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Create a transaction and insert test data
     let tenant_id = {
@@ -232,7 +232,7 @@ async fn test_transaction_rollback_isolation() -> Result<()> {
 
 #[tokio::test]
 async fn test_savepoints() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     // Create tenant in main transaction
@@ -276,7 +276,7 @@ async fn test_savepoints() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_transactions_on_shared_pool() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Start two concurrent transactions from the same shared pool
     let mut tx1 = env.pool().begin().await?;
@@ -336,7 +336,7 @@ async fn test_concurrent_transactions_on_shared_pool() -> Result<()> {
 async fn test_transaction_with_webhook_ingestion() -> Result<()> {
     use kapsel_testing::fixtures::WebhookBuilder;
 
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     // Create test data within transaction
@@ -378,7 +378,7 @@ async fn test_shared_pool_isolation_guarantees() -> Result<()> {
     // This test proves that the shared database pattern provides
     // complete isolation when used correctly with transactions
 
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Run 10 concurrent transactions to stress test isolation
     let mut handles = vec![];

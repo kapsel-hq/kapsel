@@ -8,7 +8,7 @@ use kapsel_testing::{fixtures::WebhookBuilder, Clock, TestEnv};
 #[tokio::test]
 async fn test_environment_initializes() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Act - verify components are accessible
     let health_check = env.database_health_check().await.expect("Health check should work");
@@ -21,7 +21,7 @@ async fn test_environment_initializes() {
 #[tokio::test]
 async fn database_migrations_applied() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Act - check if core tables exist
     let tables = env.list_tables().await.expect("Should query tables");
@@ -39,7 +39,7 @@ async fn database_migrations_applied() {
 #[tokio::test]
 async fn test_clock_advances_time() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
     let start = env.clock.now();
 
     // Act
@@ -53,7 +53,7 @@ async fn test_clock_advances_time() {
 #[tokio::test]
 async fn http_mock_server_responds() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
     let mock_url = env.http_mock.url();
 
     // Act - configure mock endpoint
@@ -102,7 +102,7 @@ async fn webhook_fixture_builder_creates_valid_data() {
 #[tokio::test]
 async fn database_transaction_rollback_works() {
     // Arrange
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
     let tenant_id = uuid::Uuid::new_v4();
 
     // Act - Test that database operations work
@@ -138,7 +138,7 @@ async fn scenario_builder_executes_steps() {
     use kapsel_testing::ScenarioBuilder;
 
     // Arrange
-    let mut env = TestEnv::new().await.expect("Failed to create test environment");
+    let mut env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Act - Build and run a simple scenario
     let scenario = ScenarioBuilder::new("test health check scenario")

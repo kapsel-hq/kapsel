@@ -8,7 +8,7 @@ use kapsel_testing::TestEnv;
 
 #[tokio::test]
 async fn test_env_pool_access_works() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     // Create data using transaction helper
@@ -28,7 +28,7 @@ async fn test_env_pool_access_works() -> Result<()> {
 
 #[tokio::test]
 async fn test_env_transaction_methods_work() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
@@ -54,14 +54,14 @@ async fn test_env_transaction_methods_work() -> Result<()> {
 
 #[tokio::test]
 async fn health_check_works() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     assert!(env.database_health_check().await?);
     Ok(())
 }
 
 #[tokio::test]
 async fn list_tables_returns_schema() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let tables = env.list_tables().await?;
 
     // Verify key tables exist
@@ -75,14 +75,14 @@ async fn list_tables_returns_schema() -> Result<()> {
 
 #[tokio::test]
 async fn test_verify_connection() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     env.verify_connection().await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn test_create_pool() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let pool2 = env.create_pool();
 
     // Verify the new pool works
@@ -96,7 +96,7 @@ async fn test_create_pool() -> Result<()> {
 async fn test_time_control() -> Result<()> {
     use std::time::Duration;
 
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     let start_time = env.now();
     env.advance_time(Duration::from_secs(60));
@@ -110,7 +110,7 @@ async fn test_time_control() -> Result<()> {
 
 #[tokio::test]
 async fn test_api_key_creation() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "key-test-tenant").await?;
@@ -134,7 +134,7 @@ async fn test_api_key_creation() -> Result<()> {
 
 #[tokio::test]
 async fn test_tenant_with_plan() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id =
@@ -150,7 +150,7 @@ async fn test_tenant_with_plan() -> Result<()> {
 
 #[tokio::test]
 async fn test_endpoint_with_config() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "config-test-tenant").await?;
@@ -184,7 +184,7 @@ async fn test_endpoint_with_config() -> Result<()> {
 
 #[tokio::test]
 async fn test_debug_helpers() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Test pool stats
     let stats = env.debug_pool_stats();
@@ -200,7 +200,7 @@ async fn test_debug_helpers() -> Result<()> {
 
 #[tokio::test]
 async fn test_count_methods() -> Result<()> {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // In shared database, counts may not be zero due to other tests
     // Just verify methods work and return reasonable values
@@ -239,7 +239,7 @@ async fn test_isolated_vs_shared() -> Result<()> {
 async fn test_repository_access_with_committed_data() -> Result<()> {
     // This test demonstrates how to test repository methods when data needs to be
     // committed
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "repo-test-tenant").await?;
@@ -265,7 +265,7 @@ async fn test_repository_access_with_committed_data() -> Result<()> {
 async fn test_circuit_breaker_helpers() -> Result<()> {
     use kapsel_core::models::CircuitState;
 
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "circuit-test-tenant").await?;

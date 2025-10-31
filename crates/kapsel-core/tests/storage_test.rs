@@ -235,7 +235,7 @@ async fn webhook_event_claim_and_delivery_flow() {
 
 #[tokio::test]
 async fn concurrent_event_claiming() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
