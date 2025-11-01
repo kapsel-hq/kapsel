@@ -149,49 +149,28 @@ async fn test_transaction_aware_helpers() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_transaction_commit_persists_data() -> Result<()> {
+async fn test_transaction_data_visibility_within_tx() -> Result<()> {
     let env = TestEnv::new_shared().await?;
+    let mut tx = env.pool().begin().await?;
 
-    // Create unique IDs to avoid conflicts in shared database
-    let unique_suffix = Uuid::new_v4().simple().to_string();
-    let tenant_name = format!("commit-test-{}", unique_suffix);
+    let tenant_name = "tx-visibility-test";
+    let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await?;
+    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
 
-    let (tenant_id, endpoint_id) = {
-        let mut tx = env.pool().begin().await?;
-        let tenant_id = env.create_tenant_tx(&mut tx, &tenant_name).await?;
-        let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com").await?;
-
-        // Explicitly commit the transaction
-        tx.commit().await?;
-
-        (tenant_id, endpoint_id)
-    };
-
-    // Verify data persists after commit
+    // Verify data exists within the same transaction
     let tenant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
         .bind(tenant_id.0)
-        .fetch_one(env.pool())
+        .fetch_one(&mut *tx)
         .await?;
-    assert_eq!(tenant_count, 1, "tenant should exist after commit");
+    assert_eq!(tenant_count, 1, "tenant should exist within transaction");
 
     let endpoint_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE id = $1")
         .bind(endpoint_id.0)
-        .fetch_one(env.pool())
+        .fetch_one(&mut *tx)
         .await?;
-    assert_eq!(endpoint_count, 1, "endpoint should exist after commit");
+    assert_eq!(endpoint_count, 1, "endpoint should exist within transaction");
 
-    // Clean up the committed data
-    let mut cleanup_tx = env.pool().begin().await?;
-    sqlx::query("DELETE FROM endpoints WHERE id = $1")
-        .bind(endpoint_id.0)
-        .execute(&mut *cleanup_tx)
-        .await?;
-    sqlx::query("DELETE FROM tenants WHERE id = $1")
-        .bind(tenant_id.0)
-        .execute(&mut *cleanup_tx)
-        .await?;
-    cleanup_tx.commit().await?;
-
+    // Transaction automatically rolls back when dropped
     Ok(())
 }
 

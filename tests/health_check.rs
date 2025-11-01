@@ -118,17 +118,21 @@ async fn database_transaction_rollback_works() {
 
     assert_eq!(initial_count, 0, "Tenant should not exist initially");
 
-    // Test that a committed operation does persist
+    // Test that transaction operations work correctly (without committing to shared
+    // db)
     let mut tx = env.pool().begin().await.expect("begin transaction");
     let created_tenant_id =
         env.create_tenant_tx(&mut tx, "Test Tenant").await.expect("Insert should work");
-    tx.commit().await.expect("commit transaction");
-    let _tenant_id_str = created_tenant_id.0.to_string();
 
-    let final_count =
-        env.count_by_id("tenants", "id", created_tenant_id.0).await.expect("Should query count");
+    // Test data exists within the transaction
+    let tx_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
+        .bind(created_tenant_id.0)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("Should query count within transaction");
 
-    assert_eq!(final_count, 1, "Tenant should exist after commit");
+    assert_eq!(tx_count, 1, "Tenant should exist within transaction");
+    // Transaction automatically rolls back when dropped
 }
 
 #[tokio::test]

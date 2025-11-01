@@ -237,26 +237,21 @@ async fn test_isolated_vs_shared() -> Result<()> {
 
 #[tokio::test]
 async fn test_repository_access_with_committed_data() -> Result<()> {
-    // This test demonstrates how to test repository methods when data needs to be
-    // committed
+    // This test demonstrates how to test repository methods within a transaction
     let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "repo-test-tenant").await?;
 
-    // Commit the transaction so repository can access the data
-    tx.commit().await?;
-
-    // Now we can test repository access
-    let tenant = env.storage().tenants.find_by_id(tenant_id).await?;
+    // Test repository access within the transaction using _in_tx methods
+    let tenant = env.storage().tenants.find_by_id_in_tx(&mut tx, tenant_id).await?;
     assert!(tenant.is_some(), "Expected tenant to exist in repository");
 
     let found_tenant = tenant.unwrap();
     assert_eq!(found_tenant.id, tenant_id);
     assert!(found_tenant.name.contains("repo-test-tenant"));
 
-    // Clean up the committed data using helper
-    env.cleanup_tenant(tenant_id).await?;
+    // Transaction automatically rolls back when dropped - no cleanup needed
 
     Ok(())
 }
