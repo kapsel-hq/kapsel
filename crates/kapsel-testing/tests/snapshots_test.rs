@@ -8,7 +8,7 @@ use kapsel_testing::{fixtures::WebhookBuilder, http::MockResponse, TestEnv};
 
 #[tokio::test]
 async fn snapshot_events_table_works() -> Result<()> {
-    let env = TestEnv::new_isolated().await?;
+    let env = TestEnv::new_shared().await?;
 
     // Create test data within transaction
     let mut tx = env.pool().begin().await?;
@@ -24,15 +24,13 @@ async fn snapshot_events_table_works() -> Result<()> {
 
     let _event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
 
-    // Commit for snapshot testing
-    tx.commit().await?;
-
-    // Test direct snapshot method
-    let snapshot = env.snapshot_events_table().await?;
+    // Test transaction-aware snapshot method
+    let snapshot = env.snapshot_events_table_in_tx(&mut tx).await?;
     assert!(snapshot.contains("Events Table Snapshot"));
     assert!(snapshot.contains("snap-test-001"));
     assert!(snapshot.contains("status: pending"));
 
+    // Transaction auto-rollbacks when dropped
     Ok(())
 }
 
