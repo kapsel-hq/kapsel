@@ -175,13 +175,16 @@ async fn permanent_endpoint_failure() -> Result<()> {
 /// webhooks simultaneously with varying endpoint reliability.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
-    let pool = env.pool().clone();
-    let mut tx = pool.begin().await?;
+    let mut env = TestEnv::builder()
+        .isolated()
+        .worker_count(1)  // Single worker for deterministic processing
+        .batch_size(1)    // Process one event at a time for deterministic order
+        .poll_interval(Duration::from_millis(10))
+        .build()
+        .await?;
 
-    let tenant_id = env.create_tenant_tx(&mut tx, "chaos-load-tenant").await?;
-    let stable_endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await?;
+    let tenant_id = env.create_tenant("chaos-load-tenant").await?;
+    let stable_endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
     // Chaos pattern: Mixed success/failure for batch processing
     env.http_mock
@@ -212,57 +215,51 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
             .json_body(&json!({"message": format!("Load test webhook {}", i)}))
             .build();
 
-        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await?;
+        let event_id = env.ingest_webhook(&webhook).await?;
         event_ids.push(event_id);
     }
 
-    // Verify all webhooks were ingested within transaction
+    // Verify all webhooks were ingested
     assert_eq!(event_ids.len(), 8, "Should have ingested 8 webhooks");
 
-    // Verify events exist within transaction
-    for event_id in &event_ids {
-        let event = env.storage().webhook_events.find_by_id_in_tx(&mut tx, *event_id).await?;
-        assert!(event.is_some(), "Event should exist within transaction");
-    }
-
-    // Commit transaction to make data available for delivery testing
-    tx.commit().await?;
-
-    // Verify data is actually committed and visible
+    // Verify events exist and are available for processing
     for event_id in &event_ids {
         let event = env
             .storage()
             .webhook_events
             .find_by_id(*event_id)
             .await
-            .with_context(|| format!("Failed to verify committed event {}", event_id.0))?;
+            .with_context(|| format!("Failed to verify event {}", event_id.0))?;
         assert!(event.is_some(), "Event {} should be visible after commit", event_id.0);
     }
 
-    // Test delivery processing with the committed data
-    env.run_delivery_cycle().await?;
+    // Test delivery processing with deterministic single-worker configuration
+    env.process_all_pending(Duration::from_secs(10)).await?;
 
-    // Verify delivery attempts were recorded
+    // Verify delivery attempts were recorded in expected pattern
     for (i, event_id) in event_ids.iter().enumerate() {
         let attempt_count = env.count_delivery_attempts(*event_id).await?;
         assert_eq!(attempt_count, 1, "Event {} should have exactly one delivery attempt", i);
 
         // Check final status based on mock response pattern
+        // Even indices (0,2,4,6) should succeed, odd indices (1,3,5,7) should be
+        // pending
         let status = env.find_webhook_status(*event_id).await?;
         let expected_status =
             if i % 2 == 0 { EventStatus::Delivered } else { EventStatus::Pending };
         assert_eq!(
             status, expected_status,
-            "Event {} should have status '{}' but got '{}'",
+            "Event {} should have status '{}' but got '{}' (deterministic processing required)",
             i, expected_status, status
         );
     }
 
     // Test retry behavior by advancing time and running another cycle
     env.advance_time(Duration::from_secs(1));
-    env.run_delivery_cycle().await?;
+    env.process_all_pending(Duration::from_secs(10)).await?;
 
-    // Verify retry attempts for failed webhooks
+    // Verify retry attempts - odd indices should now have 2 attempts and be
+    // delivered
     for (i, event_id) in event_ids.iter().enumerate() {
         let attempt_count = env.count_delivery_attempts(*event_id).await?;
         let expected_attempts = if i % 2 == 0 { 1 } else { 2 }; // Odd indices get retried
@@ -270,6 +267,15 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
             attempt_count, expected_attempts,
             "Event {} should have {} attempts after retry cycle",
             i, expected_attempts
+        );
+
+        // All events should now be delivered after retry
+        let status = env.find_webhook_status(*event_id).await?;
+        assert_eq!(
+            status,
+            EventStatus::Delivered,
+            "Event {} should be delivered after retry cycle",
+            i
         );
     }
 

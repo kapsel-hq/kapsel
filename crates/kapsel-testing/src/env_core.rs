@@ -186,6 +186,10 @@ impl TestEnv {
     /// # use kapsel_testing::TestEnv;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let env = TestEnv::new().await?;
+    /// let webhook = kapsel_testing::fixtures::WebhookBuilder::new()
+    ///     .tenant(uuid::Uuid::new_v4())
+    ///     .endpoint(uuid::Uuid::new_v4())
+    ///     .build();
     ///
     /// // Can commit directly to the isolated database
     /// let event = env.ingest_webhook(&webhook).await?;

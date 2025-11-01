@@ -27,7 +27,7 @@ use uuid::Uuid;
 /// tenant context is properly injected into the request.
 #[tokio::test]
 async fn authenticate_request_succeeds_with_valid_key() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
@@ -66,7 +66,7 @@ async fn authenticate_request_succeeds_with_valid_key() {
 /// Verifies that invalid API keys are rejected with 401 Unauthorized.
 #[tokio::test]
 async fn authenticate_request_fails_with_invalid_key() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder()
@@ -86,7 +86,7 @@ async fn authenticate_request_fails_with_invalid_key() {
 /// with 401 Unauthorized.
 #[tokio::test]
 async fn authenticate_request_fails_without_auth_header() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     let request = Request::builder().uri("/test").body(Body::empty()).expect("request build");
@@ -100,7 +100,7 @@ async fn authenticate_request_fails_without_auth_header() {
 /// Verifies that malformed Authorization headers are rejected properly.
 #[tokio::test]
 async fn authenticate_request_fails_with_malformed_header() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
 
     // Test missing "Bearer " prefix
@@ -133,7 +133,7 @@ async fn authenticate_request_fails_with_malformed_header() {
 /// previously valid.
 #[tokio::test]
 async fn authenticate_request_fails_with_revoked_key() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
@@ -168,7 +168,7 @@ async fn authenticate_request_fails_with_revoked_key() {
 /// Verifies that expired API keys are rejected properly.
 #[tokio::test]
 async fn authenticate_request_fails_with_expired_key() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods
@@ -213,7 +213,7 @@ async fn authenticate_request_fails_with_expired_key() {
 /// field for tracking API key usage.
 #[tokio::test]
 async fn authenticate_request_updates_last_used_timestamp() {
-    let env = TestEnv::new_isolated().await.expect("test env setup");
+    let env = TestEnv::new_shared().await.expect("test env setup");
     let mut tx = env.pool().begin().await.expect("begin transaction");
 
     // Create test data using transaction-aware methods

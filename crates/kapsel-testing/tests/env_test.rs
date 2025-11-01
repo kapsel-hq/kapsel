@@ -21,8 +21,7 @@ async fn test_env_pool_access_works() -> Result<()> {
         .await?;
     assert_eq!(count, 1);
 
-    // Explicitly drop the transaction to avoid shutdown issues
-    drop(tx);
+    // Transaction automatically rolls back when dropped
     Ok(())
 }
 

@@ -33,14 +33,32 @@ services:
       POSTGRES_DB: kapsel_test
     tmpfs:
       - /var/lib/postgresql/data:size=2g
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
     command:
       - postgres
+      - -c
+      - max_connections=500
       - -c
       - fsync=off
       - -c
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - random_page_cost=1.0
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

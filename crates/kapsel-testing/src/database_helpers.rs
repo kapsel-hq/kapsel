@@ -170,7 +170,7 @@ impl TestEnv {
         if let Some(existing_event) = self
             .storage()
             .webhook_events
-            .find_duplicate(webhook.endpoint_id.into(), &webhook.source_event_id)
+            .find_duplicate_in_tx(tx, webhook.endpoint_id.into(), &webhook.source_event_id)
             .await
             .context("failed to check for duplicate webhook")?
         {

@@ -230,7 +230,8 @@ async fn merkle_service_handles_multiple_leaves_in_batch() {
 #[tokio::test]
 async fn merkle_service_fails_commit_with_empty_pending_queue() {
     let env = TestEnv::new_shared().await.unwrap();
-    let mut service = env.create_test_attestation_service().await.unwrap();
+    let mut tx = env.pool().begin().await.unwrap();
+    let mut service = env.create_test_attestation_service_in_tx(&mut tx).await.unwrap();
 
     // Try to commit with no pending leaves
     let result = service.try_commit_pending().await;

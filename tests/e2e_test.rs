@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use kapsel_core::EventStatus;
 use kapsel_testing::{fixtures::WebhookBuilder, ScenarioBuilder, TestEnv};
 use serde_json::json;
@@ -129,7 +129,13 @@ async fn verify_idempotency_scenario(
 /// Basic batch processing test (circuit breaker logic not yet implemented).
 #[tokio::test]
 async fn batch_webhook_processing() -> Result<()> {
-    let mut env = TestEnv::new_isolated().await?;
+    let mut env = TestEnv::builder()
+        .isolated()
+        .worker_count(1)  // Single worker for deterministic processing
+        .batch_size(1)    // Process one event at a time
+        .poll_interval(Duration::from_millis(10))
+        .build()
+        .await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await?;
@@ -170,8 +176,8 @@ async fn batch_webhook_processing() -> Result<()> {
     // Commit transaction to make data available for delivery testing
     tx.commit().await?;
 
-    // Process all webhooks in one cycle
-    env.run_delivery_cycle().await?;
+    // Process all webhooks until completion
+    env.process_all_pending(Duration::from_secs(10)).await?;
 
     // Verify all webhooks were attempted
     for (i, event_id) in event_ids.iter().enumerate() {
@@ -180,13 +186,12 @@ async fn batch_webhook_processing() -> Result<()> {
 
         // Verify status based on mock responses (first 3 fail with 503, last 2 succeed
         // with 200)
-        let status = env.find_webhook_status(*event_id).await?;
         let expected_status = if i >= 3 { EventStatus::Delivered } else { EventStatus::Pending };
-        assert_eq!(
-            status, expected_status,
-            "Event {} should have status '{}' but got '{}'",
-            i, expected_status, status
-        );
+
+        // Wait for status to be updated by delivery worker
+        env.wait_for_event_status(*event_id, expected_status, std::time::Duration::from_secs(5))
+            .await
+            .with_context(|| format!("Event {} should have status '{}'", i, expected_status))?;
     }
 
     Ok(())

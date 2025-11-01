@@ -4,7 +4,7 @@
 //! behavior. Uses PostgreSQL advisory locks to coordinate cleanup between
 //! parallel test processes.
 
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use sqlx::{
@@ -17,14 +17,14 @@ use uuid::Uuid;
 const TEMPLATE_DB_NAME: &str = "kapsel_test_template";
 const MAIN_TEST_DB_NAME: &str = "kapsel_test";
 
-// Advisory lock key for coordinating startup cleanup across processes
-const CLEANUP_LOCK_KEY: i64 = 0x6b61_7073_656c; // "kapsel" in hex
-
 // Cleanup databases older than this many seconds
 const CLEANUP_AGE_THRESHOLD_SECS: i64 = 30;
 
-// Global shared pool for transaction-based tests
-static SHARED_POOL: OnceLock<PgPool> = OnceLock::new();
+// Thread-local shared pool for transaction-based tests
+// Each test runtime gets its own pool to avoid cross-runtime contamination
+thread_local! {
+    static SHARED_POOL: std::cell::RefCell<Option<PgPool>> = std::cell::RefCell::new(None);
+}
 static TEMPLATE_INITIALIZED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -42,18 +42,23 @@ impl TestDatabase {
     }
 
     /// Get shared database pool for transaction-based tests.
+    /// Uses thread-local storage to ensure each test runtime gets its own pool.
     pub async fn shared_pool() -> Result<PgPool> {
-        if let Some(pool) = SHARED_POOL.get() {
-            return Ok(pool.clone());
+        // First check if pool exists
+        let pool_exists = SHARED_POOL.with(|pool_cell| pool_cell.borrow().is_some());
+
+        if pool_exists {
+            return SHARED_POOL.with(|pool_cell| Ok(pool_cell.borrow().as_ref().unwrap().clone()));
         }
 
-        // Initialize template database and cleanup old databases
-        ensure_template_and_cleanup().await?;
-
+        // Create new pool for this thread/runtime
         let pool = create_shared_pool().await?;
-        let _ = SHARED_POOL.set(pool.clone());
 
-        debug!("initialized shared database pool");
+        // Store it in thread-local storage
+        SHARED_POOL.with(|pool_cell| {
+            *pool_cell.borrow_mut() = Some(pool.clone());
+        });
+
         Ok(pool)
     }
 
@@ -112,7 +117,7 @@ impl IsolatedTestDatabase {
     ///
     /// Database name includes timestamp for age-based cleanup.
     pub async fn new() -> Result<Self> {
-        ensure_template_and_cleanup().await?;
+        ensure_template_and_cleanup()?;
 
         let admin_pool = create_admin_pool().await?;
 
@@ -147,143 +152,12 @@ impl IsolatedTestDatabase {
 
 /// Ensure template database exists and clean up old test databases.
 ///
-/// Uses PostgreSQL advisory lock to coordinate cleanup across multiple
-/// processes.
-async fn ensure_template_and_cleanup() -> Result<()> {
-    let admin_pool = create_admin_pool().await?;
-
-    // Always try to acquire advisory lock for cleanup coordination
-    let acquired_lock: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-        .bind(CLEANUP_LOCK_KEY)
-        .fetch_one(&admin_pool)
-        .await
-        .context("failed to try advisory lock")?;
-
-    if acquired_lock {
-        info!("acquired cleanup lock, performing startup maintenance");
-
-        // This process won the lock, do the cleanup and template initialization
-        ensure_template_database(&admin_pool).await?;
-        cleanup_old_test_databases(&admin_pool).await?;
-
-        // Release the lock
-        let _: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
-            .bind(CLEANUP_LOCK_KEY)
-            .fetch_one(&admin_pool)
-            .await?;
-
-        info!("startup maintenance complete, released lock");
-    } else {
-        // Another process is doing cleanup, wait for template to be ready
-        info!("waiting for template database to be created by lock-holding process");
-        wait_for_template_database(&admin_pool).await?;
-    }
-
+/// Lightweight initialization - template exists from Docker container.
+/// No expensive admin operations needed for process-per-test model.
+fn ensure_template_and_cleanup() -> Result<()> {
+    // Template database exists from Docker initialization
+    // Skip all expensive admin operations to optimize for process-per-test
     TEMPLATE_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
-    Ok(())
-}
-
-/// Ensure the template database exists and is migrated.
-async fn ensure_template_database(admin_pool: &PgPool) -> Result<()> {
-    // Ensure main test database exists and is migrated (for shared pool)
-    let main_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-            .bind(MAIN_TEST_DB_NAME)
-            .fetch_one(admin_pool)
-            .await?;
-
-    if !main_exists {
-        // Create main test database
-        sqlx::query(&format!("CREATE DATABASE \"{MAIN_TEST_DB_NAME}\""))
-            .execute(admin_pool)
-            .await
-            .with_context(|| format!("failed to create main test database: {MAIN_TEST_DB_NAME}"))?;
-        info!("created main test database: {}", MAIN_TEST_DB_NAME);
-    }
-
-    // Always ensure migrations are applied
-    let main_pool = create_database_pool(MAIN_TEST_DB_NAME).await?;
-
-    let migrations_dir = find_migrations_directory().context("migrations directory not found")?;
-
-    sqlx::migrate::Migrator::new(migrations_dir)
-        .await
-        .context("failed to load migrations")?
-        .run(&main_pool)
-        .await
-        .context("failed to run migrations on main test database")?;
-
-    main_pool.close().await;
-    info!("created and migrated main test database: {}", MAIN_TEST_DB_NAME);
-
-    // Check if template database exists and has valid schema
-    let template_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-            .bind(TEMPLATE_DB_NAME)
-            .fetch_one(admin_pool)
-            .await?;
-
-    let needs_recreation = if template_exists {
-        // Check if template has valid schema by counting tables
-        if let Ok(template_pool) = create_database_pool(TEMPLATE_DB_NAME).await {
-            let table_count: Result<i64, _> = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
-            )
-            .fetch_one(&template_pool)
-            .await;
-            template_pool.close().await;
-
-            match table_count {
-                Ok(count) if count >= 8 => {
-                    debug!("template database has {} tables, reusing existing", count);
-                    false // Template is valid, don't recreate
-                },
-                _ => {
-                    info!("template database exists but has invalid schema, will recreate");
-                    true
-                },
-            }
-        } else {
-            info!("template database exists but cannot connect, will recreate");
-            true
-        }
-    } else {
-        info!("template database does not exist, will create");
-        true
-    };
-
-    if needs_recreation {
-        // First terminate any connections to the template database
-        sqlx::query(&format!(
-            "SELECT pg_terminate_backend(pid)
-             FROM pg_stat_activity
-             WHERE datname = '{TEMPLATE_DB_NAME}' AND pid <> pg_backend_pid()"
-        ))
-        .execute(admin_pool)
-        .await
-        .ok(); // Ignore errors if no connections exist
-
-        // Drop existing template database if it exists
-        if template_exists {
-            sqlx::query(&format!("DROP DATABASE \"{TEMPLATE_DB_NAME}\""))
-                .execute(admin_pool)
-                .await
-                .with_context(|| {
-                    format!("failed to drop existing template database: {TEMPLATE_DB_NAME}")
-                })?;
-        }
-
-        // Create fresh template database from migrated main test database
-        sqlx::query(&format!(
-            "CREATE DATABASE \"{TEMPLATE_DB_NAME}\" WITH TEMPLATE \"{MAIN_TEST_DB_NAME}\""
-        ))
-        .execute(admin_pool)
-        .await
-        .with_context(|| format!("failed to create template database: {TEMPLATE_DB_NAME}"))?;
-
-        info!("created fresh template database from migrated main test database");
-    }
-
     Ok(())
 }
 
@@ -489,7 +363,9 @@ async fn create_database_pool(database_name: &str) -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Create shared pool using main test database (not template).
+/// Create minimal shared pool optimized for nextest process-per-test model.
+/// Each test process only needs 1 connection since tests run sequentially
+/// within process.
 async fn create_shared_pool() -> Result<PgPool> {
     let database_url =
         std::env::var("DATABASE_URL").context("DATABASE_URL environment variable is required")?;
@@ -500,11 +376,11 @@ async fn create_shared_pool() -> Result<PgPool> {
         .database(MAIN_TEST_DB_NAME);
 
     let pool = PgPoolOptions::new()
-        .max_connections(15)
-        .min_connections(10)
-        .max_lifetime(Duration::from_secs(10))
-        .idle_timeout(Duration::from_secs(5))
-        .acquire_timeout(Duration::from_secs(5))
+        .max_connections(15)  // Higher limit for concurrent test execution and property tests
+        .min_connections(0)   // No persistent connections to avoid shutdown issues
+        .max_lifetime(Duration::from_secs(300))  // Longer lifetime for stability
+        .idle_timeout(Duration::from_secs(60))   // Keep connections alive longer
+        .acquire_timeout(Duration::from_secs(60)) // More time for connection contention in concurrent tests
         .connect_with(opts)
         .await
         .context("failed to create shared connection pool")?;
@@ -512,58 +388,17 @@ async fn create_shared_pool() -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Find migrations directory by walking up from current directory.
-fn find_migrations_directory() -> Option<std::path::PathBuf> {
-    let mut current = std::env::current_dir().ok()?;
-
-    loop {
-        let migrations_path = current.join("migrations");
-        if migrations_path.exists() && migrations_path.is_dir() {
-            return Some(migrations_path);
+/// Close the shared connection pool to prevent Tokio shutdown errors.
+/// This should be called during test cleanup when possible.
+pub async fn close_shared_pool() {
+    SHARED_POOL.with(|pool_cell| {
+        let mut pool_ref = pool_cell.borrow_mut();
+        if let Some(pool) = pool_ref.take() {
+            tokio::spawn(async move {
+                pool.close().await;
+            });
         }
-
-        if !current.pop() {
-            break;
-        }
-    }
-
-    None
-}
-
-/// Wait for template database to be created by the lock-holding process.
-///
-/// This function is called by processes that didn't acquire the cleanup lock.
-/// It polls for the template database to exist with exponential backoff.
-async fn wait_for_template_database(admin_pool: &PgPool) -> Result<()> {
-    let max_wait_time = Duration::from_secs(30);
-    let start_time = std::time::Instant::now();
-    let mut wait_duration = Duration::from_millis(10);
-
-    loop {
-        // Check if template database exists
-        let template_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-                .bind(TEMPLATE_DB_NAME)
-                .fetch_one(admin_pool)
-                .await?;
-
-        if template_exists {
-            info!("template database is ready");
-            return Ok(());
-        }
-
-        // Check timeout
-        if start_time.elapsed() > max_wait_time {
-            return Err(anyhow::anyhow!(
-                "timeout waiting for template database {TEMPLATE_DB_NAME} to be created"
-            ));
-        }
-
-        // Wait with exponential backoff (up to 1 second)
-        tokio::time::sleep(wait_duration).await;
-        wait_duration = std::cmp::min(wait_duration * 2, Duration::from_secs(1));
-        debug!("template database not ready, waiting {:?} before retry", wait_duration);
-    }
+    });
 }
 
 /// Clean up any orphaned databases manually (for debugging).

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn storage_health_check() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
@@ -26,7 +26,7 @@ async fn storage_health_check() {
 
 #[tokio::test]
 async fn tenant_repository_crud_operations() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Create tenant using transaction helper
@@ -63,7 +63,7 @@ async fn tenant_repository_crud_operations() {
 
 #[tokio::test]
 async fn endpoint_repository_crud_operations() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Create test data within transaction
@@ -108,7 +108,7 @@ async fn endpoint_repository_crud_operations() {
 
 #[tokio::test]
 async fn webhook_event_repository_crud_operations() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let _storage = Storage::new(env.pool().clone(), &clock);
 
@@ -189,9 +189,9 @@ async fn webhook_event_claim_and_delivery_flow() {
     }
 
     // Test mark as delivered
-    storage.webhook_events.mark_delivered_in_tx(&mut tx, event_ids[0]).await.unwrap();
+    storage.webhook_events.mark_delivered_in_tx(&mut tx, claimed[0].id).await.unwrap();
     let delivered =
-        storage.webhook_events.find_by_id_in_tx(&mut tx, event_ids[0]).await.unwrap().unwrap();
+        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[0].id).await.unwrap().unwrap();
     assert_eq!(delivered.status, EventStatus::Delivered);
     assert!(delivered.delivered_at.is_some());
 
@@ -285,7 +285,7 @@ async fn concurrent_event_claiming() {
 
 #[tokio::test]
 async fn delivery_attempt_repository_operations() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 
@@ -405,7 +405,7 @@ async fn delivery_attempt_repository_operations() {
 
 #[tokio::test]
 async fn transactional_operations_rollback() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
     let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
     let storage = Storage::new(env.pool().clone(), &clock);
 

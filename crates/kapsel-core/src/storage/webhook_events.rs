@@ -59,7 +59,7 @@ impl Repository {
             SELECT id FROM webhook_events
             WHERE status = 'pending'
               AND (next_retry_at IS NULL OR next_retry_at <= $1)
-            ORDER BY next_retry_at ASC NULLS FIRST
+            ORDER BY next_retry_at ASC NULLS FIRST, received_at ASC
             LIMIT $2
             FOR UPDATE SKIP LOCKED
             ",
@@ -115,7 +115,7 @@ impl Repository {
             SELECT id FROM webhook_events
             WHERE status = 'pending'
               AND (next_retry_at IS NULL OR next_retry_at <= $1)
-            ORDER BY next_retry_at ASC NULLS FIRST
+            ORDER BY next_retry_at ASC NULLS FIRST, received_at ASC
             LIMIT $2
             FOR UPDATE SKIP LOCKED
             ",

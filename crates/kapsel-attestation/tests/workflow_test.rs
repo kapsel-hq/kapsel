@@ -117,7 +117,7 @@ async fn incremental_batch_processing_workflow() {
 /// attestation tree while failures are properly ignored.
 #[tokio::test]
 async fn mixed_success_failure_workflow() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
     let key_id = store_signing_key_in_db(env.pool(), &signing_service).await.unwrap();
@@ -158,7 +158,7 @@ async fn mixed_success_failure_workflow() {
 /// behaves correctly without creating invalid tree states.
 #[tokio::test]
 async fn empty_batch_commit_workflow() {
-    let env = TestEnv::new_shared().await.unwrap();
+    let env = TestEnv::new_isolated().await.unwrap();
 
     let signing_service = SigningService::ephemeral();
     let key_id = store_signing_key_in_db(env.pool(), &signing_service).await.unwrap();

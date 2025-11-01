@@ -339,8 +339,7 @@ async fn test_transaction_with_webhook_ingestion() -> Result<()> {
         .await?;
     assert_eq!(count, 1, "webhook should exist within transaction");
 
-    // Let transaction roll back automatically
-    drop(tx);
+    // Transaction automatically rolls back when dropped
 
     // Verify everything was rolled back
     let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM webhook_events WHERE id = $1")
