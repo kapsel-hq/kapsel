@@ -344,9 +344,11 @@ async fn create_shared_pool() -> Result<PgPool> {
         .database(MAIN_TEST_DB_NAME);
 
     let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .min_connections(1)
-        .acquire_timeout(Duration::from_secs(30))
+        .max_connections(10)  // Higher limit for concurrent test execution
+        .min_connections(1)   // No persistent connections to avoid shutdown issues
+        .max_lifetime(Duration::from_secs(300))  // Longer lifetime for stability
+        .idle_timeout(Duration::from_secs(60))   // Keep connections alive longer
+        .acquire_timeout(Duration::from_secs(60)) // More time for connection contention in concurrent tests
         .connect_with(opts)
         .await
         .context("failed to create shared connection pool")?;

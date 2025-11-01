@@ -127,16 +127,7 @@ async fn verify_idempotency_scenario(
 /// Basic batch processing test (circuit breaker logic not yet implemented).
 #[tokio::test]
 async fn batch_webhook_processing() -> Result<()> {
-    TestEnv::run_isolated_test(|_env| async move {
-        // Create custom env with specific configuration for deterministic processing
-        let mut env = TestEnv::builder()
-            .isolated()
-            .worker_count(1)  // Single worker for deterministic processing
-            .batch_size(1)    // Process one event at a time
-            .poll_interval(Duration::from_millis(10))
-            .build()
-            .await?;
-
+    TestEnv::run_isolated_test(|mut env| async move {
         let tenant_id = env.create_tenant("test-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 

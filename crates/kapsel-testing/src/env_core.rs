@@ -33,7 +33,7 @@ impl Default for TestEnvBuilder {
             poll_interval: Duration::from_millis(100),
             shutdown_timeout: Duration::from_secs(5),
             enable_delivery_engine: true,
-            is_isolated: true,
+            is_isolated: false, // Default to shared database to prevent leaks
         }
     }
 }

@@ -196,9 +196,28 @@ impl TestEnv {
         // 4. GUARANTEED TEARDOWN:
         // This code runs *after* the test function has completed
         // We `await` the cleanup, so it is guaranteed to finish
-        if let Err(e) = drop_database_immediate(&admin_pool, &db_name).await {
-            // Log the cleanup failure but don't mask the original test failure
-            tracing::error!(database = %db_name, error = %e, "CRITICAL: Failed to clean up isolated test database!");
+        match drop_database_immediate(&admin_pool, &db_name).await {
+            Ok(()) => {
+                tracing::debug!(database = %db_name, "Successfully cleaned up isolated test database");
+            },
+            Err(e) => {
+                let error_msg = e.to_string().to_lowercase();
+                if error_msg.contains("does not exist") || error_msg.contains("not exist") {
+                    // Database already gone (container restart?) - this is actually fine
+                    tracing::debug!(database = %db_name, "Database already cleaned up (container restart?)");
+                } else {
+                    // Actual cleanup failure - log but don't fail the test
+                    tracing::error!(database = %db_name, error = %e, "CRITICAL: Failed to clean up isolated test database!");
+
+                    // Try one more time with a different approach
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", db_name))
+                            .execute(&admin_pool),
+                    )
+                    .await;
+                }
+            },
         }
 
         // 5. Return the original test result

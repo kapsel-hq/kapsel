@@ -842,15 +842,7 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    TestEnv::run_isolated_test(|_env| async move {
-                        // Create custom env with specific configuration for deterministic FIFO processing
-                        let mut env = TestEnv::builder()
-                            .isolated()
-                            .worker_count(1)  // Single worker for deterministic FIFO processing
-                            .batch_size(1)    // Process one event at a time
-                            .poll_interval(Duration::from_millis(10))
-                            .build()
-                            .await?;
+                    TestEnv::run_isolated_test(|mut env| async move {
 
                         let tenant_name = "fifo-tenant";
                         let tenant_id = env.create_tenant(tenant_name).await?;

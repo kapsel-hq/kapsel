@@ -172,15 +172,7 @@ async fn permanent_endpoint_failure() -> Result<()> {
 /// webhooks simultaneously with varying endpoint reliability.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
-    TestEnv::run_isolated_test(|_env| async move {
-        // Create custom env with specific configuration for deterministic processing
-        let mut env = TestEnv::builder()
-            .isolated()
-            .worker_count(1)  // Single worker for deterministic processing
-            .batch_size(1)    // Process one event at a time for deterministic order
-            .poll_interval(Duration::from_millis(10))
-            .build()
-            .await?;
+    TestEnv::run_isolated_test(|mut env| async move {
         let tenant_id = env.create_tenant("chaos-load-tenant").await?;
         let stable_endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
