@@ -168,6 +168,7 @@ async fn webhook_event_claim_and_delivery_flow() -> anyhow::Result<()> {
         let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
 
         // Create multiple events
+        #[allow(clippy::collection_is_never_read)]
         let mut event_ids = Vec::new();
         for i in 0..3 {
             let webhook = test_events::create_test_webhook_with_payload(
@@ -415,7 +416,7 @@ async fn constraint_violation_handling() {
 
     // Generate unique name for shared database
     let unique_suffix = Uuid::new_v4().simple().to_string();
-    let tenant_name = format!("constraint-tenant-{}", unique_suffix);
+    let tenant_name = format!("constraint-tenant-{unique_suffix}");
 
     // Create first tenant using storage directly to control exact name
     let tenant1 = Tenant {
@@ -845,8 +846,7 @@ async fn endpoint_reset_circuit_breaker() {
     let suffix = Uuid::new_v4().simple().to_string();
     let mut tx = env.pool().begin().await.unwrap();
 
-    let tenant_id =
-        env.create_tenant_tx(&mut tx, &format!("reset-tenant-{}", suffix)).await.unwrap();
+    let tenant_id = env.create_tenant_tx(&mut tx, &format!("reset-tenant-{suffix}")).await.unwrap();
     let endpoint_id =
         env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/reset").await.unwrap();
 

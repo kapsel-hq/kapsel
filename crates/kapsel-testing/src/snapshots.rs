@@ -27,7 +27,7 @@ impl TestEnv {
         .await
         .context("failed to fetch events for snapshot")?;
 
-        self.format_events_snapshot(events)
+        Ok(Self::format_events_snapshot(&events))
     }
 
     /// Transaction-aware version for shared database tests.
@@ -53,10 +53,10 @@ impl TestEnv {
         .await
         .context("failed to fetch events for snapshot")?;
 
-        self.format_events_snapshot(events)
+        Ok(Self::format_events_snapshot(&events))
     }
 
-    fn format_events_snapshot(&self, events: Vec<WebhookEventData>) -> Result<String> {
+    fn format_events_snapshot(events: &[WebhookEventData]) -> String {
         let mut output = String::new();
         output.push_str("Events Table Snapshot\n");
         output.push_str("====================\n\n");
@@ -94,7 +94,7 @@ impl TestEnv {
             output.push_str("No events found.\n");
         }
 
-        Ok(output)
+        output
     }
 
     /// Create a snapshot of delivery attempts for debugging and regression
@@ -109,7 +109,7 @@ impl TestEnv {
         .await
         .context("failed to fetch delivery attempts for snapshot")?;
 
-        self.format_delivery_attempts_snapshot(attempts)
+        Ok(Self::format_delivery_attempts_snapshot(&attempts))
     }
 
     /// Transaction-aware version for shared database tests.
@@ -126,10 +126,10 @@ impl TestEnv {
         .await
         .context("failed to fetch delivery attempts for snapshot")?;
 
-        self.format_delivery_attempts_snapshot(attempts)
+        Ok(Self::format_delivery_attempts_snapshot(&attempts))
     }
 
-    fn format_delivery_attempts_snapshot(&self, attempts: Vec<DeliveryAttempt>) -> Result<String> {
+    fn format_delivery_attempts_snapshot(attempts: &[DeliveryAttempt]) -> String {
         let mut output = String::new();
         output.push_str("Delivery Attempts Snapshot\n");
         output.push_str("=========================\n\n");
@@ -152,7 +152,7 @@ impl TestEnv {
             output.push_str("No delivery attempts found.\n");
         }
 
-        Ok(output)
+        output
     }
 
     /// Snapshot the database schema for detecting schema evolution issues.
@@ -181,7 +181,7 @@ impl TestEnv {
         .await
         .context("failed to fetch index information")?;
 
-        self.format_schema_snapshot(tables, indexes)
+        Ok(Self::format_schema_snapshot(tables, indexes))
     }
 
     /// Transaction-aware version for shared database tests.
@@ -210,14 +210,13 @@ impl TestEnv {
         .await
         .context("failed to fetch index information")?;
 
-        self.format_schema_snapshot(tables, indexes)
+        Ok(Self::format_schema_snapshot(tables, indexes))
     }
 
     fn format_schema_snapshot(
-        &self,
         tables: Vec<sqlx::postgres::PgRow>,
         indexes: Vec<sqlx::postgres::PgRow>,
-    ) -> Result<String> {
+    ) -> String {
         use std::fmt::Write;
 
         let mut output = String::new();
@@ -261,7 +260,7 @@ impl TestEnv {
             let _ = writeln!(output, "{tablename}.{indexname}: {indexdef}");
         }
 
-        Ok(output)
+        output
     }
 
     /// Generic table snapshot method for any table.

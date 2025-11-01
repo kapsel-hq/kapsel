@@ -203,7 +203,7 @@ impl MerkleService {
     /// fails or tree operations are invalid.
     #[allow(clippy::too_many_lines)]
     pub async fn try_commit_pending_in_tx(
-        &mut self,
+        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<SignedTreeHead> {
         if self.pending.is_empty() {

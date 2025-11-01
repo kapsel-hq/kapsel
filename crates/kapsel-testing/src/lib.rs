@@ -12,6 +12,11 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 // External crate imports
 use anyhow::{Context, Result};
+use database::{
+    create_admin_pool, create_database_from_template, drop_database_immediate,
+    ensure_template_database_exists,
+};
+use futures::FutureExt;
 use kapsel_core::EventStatus;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
@@ -157,15 +162,9 @@ impl TestEnv {
     /// ```
     pub async fn run_isolated_test<F, Fut>(test_fn: F) -> Result<()>
     where
-        F: FnOnce(TestEnv) -> Fut,
+        F: FnOnce(Self) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        use database::{
-            create_admin_pool, create_database_from_template, drop_database_immediate,
-            ensure_template_database_exists,
-        };
-        use futures::FutureExt;
-
         // 1. ENSURE TEMPLATE EXISTS (runs once per suite, fast and lock-free)
         ensure_template_database_exists()
             .await
@@ -182,12 +181,12 @@ impl TestEnv {
 
         create_database_from_template(&admin_pool, &db_name)
             .await
-            .with_context(|| format!("failed to create isolated database: {}", db_name))?;
+            .with_context(|| format!("failed to create isolated database: {db_name}"))?;
 
         // Create a TestEnv specifically for this isolated DB
         let env = Self::build_for_isolated_db(&db_name)
             .await
-            .with_context(|| format!("failed to build TestEnv for database: {}", db_name))?;
+            .with_context(|| format!("failed to build TestEnv for database: {db_name}"))?;
 
         // 3. EXECUTION: Run the actual test logic
         // Use catch_unwind to ensure teardown runs even if the test panics
@@ -212,7 +211,7 @@ impl TestEnv {
                     // Try one more time with a different approach
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\"", db_name))
+                        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\""))
                             .execute(&admin_pool),
                     )
                     .await;
@@ -242,7 +241,7 @@ impl TestEnv {
 
         let database = create_database_pool(database_name)
             .await
-            .with_context(|| format!("failed to create pool for database: {}", database_name))?;
+            .with_context(|| format!("failed to create pool for database: {database_name}"))?;
 
         let test_run_id = Uuid::new_v4().simple().to_string();
         let http_mock = http::MockServer::start().await;
@@ -279,7 +278,7 @@ impl TestEnv {
             .context("failed to create delivery engine")?,
         );
 
-        Ok(TestEnv {
+        Ok(Self {
             http_mock,
             clock,
             database,
@@ -328,6 +327,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::panic)]
     async fn run_isolated_test_handles_test_panics() -> Result<()> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tokio::runtime::Runtime::new().unwrap().block_on(async {

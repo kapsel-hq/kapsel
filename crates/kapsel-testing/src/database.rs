@@ -20,7 +20,7 @@ const MAIN_TEST_DB_NAME: &str = "kapsel_test";
 // Thread-local shared pool for transaction-based tests
 // Each test runtime gets its own pool to avoid cross-runtime contamination
 thread_local! {
-    static SHARED_POOL: std::cell::RefCell<Option<PgPool>> = std::cell::RefCell::new(None);
+    static SHARED_POOL: std::cell::RefCell<Option<PgPool>> = const { std::cell::RefCell::new(None) };
 }
 static TEMPLATE_INITIALIZED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -48,7 +48,11 @@ impl TestDatabase {
         let pool_exists = SHARED_POOL.with(|pool_cell| pool_cell.borrow().is_some());
 
         if pool_exists {
-            return SHARED_POOL.with(|pool_cell| Ok(pool_cell.borrow().as_ref().unwrap().clone()));
+            return SHARED_POOL.with(|pool_cell| {
+                pool_cell.borrow().as_ref().cloned().ok_or_else(|| {
+                    anyhow::anyhow!("shared pool should exist after pool_exists check")
+                })
+            });
         }
 
         // Create new pool for this thread/runtime
@@ -117,7 +121,7 @@ impl IsolatedTestDatabase {
     ///
     /// Database name includes timestamp for age-based cleanup.
     pub async fn new() -> Result<Self> {
-        ensure_template_and_cleanup()?;
+        ensure_template_and_cleanup();
 
         let admin_pool = create_admin_pool().await?;
 
@@ -154,11 +158,10 @@ impl IsolatedTestDatabase {
 ///
 /// Lightweight initialization - template exists from Docker container.
 /// No expensive admin operations needed for process-per-test model.
-fn ensure_template_and_cleanup() -> Result<()> {
+fn ensure_template_and_cleanup() {
     // Template database exists from Docker initialization
     // Skip all expensive admin operations to optimize for process-per-test
     TEMPLATE_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
-    Ok(())
 }
 
 /// Ensure template database exists for isolated test creation.
@@ -175,7 +178,7 @@ pub async fn ensure_template_database_exists() -> Result<()> {
     // For now, we rely on the Docker container setup that creates the template
     // In the future, this could be enhanced to verify template exists and create if
     // needed
-    ensure_template_and_cleanup()?;
+    ensure_template_and_cleanup();
 
     Ok(())
 }
@@ -251,20 +254,20 @@ pub async fn drop_database_immediate(admin_pool: &PgPool, database_name: &str) -
     tokio::time::sleep(Duration::from_millis(5)).await;
 
     // Drop the database with cascade to handle any remaining dependencies
-    match sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\" WITH (FORCE)"))
+    if (sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\" WITH (FORCE)"))
         .execute(admin_pool)
-        .await
+        .await)
+        .is_ok()
     {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // Fallback to standard DROP if FORCE is not supported
-            sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\""))
-                .execute(admin_pool)
-                .await
-                .with_context(|| format!("failed to drop database: {database_name}"))?;
-            Ok(())
-        },
+        // Successfully dropped with FORCE
+    } else {
+        // Fallback to standard DROP if FORCE is not supported
+        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\""))
+            .execute(admin_pool)
+            .await
+            .with_context(|| format!("failed to drop database: {database_name}"))?;
     }
+    Ok(())
 }
 
 // Connection pool creation functions

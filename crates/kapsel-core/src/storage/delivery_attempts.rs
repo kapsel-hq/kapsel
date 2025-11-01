@@ -555,6 +555,7 @@ impl Repository {
         if total == 0 {
             Ok(0.0)
         } else {
+            #[allow(clippy::cast_precision_loss)]
             Ok(successful as f64 / total as f64)
         }
     }

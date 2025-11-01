@@ -42,7 +42,10 @@ async fn authenticate_request_succeeds_with_valid_key() -> anyhow::Result<()> {
         tx.commit().await.expect("commit transaction");
 
         // Create test app with auth middleware
-        let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+        let app = create_test_app(
+            env.pool().clone(),
+            &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+        );
 
         // Make authenticated request
         let request = Request::builder()
@@ -74,7 +77,10 @@ async fn authenticate_request_succeeds_with_valid_key() -> anyhow::Result<()> {
 #[tokio::test]
 async fn authenticate_request_fails_with_invalid_key() {
     let env = TestEnv::new_shared().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+    let app = create_test_app(
+        env.pool().clone(),
+        &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+    );
 
     let request = Request::builder()
         .uri("/test")
@@ -94,7 +100,10 @@ async fn authenticate_request_fails_with_invalid_key() {
 #[tokio::test]
 async fn authenticate_request_fails_without_auth_header() {
     let env = TestEnv::new_shared().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+    let app = create_test_app(
+        env.pool().clone(),
+        &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+    );
 
     let request = Request::builder().uri("/test").body(Body::empty()).expect("request build");
 
@@ -108,7 +117,10 @@ async fn authenticate_request_fails_without_auth_header() {
 #[tokio::test]
 async fn authenticate_request_fails_with_malformed_header() {
     let env = TestEnv::new_shared().await.expect("test env setup");
-    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+    let app = create_test_app(
+        env.pool().clone(),
+        &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+    );
 
     // Test missing "Bearer " prefix
     let request = Request::builder()
@@ -122,7 +134,10 @@ async fn authenticate_request_fails_with_malformed_header() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // Test wrong authentication scheme
-    let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+    let app = create_test_app(
+        env.pool().clone(),
+        &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+    );
     let request = Request::builder()
         .uri("/test")
         .header(AUTHORIZATION, "Basic dGVzdDp0ZXN0")
@@ -157,7 +172,10 @@ async fn authenticate_request_fails_with_revoked_key() -> anyhow::Result<()> {
         // Mark the key as revoked
         env.storage().api_keys.revoke(&key_hash).await.expect("revoke key");
 
-        let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+        let app = create_test_app(
+            env.pool().clone(),
+            &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+        );
 
         let request = Request::builder()
             .uri("/test")
@@ -205,7 +223,10 @@ async fn authenticate_request_fails_with_expired_key() -> anyhow::Result<()> {
         // Advance clock by 2 days to make the key expired
         env.clock.advance(std::time::Duration::from_secs(2 * 24 * 60 * 60));
 
-        let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+        let app = create_test_app(
+            env.pool().clone(),
+            &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+        );
 
         let request = Request::builder()
             .uri("/test")
@@ -242,7 +263,10 @@ async fn authenticate_request_updates_last_used_timestamp() -> anyhow::Result<()
         // Commit so API handlers can see the data
         tx.commit().await.expect("commit transaction");
 
-        let app = create_test_app(env.pool().clone(), Arc::new(env.clock.clone()));
+        let app = create_test_app(
+            env.pool().clone(),
+            &(Arc::new(env.clock.clone()) as Arc<dyn kapsel_core::Clock>),
+        );
 
         // Check that last_used_at is initially NULL
         let initial_usage = env
@@ -284,11 +308,11 @@ async fn authenticate_request_updates_last_used_timestamp() -> anyhow::Result<()
 }
 
 /// Creates a test Axum app with auth middleware for testing.
-fn create_test_app(pool: sqlx::PgPool, clock: Arc<dyn kapsel_core::Clock>) -> Router {
+fn create_test_app(pool: sqlx::PgPool, clock: &Arc<dyn kapsel_core::Clock>) -> Router {
     Router::new()
         .route("/test", get(test_handler))
         .layer(middleware::from_fn_with_state(
-            Arc::new(Storage::new(pool.clone(), &clock)),
+            Arc::new(Storage::new(pool.clone(), clock)),
             auth_middleware,
         ))
         .with_state(pool)

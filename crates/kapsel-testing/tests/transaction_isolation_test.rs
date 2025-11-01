@@ -5,7 +5,6 @@
 //! when using proper transaction boundaries.
 
 use anyhow::Result;
-use futures;
 use kapsel_testing::TestEnv;
 use uuid::Uuid;
 
@@ -263,8 +262,8 @@ async fn test_concurrent_transactions_on_shared_pool() -> Result<()> {
 
     // Each transaction creates its own tenant with unique names
     let suffix = Uuid::new_v4().simple().to_string();
-    let tenant1 = env.create_tenant_tx(&mut tx1, &format!("tx1-tenant-{}", suffix)).await?;
-    let tenant2 = env.create_tenant_tx(&mut tx2, &format!("tx2-tenant-{}", suffix)).await?;
+    let tenant1 = env.create_tenant_tx(&mut tx1, &format!("tx1-tenant-{suffix}")).await?;
+    let tenant2 = env.create_tenant_tx(&mut tx2, &format!("tx2-tenant-{suffix}")).await?;
 
     // Neither transaction can see the other's uncommitted data
     let count1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
