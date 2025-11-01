@@ -226,7 +226,7 @@ This test embodies our entire philosophy: deterministic, complex, invariant-focu
 #[tokio::test]
 async fn golden_webhook_delivery_with_retry_backoff() {
     // Setup: Deterministic environment
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let destination = MockServer::start().await;
 
     // Create endpoint with specific retry policy

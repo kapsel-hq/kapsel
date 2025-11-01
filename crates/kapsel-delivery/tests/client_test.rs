@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn delivers_webhook_successfully() {
-    let env = TestEnv::new_isolated().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server to respond with success
     env.http_mock
@@ -58,7 +58,7 @@ async fn delivers_webhook_successfully() {
 
 #[tokio::test]
 async fn handles_connection_timeout() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server to timeout
     env.http_mock.mock_simple("/webhook", MockResponse::Timeout).await;
@@ -96,7 +96,7 @@ async fn handles_connection_timeout() {
 
 #[tokio::test]
 async fn handles_http_error_responses() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server to respond with 500 error
     env.http_mock
@@ -130,7 +130,7 @@ async fn handles_http_error_responses() {
 
 #[tokio::test]
 async fn respects_retry_after_header() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server to respond with 429 and Retry-After header
     env.http_mock
@@ -195,7 +195,7 @@ async fn handles_connection_refused() {
 
 #[tokio::test]
 async fn validates_request_format() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     env.http_mock
         .mock_simple("/webhook", MockResponse::Success {
@@ -232,7 +232,7 @@ async fn validates_request_format() {
 
 #[tokio::test]
 async fn tracks_request_duration() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Setup mock server with success response
     env.http_mock
@@ -269,7 +269,7 @@ async fn tracks_request_duration() {
 
 #[tokio::test]
 async fn handles_large_response_bodies() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Create a large response (but within reasonable limits)
     let large_body = "x".repeat(1024 * 10); // 10KB
@@ -305,7 +305,7 @@ async fn handles_large_response_bodies() {
 
 #[tokio::test]
 async fn limits_response_body_size() {
-    let env = TestEnv::new().await.expect("Failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("Failed to create test environment");
 
     // Create an extremely large response (1MB+)
     let huge_body = "x".repeat(1024 * 1024 * 2); // 2MB

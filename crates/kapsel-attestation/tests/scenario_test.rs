@@ -277,7 +277,7 @@ async fn failed_delivery_does_not_create_attestation_leaf() {
 /// bypassing the full delivery pipeline for focused testing.
 #[tokio::test]
 async fn direct_success_event_creates_attestation_leaf() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("failed to create test environment");
 
     // Setup attestation service
     let merkle_service = env.create_test_attestation_service().await.unwrap();

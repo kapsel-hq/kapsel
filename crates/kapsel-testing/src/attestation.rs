@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use kapsel_attestation::{MerkleService, SigningService};
+use kapsel_core::{storage::attestation_keys::AttestationKey, Clock};
 use uuid::Uuid;
 
 use crate::{AttestationLeafInfo, EventId, SignedTreeHeadInfo, TestEnv};
@@ -23,8 +25,6 @@ impl TestEnv {
     pub async fn create_test_attestation_service(
         &self,
     ) -> Result<kapsel_attestation::MerkleService> {
-        use kapsel_attestation::{MerkleService, SigningService};
-
         // Create signing service first to ensure key material consistency
         let signing_service = SigningService::ephemeral();
         let public_key = signing_service.public_key_as_bytes();
@@ -92,6 +92,69 @@ impl TestEnv {
         );
 
         tracing::debug!("MerkleService created with key_id: {} and lock_id: {}", key_id, lock_id);
+
+        Ok(merkle_service)
+    }
+
+    /// Create test attestation service within a transaction.
+    ///
+    /// Transaction-aware version that creates attestation keys within the
+    /// provided transaction for proper rollback behavior in shared database
+    /// tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database operations fail.
+    pub async fn create_test_attestation_service_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<kapsel_attestation::MerkleService> {
+        // Create signing service first to ensure key material consistency
+        let signing_service = SigningService::ephemeral();
+        let public_key = signing_service.public_key_as_bytes();
+
+        tracing::debug!(
+            "Creating test attestation service in transaction, is_isolated: {}",
+            self.is_isolated_test()
+        );
+
+        // Create new key as inactive within transaction (avoids concurrent test
+        // conflicts)
+        let key_id = uuid::Uuid::new_v4();
+        let new_key = AttestationKey {
+            id: key_id,
+            public_key,
+            is_active: false,
+            created_at: chrono::DateTime::<chrono::Utc>::from(self.clock.now_system()),
+            deactivated_at: None,
+        };
+
+        self.storage()
+            .attestation_keys
+            .create_in_tx(tx, &new_key)
+            .await
+            .context("failed to create attestation key")?;
+
+        tracing::debug!("Created attestation key with id: {} in transaction", key_id);
+
+        // Use the signing service with the stored key_id
+        let signing_service = signing_service.with_key_id(key_id);
+
+        // Generate unique lock ID based on test_run_id to prevent concurrent
+        // advisory lock conflicts between isolated tests
+        let lock_id = self.generate_unique_lock_id();
+        let merkle_service = MerkleService::with_lock_id(
+            self.storage(),
+            signing_service,
+            Arc::new(self.clock.clone()),
+            lock_id,
+        );
+
+        tracing::debug!(
+            "MerkleService created with key_id: {} and lock_id: {} in transaction",
+            key_id,
+            lock_id
+        );
 
         Ok(merkle_service)
     }

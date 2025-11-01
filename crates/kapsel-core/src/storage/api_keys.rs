@@ -264,6 +264,39 @@ impl Repository {
         Ok(api_keys)
     }
 
+    /// Finds API keys by tenant ID within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        include_revoked: bool,
+    ) -> Result<Vec<ApiKey>> {
+        let query = if include_revoked {
+            r"
+            SELECT id, tenant_id, key_hash, name, expires_at, revoked_at,
+                   last_used_at, created_at
+            FROM api_keys
+            WHERE tenant_id = $1
+            ORDER BY created_at DESC
+            "
+        } else {
+            r"
+            SELECT id, tenant_id, key_hash, name, expires_at, revoked_at,
+                   last_used_at, created_at
+            FROM api_keys
+            WHERE tenant_id = $1 AND revoked_at IS NULL
+            ORDER BY created_at DESC
+            "
+        };
+
+        let api_keys =
+            sqlx::query_as::<_, ApiKey>(query).bind(tenant_id.0).fetch_all(&mut **tx).await?;
+
+        Ok(api_keys)
+    }
+
     /// Deletes an API key.
     ///
     /// # Errors
@@ -279,7 +312,29 @@ impl Repository {
         .bind(key_hash)
         .execute(&*self.pool)
         .await?;
+        Ok(())
+    }
 
+    /// Permanently deletes an API key by hash within a transaction.
+    ///
+    /// This is a destructive operation that cannot be undone.
+    /// Consider using revocation for recoverable key deactivation.
+    ///
+    /// Returns error if delete fails.
+    pub async fn delete_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        key_hash: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            DELETE FROM api_keys
+            WHERE key_hash = $1
+            ",
+        )
+        .bind(key_hash)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -306,6 +361,32 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts API keys for a tenant within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        include_revoked: bool,
+    ) -> Result<i64> {
+        let query = if include_revoked {
+            r"
+            SELECT COUNT(*) FROM api_keys
+            WHERE tenant_id = $1
+            "
+        } else {
+            r"
+            SELECT COUNT(*) FROM api_keys
+            WHERE tenant_id = $1 AND revoked_at IS NULL
+            "
+        };
+
+        let count: (i64,) = sqlx::query_as(query).bind(tenant_id.0).fetch_one(&mut **tx).await?;
+
+        Ok(count.0)
+    }
+
     /// Cleans up expired API keys by deleting them.
     ///
     /// This is typically run as a background job to remove expired keys
@@ -324,6 +405,29 @@ impl Repository {
         )
         .bind(now)
         .execute(&*self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Cleans up expired API keys by deleting them within a transaction.
+    ///
+    /// This is typically run as a background job to remove expired keys
+    /// and reclaim storage space.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if delete fails.
+    pub async fn cleanup_expired_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<u64> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+        let result = sqlx::query(
+            r"
+            DELETE FROM api_keys
+            WHERE expires_at IS NOT NULL AND expires_at < $1
+            ",
+        )
+        .bind(now)
+        .execute(&mut **tx)
         .await?;
 
         Ok(result.rows_affected())

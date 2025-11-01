@@ -1407,6 +1407,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "futures",
  "http",
  "insta",
  "kapsel-attestation",

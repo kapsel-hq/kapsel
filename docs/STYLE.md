@@ -474,7 +474,7 @@ Always use `TestClock` for time-dependent operations:
 ```rust
 #[tokio::test]
 async fn exponential_backoff_timing_is_deterministic() {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
 
     // GOOD: Use test clock
     env.clock.advance(Duration::from_secs(1));

@@ -19,7 +19,7 @@ async fn attestation_errors_do_not_affect_delivery_processing() {
     // This test simulates what happens when attestation service fails
     // but delivery processing should continue unaffected
 
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("failed to create test environment");
 
     // Create attestation subscriber
     let signing_service = SigningService::ephemeral();
@@ -52,7 +52,7 @@ async fn attestation_errors_do_not_affect_delivery_processing() {
 /// the attestation service or propagate errors to other components.
 #[tokio::test]
 async fn handles_corrupted_event_data_gracefully() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(
@@ -88,7 +88,7 @@ async fn handles_corrupted_event_data_gracefully() {
 /// handled with appropriate error recovery.
 #[tokio::test]
 async fn handles_signing_service_failures() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("failed to create test environment");
 
     // Create a signing service that will fail
     let signing_service = SigningService::ephemeral();
@@ -136,7 +136,7 @@ async fn handles_signing_service_failures() {
 /// the attestation service.
 #[tokio::test]
 async fn handles_database_connection_issues() {
-    let env = TestEnv::new_isolated().await.expect("failed to create test environment");
+    let env = TestEnv::new_shared().await.expect("failed to create test environment");
 
     let signing_service = SigningService::ephemeral();
     let merkle_service = Arc::new(RwLock::new(MerkleService::new(

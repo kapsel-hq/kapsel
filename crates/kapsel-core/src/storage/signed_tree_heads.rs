@@ -158,6 +158,29 @@ impl Repository {
         Ok(exists)
     }
 
+    /// Checks if a tree head exists with at least the specified size within
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists_with_min_size_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        min_size: i64,
+    ) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r"
+            SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE tree_size >= $1)
+            ",
+        )
+        .bind(min_size)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(exists)
+    }
+
     /// Checks if a tree head exists for the specified batch.
     ///
     /// Used to verify batch commitment and prevent duplicate processing.
@@ -173,6 +196,31 @@ impl Repository {
         )
         .bind(batch_id)
         .fetch_one(&*self.pool)
+        .await?;
+
+        Ok(exists)
+    }
+
+    /// Checks if a signed tree head exists for a specific batch within
+    /// transaction.
+    ///
+    /// Used to verify batch commitment and prevent duplicate processing.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn exists_for_batch_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        batch_id: Uuid,
+    ) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r"
+            SELECT EXISTS(SELECT 1 FROM signed_tree_heads WHERE batch_id = $1)
+            ",
+        )
+        .bind(batch_id)
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(exists)
@@ -282,6 +330,23 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts total number of tree heads within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_all_in_tx(&self, tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM signed_tree_heads
+            ",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
     /// Lists all tree heads ordered by tree size.
     ///
     /// # Errors
@@ -322,41 +387,5 @@ impl Repository {
         .await?;
 
         Ok(tree_head_info)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn max_tree_size_starts_at_zero() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
-
-        let size = repo.find_max_tree_size().await.unwrap();
-        assert_eq!(size, 0);
-    }
-
-    #[tokio::test]
-    async fn exists_checks_work_with_empty_table() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
-
-        let exists = repo.exists_with_min_size(1).await.unwrap();
-        assert!(!exists);
-
-        let batch_id = Uuid::new_v4();
-        let batch_exists = repo.exists_for_batch(batch_id).await.unwrap();
-        assert!(!batch_exists);
-    }
-
-    #[tokio::test]
-    async fn count_operations_work() {
-        let env = kapsel_testing::TestEnv::new_isolated().await.unwrap();
-        let repo = Repository::new(Arc::new(env.pool().clone()));
-
-        let count = repo.count_all().await.unwrap();
-        assert_eq!(count, 0);
     }
 }

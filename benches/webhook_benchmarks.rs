@@ -36,7 +36,7 @@ fn bench_ingestion_throughput(c: &mut Criterion) {
             |b, &size| {
                 b.iter_custom(|iters| {
                     rt.block_on(async {
-                        let env = TestEnv::new().await.unwrap();
+                        let env = TestEnv::new_shared().await.unwrap();
                         let _payload = generate_payload(size);
 
                         let start = Instant::now();
@@ -65,7 +65,7 @@ fn bench_database_operations(c: &mut Criterion) {
     group.bench_function("insert_webhook", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
                 let webhooks: Vec<_> = (0..iters).map(|_| create_test_webhook()).collect();
 
                 let start = Instant::now();
@@ -81,7 +81,7 @@ fn bench_database_operations(c: &mut Criterion) {
     group.bench_function("claim_pending_batch", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
 
                 // Pre-populate with pending webhooks
                 for _ in 0..1000 {
@@ -101,7 +101,7 @@ fn bench_database_operations(c: &mut Criterion) {
     group.bench_function("idempotency_check", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
                 let idempotency_key = "test_key_123";
 
                 // Insert initial webhook
@@ -194,7 +194,7 @@ fn bench_concurrent_processing(c: &mut Criterion) {
             |b, &concurrency| {
                 b.iter_custom(|iters| {
                     rt.block_on(async {
-                        let env = TestEnv::new().await.unwrap();
+                        let env = TestEnv::new_shared().await.unwrap();
 
                         // Pre-populate webhooks
                         let webhooks: Vec<_> =
@@ -234,7 +234,7 @@ fn bench_memory_usage(c: &mut Criterion) {
     group.bench_function("memory_per_1k_webhooks", |b| {
         b.iter_custom(|_| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
 
                 // Measure baseline memory
                 let baseline = current_memory_usage();
@@ -278,7 +278,7 @@ fn bench_e2e_latency(c: &mut Criterion) {
     group.bench_function("p50_latency", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
                 let mut latencies = Vec::with_capacity(iters as usize);
 
                 for _ in 0..iters {
@@ -301,7 +301,7 @@ fn bench_e2e_latency(c: &mut Criterion) {
     group.bench_function("p99_latency", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let env = TestEnv::new().await.unwrap();
+                let env = TestEnv::new_shared().await.unwrap();
                 let mut latencies = Vec::with_capacity(iters as usize);
 
                 for _ in 0..iters {

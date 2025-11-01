@@ -14,7 +14,7 @@ use kapsel_testing::{fixtures::WebhookBuilder, http::MockResponse, ScenarioBuild
 
 #[tokio::test]
 async fn scenario_builder_executes_steps() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_shared().await?;
 
     let scenario = ScenarioBuilder::new("test scenario")
         .advance_time(Duration::from_secs(1))
@@ -42,7 +42,7 @@ async fn scenario_builder_executes_steps() -> Result<()> {
 
 #[tokio::test]
 async fn scenario_builder_invariant_checks_execute() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_shared().await?;
 
     // Test that invariant checks are actually executed
     let check_executed = Arc::new(AtomicBool::new(false));
@@ -68,7 +68,7 @@ async fn scenario_builder_invariant_checks_execute() -> Result<()> {
 
 #[tokio::test]
 async fn scenario_builder_invariant_failure_caught() -> Result<()> {
-    let mut env = TestEnv::new().await?;
+    let mut env = TestEnv::new_shared().await?;
 
     let scenario = ScenarioBuilder::new("failing invariant scenario")
         .advance_time(Duration::from_secs(1))

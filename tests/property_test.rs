@@ -845,7 +845,14 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new_isolated().await.unwrap();
+                    let mut env = TestEnv::builder()
+                        .isolated()
+                        .worker_count(1)  // Single worker for deterministic FIFO processing
+                        .batch_size(1)    // Process one event at a time
+                        .poll_interval(Duration::from_millis(10))
+                        .build()
+                        .await
+                        .unwrap();
                     let mut tx = env.pool().begin().await.unwrap();
 
                     let tenant_name = "fifo-tenant";
@@ -890,8 +897,8 @@ fn property_fifo_processing_order() {
                     // Commit transaction to make data available for delivery testing
                     tx.commit().await.unwrap();
 
-                    // Process webhooks with single delivery cycle first
-                    env.run_delivery_cycle().await.unwrap();
+                    // Process all webhooks until completion
+                    env.process_all_pending(Duration::from_secs(10)).await.unwrap();
 
                     // Verify FIFO processing by checking first attempt order
                     // Get the first delivery attempt for each event, ordered by attempt time

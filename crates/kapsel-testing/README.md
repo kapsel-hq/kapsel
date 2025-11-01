@@ -30,7 +30,7 @@ Two isolation patterns:
 ```rust
 #[tokio::test]
 async fn test_webhook_delivery() {
-    let env = TestEnv::new().await?;
+    let env = TestEnv::new_shared().await?;
     let mut tx = env.pool().begin().await?;
 
     let tenant_id = env.create_tenant_tx(&mut *tx, "test-tenant").await?;
