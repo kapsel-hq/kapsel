@@ -541,7 +541,7 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.toml",
-                r#"
+                r"
                 worker_pool_size = 8
                 worker_queue_size = 25
                 max_retry_attempts = 10
@@ -552,7 +552,7 @@ mod tests {
                 circuit_breaker_success_threshold = 3
                 circuit_breaker_timeout_seconds = 60
                 delivery_timeout_seconds = 45
-                "#,
+                ",
             )?;
 
             let config = Config::load().expect("Config should load for conversion testing");

@@ -27,6 +27,36 @@ impl TestEnv {
         .await
         .context("failed to fetch events for snapshot")?;
 
+        Ok(Self::format_events_snapshot(&events))
+    }
+
+    /// Transaction-aware version for shared database tests.
+    ///
+    /// Orders results deterministically and formats as readable string for
+    /// insta snapshots. Redacts dynamic fields like timestamps and UUIDs
+    /// for stable snapshots.
+    pub async fn snapshot_events_table_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<String> {
+        let events = sqlx::query_as::<_, WebhookEventData>(
+            "SELECT
+                id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                status, failure_count, last_attempt_at, next_retry_at,
+                headers, body, content_type, payload_size,
+                signature_valid, signature_error,
+                received_at, delivered_at, failed_at
+             FROM webhook_events
+             ORDER BY received_at ASC, id ASC",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to fetch events for snapshot")?;
+
+        Ok(Self::format_events_snapshot(&events))
+    }
+
+    fn format_events_snapshot(events: &[WebhookEventData]) -> String {
         let mut output = String::new();
         output.push_str("Events Table Snapshot\n");
         output.push_str("====================\n\n");
@@ -64,20 +94,12 @@ impl TestEnv {
             output.push_str("No events found.\n");
         }
 
-        Ok(output)
+        output
     }
 
     /// Create a snapshot of delivery attempts for debugging and regression
     /// testing.
     pub async fn snapshot_delivery_attempts(&self) -> Result<String> {
-        #[derive(sqlx::FromRow)]
-        struct DeliveryAttempt {
-            attempt_number: i32,
-            response_status: Option<i32>,
-            succeeded: bool,
-            request_body: Option<Vec<u8>>,
-        }
-
         let attempts = sqlx::query_as::<_, DeliveryAttempt>(
             "SELECT attempt_number, response_status, succeeded, request_body
              FROM delivery_attempts
@@ -87,6 +109,27 @@ impl TestEnv {
         .await
         .context("failed to fetch delivery attempts for snapshot")?;
 
+        Ok(Self::format_delivery_attempts_snapshot(&attempts))
+    }
+
+    /// Transaction-aware version for shared database tests.
+    pub async fn snapshot_delivery_attempts_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<String> {
+        let attempts = sqlx::query_as::<_, DeliveryAttempt>(
+            "SELECT attempt_number, response_status, succeeded, request_body
+             FROM delivery_attempts
+             ORDER BY attempt_number ASC",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to fetch delivery attempts for snapshot")?;
+
+        Ok(Self::format_delivery_attempts_snapshot(&attempts))
+    }
+
+    fn format_delivery_attempts_snapshot(attempts: &[DeliveryAttempt]) -> String {
         let mut output = String::new();
         output.push_str("Delivery Attempts Snapshot\n");
         output.push_str("=========================\n\n");
@@ -109,7 +152,7 @@ impl TestEnv {
             output.push_str("No delivery attempts found.\n");
         }
 
-        Ok(output)
+        output
     }
 
     /// Snapshot the database schema for detecting schema evolution issues.
@@ -117,8 +160,6 @@ impl TestEnv {
     /// This captures table structure, indexes, and constraints to catch
     /// unintended schema changes in pull requests.
     pub async fn snapshot_database_schema(&self) -> Result<String> {
-        use std::fmt::Write;
-
         // Query information_schema for deterministic schema representation
         let tables = sqlx::query(
             "SELECT table_name, column_name, data_type, is_nullable, column_default
@@ -139,6 +180,44 @@ impl TestEnv {
         .fetch_all(self.pool())
         .await
         .context("failed to fetch index information")?;
+
+        Ok(Self::format_schema_snapshot(tables, indexes))
+    }
+
+    /// Transaction-aware version for shared database tests.
+    pub async fn snapshot_database_schema_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<String> {
+        // Query information_schema for deterministic schema representation
+        let tables = sqlx::query(
+            "SELECT table_name, column_name, data_type, is_nullable, column_default
+             FROM information_schema.columns
+             WHERE table_schema = 'public'
+             ORDER BY table_name, ordinal_position",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to fetch schema information")?;
+
+        let indexes = sqlx::query(
+            "SELECT schemaname, tablename, indexname, indexdef
+             FROM pg_indexes
+             WHERE schemaname = 'public'
+             ORDER BY tablename, indexname",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to fetch index information")?;
+
+        Ok(Self::format_schema_snapshot(tables, indexes))
+    }
+
+    fn format_schema_snapshot(
+        tables: Vec<sqlx::postgres::PgRow>,
+        indexes: Vec<sqlx::postgres::PgRow>,
+    ) -> String {
+        use std::fmt::Write;
 
         let mut output = String::new();
         output.push_str("Database Schema Snapshot\n");
@@ -181,7 +260,7 @@ impl TestEnv {
             let _ = writeln!(output, "{tablename}.{indexname}: {indexdef}");
         }
 
-        Ok(output)
+        output
     }
 
     /// Generic table snapshot method for any table.
@@ -210,4 +289,42 @@ impl TestEnv {
 
         Ok(output)
     }
+
+    /// Transaction-aware version for shared database tests.
+    pub async fn snapshot_table_in_tx(
+        &self,
+        table_name: &str,
+        order_by: &str,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<String> {
+        use std::fmt::Write;
+
+        let query = format!("SELECT * FROM {table_name} ORDER BY {order_by}");
+
+        let rows = sqlx::query(&query)
+            .fetch_all(&mut **tx)
+            .await
+            .context(format!("failed to snapshot table {table_name}"))?;
+
+        let mut output = String::new();
+        let _ = writeln!(output, "Table Snapshot: {table_name}");
+        let _ = writeln!(output, "{}\n", "=".repeat(table_name.len() + 16));
+
+        if rows.is_empty() {
+            output.push_str("No rows found.\n");
+        } else {
+            let _ = writeln!(output, "Row count: {}", rows.len());
+            output.push_str("(Use specific snapshot methods for detailed row inspection)\n");
+        }
+
+        Ok(output)
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DeliveryAttempt {
+    attempt_number: i32,
+    response_status: Option<i32>,
+    succeeded: bool,
+    request_body: Option<Vec<u8>>,
 }

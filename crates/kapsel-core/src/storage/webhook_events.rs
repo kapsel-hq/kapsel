@@ -59,7 +59,7 @@ impl Repository {
             SELECT id FROM webhook_events
             WHERE status = 'pending'
               AND (next_retry_at IS NULL OR next_retry_at <= $1)
-            ORDER BY next_retry_at ASC NULLS FIRST
+            ORDER BY next_retry_at ASC NULLS FIRST, received_at ASC
             LIMIT $2
             FOR UPDATE SKIP LOCKED
             ",
@@ -91,6 +91,59 @@ impl Repository {
         .await?;
 
         tx.commit().await?;
+
+        Ok(events)
+    }
+
+    /// Claims pending webhook events for processing within an existing
+    /// transaction.
+    ///
+    /// Uses FOR UPDATE SKIP LOCKED to enable concurrent workers to claim
+    /// different events without blocking. Events are marked as 'delivering'.
+    ///
+    /// Returns error if database transaction fails.
+    pub async fn claim_pending_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        batch_size: usize,
+    ) -> Result<Vec<WebhookEvent>> {
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+
+        // Select events using FOR UPDATE SKIP LOCKED for concurrent processing
+        let event_ids: Vec<Uuid> = sqlx::query_scalar(
+            r"
+            SELECT id FROM webhook_events
+            WHERE status = 'pending'
+              AND (next_retry_at IS NULL OR next_retry_at <= $1)
+            ORDER BY next_retry_at ASC NULLS FIRST, received_at ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            ",
+        )
+        .bind(now)
+        .bind(i32::try_from(batch_size).unwrap_or(i32::MAX))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Update status and fetch full event data
+        let events = sqlx::query_as::<_, WebhookEvent>(
+            r"
+            UPDATE webhook_events
+            SET status = 'delivering', last_attempt_at = NOW()
+            WHERE id = ANY($1)
+            RETURNING id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                      status, failure_count, last_attempt_at, next_retry_at,
+                      headers, body, content_type, received_at, delivered_at, failed_at,
+                      payload_size, signature_valid, signature_error
+            ",
+        )
+        .bind(&event_ids)
+        .fetch_all(&mut **tx)
+        .await?;
 
         Ok(events)
     }
@@ -444,6 +497,27 @@ impl Repository {
         Ok(count.0)
     }
 
+    /// Counts events by status within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_status_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        status: EventStatus,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM webhook_events
+            WHERE status = $1
+            ",
+        )
+        .bind(status.to_string())
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
     /// Counts all events for a tenant.
     ///
     /// # Errors
@@ -680,6 +754,35 @@ impl Repository {
         Ok(events)
     }
 
+    /// Finds dead letter events for a tenant within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_dead_letter_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        limit: Option<i64>,
+    ) -> Result<Vec<WebhookEvent>> {
+        let events = sqlx::query_as::<_, WebhookEvent>(
+            r"
+            SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                   status, failure_count, last_attempt_at, next_retry_at,
+                   headers, body, content_type, received_at, delivered_at, failed_at,
+                   payload_size, signature_valid, signature_error
+            FROM webhook_events
+            WHERE tenant_id = $1 AND status = 'dead_letter'
+            ORDER BY failed_at DESC
+            LIMIT $2
+            ",
+        )
+        .bind(tenant_id.0)
+        .bind(limit.unwrap_or(100))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(events)
+    }
+
     /// Retries a dead letter event by resetting it to pending status.
     ///
     /// Used for manual recovery when the underlying issue has been resolved.
@@ -700,6 +803,34 @@ impl Repository {
         )
         .bind(event_id.0)
         .execute(&*self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Retries a dead letter event by resetting it to pending status within a
+    /// transaction.
+    ///
+    /// Used for manual recovery when the underlying issue has been resolved.
+    ///
+    /// Returns error if update fails.
+    pub async fn retry_dead_letter_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE webhook_events
+            SET status = 'pending',
+                failure_count = 0,
+                next_retry_at = NULL,
+                failed_at = NULL
+            WHERE id = $1 AND status = 'dead_letter'
+            ",
+        )
+        .bind(event_id.0)
+        .execute(&mut **tx)
         .await?;
 
         Ok(())
@@ -750,6 +881,90 @@ impl Repository {
         .await?;
 
         Ok(exists)
+    }
+
+    /// Finds a duplicate webhook event within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_duplicate_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        source_event_id: &str,
+    ) -> Result<Option<WebhookEvent>> {
+        let event = sqlx::query_as::<_, WebhookEvent>(
+            r"
+            SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                   status, failure_count, last_attempt_at, next_retry_at,
+                   headers, body, content_type, received_at, delivered_at, failed_at,
+                   payload_size, signature_valid, signature_error
+            FROM webhook_events
+            WHERE endpoint_id = $1 AND source_event_id = $2
+            ",
+        )
+        .bind(endpoint_id.0)
+        .bind(source_event_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(event)
+    }
+
+    /// Finds webhook events by tenant within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        limit: Option<i64>,
+    ) -> Result<Vec<WebhookEvent>> {
+        let events = sqlx::query_as::<_, WebhookEvent>(
+            r"
+            SELECT id, tenant_id, endpoint_id, source_event_id, idempotency_strategy,
+                   status, failure_count, last_attempt_at, next_retry_at,
+                   headers, body, content_type, received_at, delivered_at, failed_at,
+                   payload_size, signature_valid, signature_error
+            FROM webhook_events
+            WHERE tenant_id = $1
+            ORDER BY received_at DESC
+            LIMIT $2
+            ",
+        )
+        .bind(tenant_id.0)
+        .bind(limit.unwrap_or(1000))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(events)
+    }
+
+    /// Counts webhook events by tenant within a transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_tenant_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*)
+            FROM webhook_events
+            WHERE tenant_id = $1
+            ",
+        )
+        .bind(tenant_id.0)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
     }
 }
 

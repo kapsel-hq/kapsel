@@ -590,7 +590,8 @@ fn webhook_event_new_enforces_business_rules() {
     let large_body = vec![0u8; 10_000_000]; // 10MB
 
     // Test empty payload gets minimum size of 1
-    let start_time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1672531200); // Jan 1, 2023
+    let start_time =
+        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_672_531_200); // Jan 1, 2023
     let clock = Arc::new(TestClock::with_start_time(start_time));
     let now = DateTime::<Utc>::from(clock.now_system());
     let empty_event = WebhookEvent::new(

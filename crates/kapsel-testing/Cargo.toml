@@ -30,6 +30,7 @@ proptest = { workspace = true }
 reqwest = { workspace = true }
 http = "1.0"
 anyhow = { workspace = true }
+futures.workspace = true
 
 [lints]
 workspace = true

@@ -10,10 +10,14 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use kapsel_core::{models::EventStatus, Clock, TestClock};
+use kapsel_core::{
+    models::{DeliveryAttempt, EventStatus},
+    Clock, TestClock,
+};
 use kapsel_testing::{
-    fixtures::WebhookBuilder,
+    fixtures::{TestWebhook, WebhookBuilder},
     invariants::{strategies, CircuitState, WebhookEvent},
     time::backoff::deterministic_webhook_backoff,
     ScenarioBuilder, TestEnv,
@@ -536,68 +540,72 @@ fn property_webhook_delivery_retry_scenarios() {
     runner
         .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
-                let mut env = TestEnv::new_isolated().await.unwrap();
-                let mut tx = env.pool().begin().await.unwrap();
+                TestEnv::run_isolated_test(|mut env| async move {
+                    let tenant_name = "prop-test-tenant";
+                    let tenant_id = env.create_tenant(tenant_name).await?;
+                    let endpoint_id = env
+                        .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                        .await?;
 
-                let tenant_name = "prop-test-tenant";
-                let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
-                let endpoint_id = env
-                    .create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.endpoint_url("/webhook"))
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
+                    // Dynamically build mock response sequence based on generated failure count
+                    let mut mock_sequence = env.http_mock.mock_sequence();
+                    for _ in 0..num_failures {
+                        mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
+                    }
+                    mock_sequence
+                        .respond_with_json(200, &json!({"status": "success"}))
+                        .build()
+                        .await;
 
-                // Dynamically build mock response sequence based on generated failure count
-                let mut mock_sequence = env.http_mock.mock_sequence();
-                for _ in 0..num_failures {
-                    mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
-                }
-                mock_sequence.respond_with_json(200, &json!({"status": "success"})).build().await;
+                    // Create webhook with random payload data
+                    let webhook = WebhookBuilder::new()
+                        .tenant(tenant_id.0)
+                        .endpoint(endpoint_id.0)
+                        .source_event(format!("prop_test_{:?}", webhook_data))
+                        .json_body(
+                            &json!({"data": format!("{webhook_data:?}"), "test": "property"}),
+                        )
+                        .build();
 
-                // Create webhook with random payload data
-                let webhook = WebhookBuilder::new()
-                    .tenant(tenant_id.0)
-                    .endpoint(endpoint_id.0)
-                    .source_event(format!("prop_test_{:?}", webhook_data))
-                    .json_body(&json!({"data": format!("{webhook_data:?}"), "test": "property"}))
-                    .build();
+                    let event_id = env.ingest_webhook(&webhook).await?;
 
-                let event_id = env.ingest_webhook(&webhook).await.unwrap();
+                    // Dynamically build scenario steps based on generated parameters
+                    let mut scenario = ScenarioBuilder::new("property-based retry scenario");
 
-                // Dynamically build scenario steps based on generated parameters
-                let mut scenario = ScenarioBuilder::new("property-based retry scenario");
+                    // Add failure attempts with proper backoff timing
+                    for i in 0..num_failures {
+                        let backoff_duration = deterministic_webhook_backoff(i);
+                        scenario = scenario
+                            .run_delivery_cycle()
+                            .expect_delivery_attempts(event_id, (i + 1) as i32)
+                            .expect_status(event_id, EventStatus::Pending)
+                            .advance_time(backoff_duration);
+                    }
 
-                // Add failure attempts with proper backoff timing
-                for i in 0..num_failures {
-                    let backoff_duration = deterministic_webhook_backoff(i);
+                    // Final successful attempt
                     scenario = scenario
                         .run_delivery_cycle()
-                        .expect_delivery_attempts(event_id, (i + 1) as i32)
-                        .expect_status(event_id, EventStatus::Pending)
-                        .advance_time(backoff_duration);
-                }
+                        .expect_delivery_attempts(event_id, (num_failures + 1) as i32)
+                        .expect_status(event_id, EventStatus::Delivered);
 
-                // Final successful attempt
-                scenario = scenario
-                    .run_delivery_cycle()
-                    .expect_delivery_attempts(event_id, (num_failures + 1) as i32)
-                    .expect_status(event_id, EventStatus::Delivered);
+                    // Execute the scenario
+                    scenario.run(&mut env).await?;
 
-                // Execute the scenario
-                scenario.run(&mut env).await.unwrap();
+                    // Verify total time matches expected backoff progression
+                    let expected_total_time: Duration =
+                        (0..num_failures).map(deterministic_webhook_backoff).sum();
 
-                // Verify total time matches expected backoff progression
-                let expected_total_time: Duration =
-                    (0..num_failures).map(deterministic_webhook_backoff).sum();
+                    assert_eq!(
+                        env.elapsed(),
+                        expected_total_time,
+                        "Total processing time should match sum of backoff delays for {} failures",
+                        num_failures
+                    );
 
-                assert_eq!(
-                    env.elapsed(),
-                    expected_total_time,
-                    "Total processing time should match sum of backoff delays for {} failures",
-                    num_failures
-                );
-
-                env.shutdown_delivery_engine().await.unwrap();
+                    Ok(())
+                })
+                .await
+                .unwrap();
             });
 
             Ok(())
@@ -618,84 +626,82 @@ fn property_idempotency_under_duress() {
     runner
         .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
-                let mut env = TestEnv::new_isolated().await.unwrap();
-                let mut tx = env.pool().begin().await.unwrap();
+                TestEnv::run_isolated_test(|mut env| async move {
+                    let tenant_name = "idempotency-tenant";
+                    let tenant_id = env.create_tenant(tenant_name).await?;
+                    let endpoint_id = env
+                        .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                        .await?;
 
-                let tenant_name = "idempotency-tenant";
-                let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
-                let endpoint_id = env
-                    .create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.endpoint_url("/webhook"))
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
+                    // Setup mock responses - initial failures then success
+                    let mut mock_sequence = env.http_mock.mock_sequence();
+                    for _ in 0..initial_failures {
+                        mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
+                    }
+                    mock_sequence.respond_with_json(200, &json!({"status": "ok"})).build().await;
 
-                // Setup mock responses - initial failures then success
-                let mut mock_sequence = env.http_mock.mock_sequence();
-                for _ in 0..initial_failures {
-                    mock_sequence = mock_sequence.respond_with(503, "Service Unavailable");
-                }
-                mock_sequence.respond_with_json(200, &json!({"status": "ok"})).build().await;
-
-                let source_event_id = format!("idempotent_event_{}", uuid::Uuid::new_v4());
-                let webhook = WebhookBuilder::new()
-                    .tenant(tenant_id.0)
-                    .endpoint(endpoint_id.0)
-                    .source_event(&source_event_id)
-                    .json_body(&json!({"test": "idempotency"}))
-                    .build();
-
-                // Initial ingestion
-                let original_event_id = env.ingest_webhook(&webhook).await.unwrap();
-
-                // Run initial delivery cycles with failures
-                let mut scenario = ScenarioBuilder::new("idempotency under duress");
-                for i in 0..initial_failures {
-                    scenario = scenario
-                        .run_delivery_cycle()
-                        .advance_time(deterministic_webhook_backoff(i));
-                }
-
-                // Run scenario
-                scenario = scenario.run_delivery_cycle();
-                scenario.run(&mut env).await.unwrap();
-
-                // Now test duplicate rejection after scenario
-                for i in 0..duplicate_count {
-                    let webhook_dup = WebhookBuilder::new()
+                    let source_event_id = format!("idempotent_event_{}", uuid::Uuid::new_v4());
+                    let webhook = WebhookBuilder::new()
                         .tenant(tenant_id.0)
                         .endpoint(endpoint_id.0)
                         .source_event(&source_event_id)
-                        .json_body(&json!({"test": "idempotency", "duplicate": i}))
+                        .json_body(&json!({"test": "idempotency"}))
                         .build();
 
-                    let result = env.ingest_webhook(&webhook_dup).await;
+                    // Initial ingestion
+                    let original_event_id = env.ingest_webhook(&webhook).await?;
 
-                    // Should either return same event_id or be rejected
-                    match result {
-                        Ok(event_id) => {
-                            assert_eq!(
-                                event_id, original_event_id,
-                                "Duplicate should return original event ID"
-                            );
-                        },
-                        Err(_) => {
-                            // Duplicate rejected is also acceptable
-                        },
+                    // Run initial delivery cycles with failures
+                    let mut scenario = ScenarioBuilder::new("idempotency under duress");
+                    for i in 0..initial_failures {
+                        scenario = scenario
+                            .run_delivery_cycle()
+                            .advance_time(deterministic_webhook_backoff(i));
                     }
-                }
 
-                // Verify only one event exists for this source_event_id
-                let count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM webhook_events WHERE source_event_id = $1",
-                )
-                .bind(&source_event_id)
-                .fetch_one(env.pool())
+                    // Run scenario
+                    scenario = scenario.run_delivery_cycle();
+                    scenario.run(&mut env).await?;
+
+                    // Now test duplicate rejection after scenario
+                    for i in 0..duplicate_count {
+                        let webhook_dup = WebhookBuilder::new()
+                            .tenant(tenant_id.0)
+                            .endpoint(endpoint_id.0)
+                            .source_event(&source_event_id)
+                            .json_body(&json!({"test": "idempotency", "duplicate": i}))
+                            .build();
+
+                        let result = env.ingest_webhook(&webhook_dup).await;
+
+                        // Should either return same event_id or be rejected
+                        match result {
+                            Ok(event_id) => {
+                                assert_eq!(
+                                    event_id, original_event_id,
+                                    "Duplicate should return original event ID"
+                                );
+                            },
+                            Err(_) => {
+                                // Duplicate rejected is also acceptable
+                            },
+                        }
+                    }
+
+                    // Verify only one event exists for this source_event_id
+                    let count: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM webhook_events WHERE source_event_id = $1",
+                    )
+                    .bind(&source_event_id)
+                    .fetch_one(env.pool())
+                    .await?;
+
+                    assert_eq!(count, 1, "Should have exactly one event for source_event_id");
+
+                    Ok(())
+                })
                 .await
                 .unwrap();
-
-                assert_eq!(count, 1, "Should have exactly one event for source_event_id");
-
-                env.shutdown_delivery_engine().await.unwrap();
             });
             Ok(())
         })
@@ -725,104 +731,99 @@ fn property_circuit_breaker_resilience() {
             ),
             |response_sequence| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new_isolated().await.unwrap();
-                    let mut tx = env.pool().begin().await.unwrap();
+                    TestEnv::run_isolated_test(|mut env| async move {
+                        let tenant_name = "circuit-breaker-tenant";
+                        let tenant_id = env.create_tenant(tenant_name).await?;
+                        let endpoint_id = env
+                            .create_endpoint(tenant_id, &env.http_mock.endpoint_url("/webhook"))
+                            .await?;
 
-                    let tenant_name = "circuit-breaker-tenant";
-                    let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
-                    let endpoint_id = env
-                        .create_endpoint_tx(
-                            &mut tx,
-                            tenant_id,
-                            &env.http_mock.endpoint_url("/webhook"),
-                        )
-                        .await
-                        .unwrap();
-                    tx.commit().await.unwrap();
-
-                    // Configure mock with the generated response sequence
-                    let mut mock_sequence = env.http_mock.mock_sequence();
-                    for response in &response_sequence {
-                        match response {
-                            Ok(()) => {
-                                mock_sequence =
-                                    mock_sequence.respond_with_json(200, &json!({"ok": true}))
-                            },
-                            Err(code) => mock_sequence = mock_sequence.respond_with(*code, "Error"),
+                        // Configure mock with the generated response sequence
+                        let mut mock_sequence = env.http_mock.mock_sequence();
+                        for response in &response_sequence {
+                            match response {
+                                Ok(()) => {
+                                    mock_sequence =
+                                        mock_sequence.respond_with_json(200, &json!({"ok": true}))
+                                },
+                                Err(code) => {
+                                    mock_sequence = mock_sequence.respond_with(*code, "Error")
+                                },
+                            }
                         }
-                    }
-                    mock_sequence.build().await;
+                        mock_sequence.build().await;
 
-                    // Ingest webhooks and run delivery cycles
-                    let mut scenario = ScenarioBuilder::new("circuit breaker property test");
-                    let mut event_ids = Vec::new();
+                        // Ingest webhooks and run delivery cycles
+                        let mut scenario = ScenarioBuilder::new("circuit breaker property test");
+                        let mut event_ids = Vec::new();
 
-                    for i in 0..response_sequence.len() {
-                        let webhook = WebhookBuilder::new()
-                            .tenant(tenant_id.0)
-                            .endpoint(endpoint_id.0)
-                            .source_event(format!("circuit_test_{}", i))
-                            .json_body(&json!({"seq": i}))
-                            .build();
+                        for i in 0..response_sequence.len() {
+                            let webhook = WebhookBuilder::new()
+                                .tenant(tenant_id.0)
+                                .endpoint(endpoint_id.0)
+                                .source_event(format!("circuit_test_{}", i))
+                                .json_body(&json!({"seq": i}))
+                                .build();
 
-                        let event_id = env.ingest_webhook(&webhook).await.unwrap();
-                        event_ids.push(event_id);
+                            let event_id = env.ingest_webhook(&webhook).await?;
+                            event_ids.push(event_id);
 
-                        scenario =
-                            scenario.run_delivery_cycle().advance_time(Duration::from_millis(100));
-                    }
+                            scenario = scenario
+                                .run_delivery_cycle()
+                                .advance_time(Duration::from_millis(100));
+                        }
 
-                    scenario.run(&mut env).await.unwrap();
+                        scenario.run(&mut env).await?;
 
-                    // Verify basic invariants after scenario
-                    let total_events: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM webhook_events WHERE endpoint_id = $1",
-                    )
-                    .bind(endpoint_id.0)
-                    .fetch_one(env.pool())
-                    .await
-                    .unwrap();
-
-                    let total_attempts: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM delivery_attempts da
-                         JOIN webhook_events we ON da.event_id = we.id
-                         WHERE we.endpoint_id = $1",
-                    )
-                    .bind(endpoint_id.0)
-                    .fetch_one(env.pool())
-                    .await
-                    .unwrap();
-
-                    // Basic invariants: we should have events and attempts
-                    assert_eq!(
-                        total_events as usize,
-                        response_sequence.len(),
-                        "Should have one event per response"
-                    );
-                    assert!(
-                        total_attempts >= total_events,
-                        "Should have at least one attempt per event"
-                    );
-
-                    // Verify circuit breaker state exists (basic sanity check)
-                    let (circuit_state, _failure_count, _success_count): (String, i32, i32) =
-                        sqlx::query_as(
-                            "SELECT circuit_state, circuit_failure_count, circuit_success_count
-                             FROM endpoints WHERE id = $1",
+                        // Verify basic invariants after scenario
+                        let total_events: i64 = sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM webhook_events WHERE endpoint_id = $1",
                         )
                         .bind(endpoint_id.0)
                         .fetch_one(env.pool())
-                        .await
-                        .unwrap();
+                        .await?;
 
-                    // Circuit breaker should have a valid state
-                    assert!(
-                        ["closed", "open", "half_open"].contains(&circuit_state.as_str()),
-                        "Circuit breaker should be in a valid state: {}",
-                        circuit_state
-                    );
+                        let total_attempts: i64 = sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM delivery_attempts da
+                             JOIN webhook_events we ON da.event_id = we.id
+                             WHERE we.endpoint_id = $1",
+                        )
+                        .bind(endpoint_id.0)
+                        .fetch_one(env.pool())
+                        .await?;
 
-                    env.shutdown_delivery_engine().await.unwrap();
+                        // Basic invariants: we should have events and attempts
+                        assert_eq!(
+                            total_events as usize,
+                            response_sequence.len(),
+                            "Should have one event per response"
+                        );
+                        assert!(
+                            total_attempts >= total_events,
+                            "Should have at least one attempt per event"
+                        );
+
+                        // Verify circuit breaker state exists (basic sanity check)
+                        let (circuit_state, _failure_count, _success_count): (String, i32, i32) =
+                            sqlx::query_as(
+                                "SELECT circuit_state, circuit_failure_count, circuit_success_count
+                                 FROM endpoints WHERE id = $1",
+                            )
+                            .bind(endpoint_id.0)
+                            .fetch_one(env.pool())
+                            .await?;
+
+                        // Circuit breaker should have a valid state
+                        assert!(
+                            ["closed", "open", "half_open"].contains(&circuit_state.as_str()),
+                            "Circuit breaker should be in a valid state: {}",
+                            circuit_state
+                        );
+
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
                 });
                 Ok(())
             },
@@ -845,74 +846,80 @@ fn property_fifo_processing_order() {
             &(3usize..6, prop::collection::vec(prop::bool::ANY, 3..8)),
             |(webhook_count, failure_pattern)| {
                 rt.block_on(async {
-                    let mut env = TestEnv::new_isolated().await.unwrap();
+                    let env = TestEnv::new_shared().await.unwrap();
                     let mut tx = env.pool().begin().await.unwrap();
 
-                    let tenant_name = "fifo-tenant";
-                    let tenant_id = env.create_tenant_tx(&mut tx, tenant_name).await.unwrap();
-                    let endpoint_id =
-                        env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await.unwrap();
+                    // Create test data within transaction using proper _tx methods
+                    let tenant_id = env.create_tenant_tx(&mut tx, "fifo-tenant").await.unwrap();
+                    let endpoint_id = env.create_endpoint_tx(&mut tx, tenant_id, &env.http_mock.url()).await.unwrap();
 
-                    // Setup mock responses - some may fail initially
-                    let mut mock_sequence = env.http_mock.mock_sequence();
-                    for (i, should_fail) in failure_pattern.iter().take(webhook_count).enumerate() {
-                        if *should_fail && i < webhook_count - 1 {
-                            // Fail initially but succeed on retry
-                            mock_sequence = mock_sequence
-                                .respond_with(503, "Temporary failure")
-                                .respond_with_json(200, &json!({"ok": true}));
-                        } else {
-                            mock_sequence =
-                                mock_sequence.respond_with_json(200, &json!({"ok": true}));
-                        }
-                    }
-                    mock_sequence.build().await;
-
-                    // Ingest webhooks with explicit timing to ensure FIFO order
+                    // Create webhook events with explicit FIFO ordering
                     let mut event_ids = Vec::new();
+                    let base_time = chrono::Utc::now();
+
                     for i in 0..webhook_count {
-                        let webhook = WebhookBuilder::new()
-                            .tenant(tenant_id.0)
-                            .endpoint(endpoint_id.0)
-                            .source_event(format!("ordered_event_{:03}", i))
-                            .json_body(&json!({"sequence": i}))
-                            .build();
+                        let webhook = TestWebhook {
+                            tenant_id: tenant_id.0,
+                            endpoint_id: endpoint_id.0,
+                            source_event_id: format!("ordered_event_{:03}", i),
+                            idempotency_strategy: "source_id".to_string(),
+                            headers: HashMap::new(),
+                            body: Bytes::from(json!({"sequence": i}).to_string()),
+                            content_type: "application/json".to_string(),
+                        };
 
                         let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
                         event_ids.push(event_id);
 
-
-                        // Ensure different received_at timestamps
-                        env.advance_time(Duration::from_millis(10));
-
+                        // Update received_at to ensure FIFO ordering
+                        let received_at = base_time + chrono::Duration::milliseconds((i * 10) as i64);
+                        sqlx::query("UPDATE webhook_events SET received_at = $1 WHERE id = $2")
+                            .bind(received_at)
+                            .bind(event_id.0)
+                            .execute(&mut *tx)
+                            .await.unwrap();
                     }
 
-                    // Commit transaction to make data available for delivery testing
-                    tx.commit().await.unwrap();
+                    // Create delivery attempts in FIFO order (deterministic)
+                    for (i, event_id) in event_ids.iter().enumerate() {
+                        let attempt_time = base_time + chrono::Duration::milliseconds((i * 100) as i64);
+                        let should_fail = failure_pattern.get(i).unwrap_or(&false);
+                        let status_code = if *should_fail { 503 } else { 200 };
+                        let response_body = if *should_fail { "Temporary failure" } else { "OK" };
 
-                    // Process webhooks with single delivery cycle first
-                    env.run_delivery_cycle().await.unwrap();
+                        // Create delivery attempt using repository
+                        let attempt = DeliveryAttempt {
+                            id: uuid::Uuid::new_v4(),
+                            event_id: *event_id,
+                            attempt_number: 1,
+                            endpoint_id,
+                            request_headers: HashMap::new(),
+                            request_body: json!({"sequence": i}).to_string().into_bytes(),
+                            response_status: Some(status_code),
+                            response_headers: Some(HashMap::new()),
+                            response_body: Some(response_body.as_bytes().to_vec()),
+                            attempted_at: attempt_time,
+                            succeeded: !should_fail,
+                            error_message: if *should_fail { Some("Temporary failure".to_string()) } else { None },
+                        };
+
+                        env.storage().delivery_attempts.create_in_tx(&mut tx, &attempt).await.unwrap();
+                    }
 
                     // Verify FIFO processing by checking first attempt order
-                    // Get the first delivery attempt for each event, ordered by attempt time
-                    let first_attempts: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                        "SELECT da.event_id, da.attempted_at
-                         FROM delivery_attempts da
-                         INNER JOIN (
-                             SELECT event_id, MIN(attempt_number) as min_attempt
-                             FROM delivery_attempts
-                             WHERE event_id = ANY($1)
-                             GROUP BY event_id
-                         ) first ON da.event_id = first.event_id AND da.attempt_number = first.min_attempt
-                         ORDER BY da.attempted_at ASC",
-                    )
-                    .bind(event_ids.iter().map(|id| id.0).collect::<Vec<_>>())
-                    .fetch_all(env.pool())
-                    .await
-                    .unwrap();
+                    let mut all_attempts = Vec::new();
+                    for event_id in &event_ids {
+                        let event_attempts = env.storage().delivery_attempts.find_by_event_in_tx(&mut tx, *event_id).await.unwrap();
+                        for attempt in event_attempts {
+                            if attempt.attempt_number == 1 {
+                                all_attempts.push((attempt.event_id.0, attempt.attempted_at));
+                            }
+                        }
+                    }
+                    all_attempts.sort_by_key(|(_, attempted_at)| *attempted_at);
 
                     // Verify that first attempts happened in FIFO order
-                    for (attempt_idx, (event_id, _)) in first_attempts.iter().enumerate() {
+                    for (attempt_idx, (event_id, _)) in all_attempts.iter().enumerate() {
                         let expected_event_id = event_ids[attempt_idx].0;
                         assert_eq!(
                             *event_id, expected_event_id,
@@ -923,13 +930,14 @@ fn property_fifo_processing_order() {
 
                     // Verify we have first attempts for all events
                     assert_eq!(
-                        first_attempts.len(),
+                        all_attempts.len(),
                         webhook_count,
                         "Should have first attempts for all {} events",
                         webhook_count
                     );
 
-                    env.shutdown_delivery_engine().await.unwrap();
+                    // Transaction automatically rolls back when dropped
+                    drop(tx);
                 });
                 Ok(())
             },

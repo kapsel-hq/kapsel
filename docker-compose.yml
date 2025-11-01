@@ -33,14 +33,56 @@ services:
       POSTGRES_DB: kapsel_test
     tmpfs:
       - /var/lib/postgresql/data:size=2g
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
     command:
       - postgres
+      # Connection settings
+      - -c
+      - max_connections=1000
+      # Performance settings for tmpfs
       - -c
       - fsync=off
       - -c
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+      - -c
+      - checkpoint_timeout=30min
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=64MB
+      # Memory settings optimized for tests
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - effective_cache_size=1536MB
+      # Planner settings for fast queries
+      - -c
+      - random_page_cost=1.0
+      - -c
+      - seq_page_cost=1.0
+      - -c
+      - cpu_tuple_cost=0.01
+      # Disable logging for maximum speed
+      - -c
+      - log_statement=none
+      - -c
+      - log_duration=off
+      - -c
+      - log_checkpoints=off
+      # Additional speed optimizations
+      - -c
+      - autovacuum=off
+      - -c
+      - track_activities=off
+      - -c
+      - track_counts=off
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

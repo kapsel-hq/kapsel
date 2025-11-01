@@ -14,7 +14,7 @@ use kapsel_testing::TestEnv;
 
 #[tokio::test]
 async fn attestation_tables_exist() {
-    let env = TestEnv::new().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let pool = env.pool();
 
     // Verify all 4 attestation tables exist
@@ -32,7 +32,7 @@ async fn attestation_tables_exist() {
 
 #[tokio::test]
 async fn only_one_active_attestation_key_allowed() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Deactivate any existing active keys within this transaction
@@ -70,7 +70,7 @@ async fn only_one_active_attestation_key_allowed() {
 
 #[tokio::test]
 async fn merkle_leaves_enforces_constraints() {
-    let env = TestEnv::new_isolated().await.unwrap();
+    let env = TestEnv::new_shared().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Create test delivery attempt

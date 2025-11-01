@@ -171,10 +171,41 @@ impl MerkleService {
     ///
     /// # Errors
     ///
-    /// Returns `AttestationError::BatchCommitFailed` if database transaction
+    /// Returns error if database operations fail, tree construction
+    /// fails or tree operations are invalid.
+    pub async fn try_commit_pending(&mut self) -> Result<SignedTreeHead> {
+        let mut tx = self
+            .storage
+            .webhook_events
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| AttestationError::Database { source: e })?;
+
+        let result = self.try_commit_pending_in_tx(&mut tx).await?;
+
+        tx.commit().await.map_err(|e| AttestationError::Database { source: e })?;
+
+        // Ordering matters: only clear queue after transaction commits successfully
+        self.pending.clear();
+
+        Ok(result)
+    }
+
+    /// Commit pending leaves to the Merkle tree within provided transaction.
+    ///
+    /// Transaction-aware version for shared database testing. The caller is
+    /// responsible for committing or rolling back the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database operations fail, tree construction
     /// fails or tree operations are invalid.
     #[allow(clippy::too_many_lines)]
-    pub async fn try_commit_pending(&mut self) -> Result<SignedTreeHead> {
+    pub async fn try_commit_pending_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<SignedTreeHead> {
         if self.pending.is_empty() {
             return Err(AttestationError::BatchCommitFailed {
                 reason: "no pending leaves to commit".to_string(),
@@ -184,27 +215,19 @@ impl MerkleService {
         let batch_size = self.pending.len();
         let batch_id = uuid::Uuid::new_v4();
 
-        let mut tx = self
-            .storage
-            .webhook_events
-            .pool()
-            .begin()
-            .await
-            .map_err(|e| AttestationError::Database { source: e })?;
-
         // Acquire advisory lock to serialize tree commits and prevent concurrent
         // tree_index conflicts
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(self.lock_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| AttestationError::Database { source: e })?;
 
         // Get current tree size from database atomically within transaction
         let current_tree_size: i64 =
-            self.storage.signed_tree_heads.find_max_tree_size_in_tx(&mut tx).await.map_err(
-                |e| AttestationError::batch_commit_failed(format!("failed to get tree size: {e}")),
-            )?;
+            self.storage.signed_tree_heads.find_max_tree_size_in_tx(tx).await.map_err(|e| {
+                AttestationError::batch_commit_failed(format!("failed to get tree size: {e}"))
+            })?;
 
         let new_tree_size = current_tree_size
             + i64::try_from(batch_size)
@@ -220,16 +243,14 @@ impl MerkleService {
 
         // Load existing leaves if any
         if current_tree_size > 0 {
-            let existing_hashes: Vec<Vec<u8>> = self
-                .storage
-                .merkle_leaves
-                .find_committed_leaf_hashes_in_tx(&mut tx)
-                .await
-                .map_err(|e| {
-                    AttestationError::batch_commit_failed(format!(
-                        "failed to load existing leaves: {e}"
-                    ))
-                })?;
+            let existing_hashes: Vec<Vec<u8>> =
+                self.storage.merkle_leaves.find_committed_leaf_hashes_in_tx(tx).await.map_err(
+                    |e| {
+                        AttestationError::batch_commit_failed(format!(
+                            "failed to load existing leaves: {e}"
+                        ))
+                    },
+                )?;
 
             let mut existing_32: Vec<[u8; 32]> = Vec::new();
             for hash in existing_hashes {
@@ -258,7 +279,7 @@ impl MerkleService {
         let start_index = current_tree_size;
         for (i, leaf) in self.pending.iter().enumerate() {
             self.insert_leaf(
-                &mut tx,
+                tx,
                 leaf,
                 &leaf_hashes[i],
                 batch_id,
@@ -284,14 +305,9 @@ impl MerkleService {
         .bind(self.signing.key_id())
         .bind(batch_id)
         .bind(i32::try_from(batch_size).unwrap_or(i32::MAX))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| AttestationError::Database { source: e })?;
-
-        tx.commit().await.map_err(|e| AttestationError::Database { source: e })?;
-
-        // Ordering matters: only clear queue after transaction commits successfully
-        self.pending.clear();
 
         Ok(SignedTreeHead {
             tree_size: u64::try_from(tree_size).unwrap_or(0),
@@ -300,6 +316,14 @@ impl MerkleService {
             signature,
             key_id: self.signing.key_id(),
         })
+    }
+
+    /// Clear the pending queue after successful transaction commit.
+    ///
+    /// This should only be called after `try_commit_pending_in_tx` has
+    /// successfully committed to avoid losing pending leaves.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// Insert a single leaf into the database.

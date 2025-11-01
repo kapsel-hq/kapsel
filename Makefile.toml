@@ -74,7 +74,7 @@ args = ["clean"]
 description = "Start postgres-test database"
 script = '''
 echo "Starting postgres-test database..."
-docker-compose up -d postgres-test
+docker compose up -d postgres-test
 echo "Waiting for database..."
 timeout 30 sh -c 'until docker exec kapsel-postgres-test pg_isready -U postgres; do sleep 1; done'
 echo "Running migrations..."
@@ -84,16 +84,16 @@ echo "Database ready: $DATABASE_URL"
 
 [tasks.db-stop]
 description = "Stop postgres-test database"
-command = "docker-compose"
+command = "docker compose"
 args = ["stop", "postgres-test"]
 
 [tasks.db-reset]
 description = "Reset postgres-test database"
 script = '''
 echo "Resetting database..."
-docker-compose stop postgres-test
-docker-compose rm -f postgres-test
-docker-compose up -d postgres-test
+docker compose stop postgres-test
+docker compose rm -f postgres-test
+docker compose up -d postgres-test
 timeout 30 sh -c 'until docker exec kapsel-postgres-test pg_isready -U postgres; do sleep 1; done'
 sqlx migrate run
 echo "Database reset complete"

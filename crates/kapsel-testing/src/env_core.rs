@@ -33,7 +33,7 @@ impl Default for TestEnvBuilder {
             poll_interval: Duration::from_millis(100),
             shutdown_timeout: Duration::from_secs(5),
             enable_delivery_engine: true,
-            is_isolated: false,
+            is_isolated: false, // Default to shared database to prevent leaks
         }
     }
 }
@@ -80,9 +80,22 @@ impl TestEnvBuilder {
     }
 
     /// Use isolated database for this test environment.
+    ///
+    /// Creates a dedicated PostgreSQL database for this test. Each database
+    /// consumes ~8MB memory. Only use when tests require background workers,
+    /// API endpoints, or testing COMMIT behavior.
     #[must_use]
     pub fn isolated(mut self) -> Self {
         self.is_isolated = true;
+        self
+    }
+
+    /// Use shared database for this test environment (default).
+    ///
+    /// This is already the default behavior. Method provided for explicitness.
+    #[must_use]
+    pub fn shared(mut self) -> Self {
+        self.is_isolated = false;
         self
     }
 
@@ -162,15 +175,66 @@ impl TestEnvBuilder {
 }
 
 impl TestEnv {
-    /// Create test environment with shared database and transaction isolation.
+    /// Create test environment with ISOLATED database.
+    ///
+    /// Creates a dedicated PostgreSQL database for this test. This is the
+    /// default behavior for backward compatibility with existing tests.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use kapsel_testing::TestEnv;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let env = TestEnv::new().await?;
+    /// let webhook = kapsel_testing::fixtures::WebhookBuilder::new()
+    ///     .tenant(uuid::Uuid::new_v4())
+    ///     .endpoint(uuid::Uuid::new_v4())
+    ///     .build();
+    ///
+    /// // Can commit directly to the isolated database
+    /// let event = env.ingest_webhook(&webhook).await?;
+    ///
+    /// // Background workers can see the committed data
+    /// env.process_batch().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn new() -> Result<Self> {
         TestEnvBuilder::new().build().await
     }
 
-    /// Create test environment with isolated database for tests requiring
-    /// committed data.
+    /// Create test environment with SHARED database pool.
+    ///
+    /// Uses a single shared database (`kapsel_test`) with transaction-based
+    /// isolation. Tests should begin a transaction and let it roll back at
+    /// the end for automatic cleanup. Recommended for repository/service tests
+    /// that don't need background workers.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use kapsel_testing::TestEnv;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let env = TestEnv::new_shared().await?;
+    /// let mut tx = env.pool().begin().await?;
+    ///
+    /// // All operations use the transaction
+    /// let tenant = env.create_tenant_tx(&mut tx, "test").await?;
+    ///
+    /// // Transaction automatically rolls back when dropped
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn new_shared() -> Result<Self> {
+        TestEnvBuilder::new().shared().build().await
+    }
+
+    /// Create test environment with fully ISOLATED database.
+    ///
+    /// Alias for `new()` for explicitness. Creates a dedicated PostgreSQL
+    /// database for this test.
     pub async fn new_isolated() -> Result<Self> {
-        TestEnvBuilder::new().isolated().build().await
+        Self::new().await
     }
 
     /// Creates a builder for advanced TestEnv configuration.

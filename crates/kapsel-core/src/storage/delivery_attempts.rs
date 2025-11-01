@@ -174,6 +174,33 @@ impl Repository {
         Ok(attempt)
     }
 
+    /// Finds the latest delivery attempt for an event within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_latest_by_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+    ) -> Result<Option<DeliveryAttempt>> {
+        let attempt = sqlx::query_as::<_, DeliveryAttempt>(
+            r"
+            SELECT id, event_id, attempt_number, endpoint_id,
+                   request_headers, request_body,
+                   response_status, response_headers, response_body,
+                   error_message, succeeded, attempted_at
+            FROM delivery_attempts
+            WHERE event_id = $1
+            ORDER BY attempt_number DESC
+            LIMIT 1
+            ",
+        )
+        .bind(event_id.0)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(attempt)
+    }
+
     /// Counts total delivery attempts for an event.
     ///
     /// # Errors
@@ -444,6 +471,153 @@ impl Repository {
         .bind(endpoint_id.0)
         .bind(limit.unwrap_or(100))
         .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(attempts)
+    }
+
+    /// Counts total delivery attempts for an event within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_by_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM delivery_attempts
+            WHERE event_id = $1
+            ",
+        )
+        .bind(event_id.0)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Counts successful delivery attempts for an event within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn count_successful_by_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        event_id: EventId,
+    ) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            r"
+            SELECT COUNT(*) FROM delivery_attempts
+            WHERE event_id = $1 AND succeeded = true
+            ",
+        )
+        .bind(event_id.0)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(count.0)
+    }
+
+    /// Calculates success rate for an endpoint within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn success_rate_by_endpoint_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<f64> {
+        let query = if since.is_some() {
+            r"
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE succeeded = true) as successful
+            FROM delivery_attempts
+            WHERE endpoint_id = $1 AND attempted_at >= $2
+            "
+        } else {
+            r"
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE succeeded = true) as successful
+            FROM delivery_attempts
+            WHERE endpoint_id = $1
+            "
+        };
+
+        let row: (i64, i64) = if let Some(since_time) = since {
+            sqlx::query_as(query).bind(endpoint_id.0).bind(since_time).fetch_one(&mut **tx).await?
+        } else {
+            sqlx::query_as(query).bind(endpoint_id.0).fetch_one(&mut **tx).await?
+        };
+
+        let (total, successful) = row;
+        if total == 0 {
+            Ok(0.0)
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            Ok(successful as f64 / total as f64)
+        }
+    }
+
+    /// Finds delivery attempts by endpoint within a transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_by_endpoint_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        limit: Option<i64>,
+    ) -> Result<Vec<DeliveryAttempt>> {
+        let attempts = sqlx::query_as::<_, DeliveryAttempt>(
+            r"
+            SELECT id, event_id, attempt_number, endpoint_id,
+                   request_headers, request_body,
+                   response_status, response_headers, response_body,
+                   attempted_at, succeeded, error_message
+            FROM delivery_attempts
+            WHERE endpoint_id = $1
+            ORDER BY attempted_at DESC
+            LIMIT $2
+            ",
+        )
+        .bind(endpoint_id.0)
+        .bind(limit.unwrap_or(100))
+        .fetch_all(&mut **tx)
+        .await?;
+
+        Ok(attempts)
+    }
+
+    /// Finds recent failed delivery attempts for an endpoint within a
+    /// transaction.
+    ///
+    /// Returns error if query fails.
+    pub async fn find_recent_failures_by_endpoint_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        endpoint_id: EndpointId,
+        since: DateTime<Utc>,
+        limit: Option<i64>,
+    ) -> Result<Vec<DeliveryAttempt>> {
+        let attempts = sqlx::query_as::<_, DeliveryAttempt>(
+            r"
+            SELECT id, event_id, attempt_number, endpoint_id,
+                   request_headers, request_body,
+                   response_status, response_headers, response_body,
+                   attempted_at, succeeded, error_message
+            FROM delivery_attempts
+            WHERE endpoint_id = $1
+              AND succeeded = false
+              AND attempted_at >= $2
+            ORDER BY attempted_at DESC
+            LIMIT $3
+            ",
+        )
+        .bind(endpoint_id.0)
+        .bind(since)
+        .bind(limit.unwrap_or(100))
+        .fetch_all(&mut **tx)
         .await?;
 
         Ok(attempts)

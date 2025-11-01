@@ -281,23 +281,26 @@ async fn complete_webhook_reliability_workflow() {
 
 /// Example test demonstrating transaction-based isolation pattern.
 ///
-/// This test shows how to use database transactions for perfect test isolation.
-/// The transaction automatically rolls back when dropped, cleaning up all test
-/// data.
+/// This test shows how to use the shared database with transactions for
+/// perfect test isolation. The transaction automatically rolls back when
+/// dropped, cleaning up all test data without affecting other tests.
 #[tokio::test]
 async fn example_transaction_based_test() {
-    let env = kapsel_testing::TestEnv::new().await.unwrap();
+    let env = kapsel_testing::TestEnv::new_shared().await.unwrap();
     let mut tx = env.pool().begin().await.unwrap();
 
     // Test data created in transaction
     let tenant_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO tenants (id, name, tier) VALUES ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind("example-tenant")
-        .bind("free")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tenants (id, name, tier, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())",
+    )
+    .bind(tenant_id)
+    .bind(format!("example-tenant-{}", tenant_id.simple()))
+    .bind("free")
+    .execute(&mut *tx)
+    .await
+    .unwrap();
 
     // Verify data exists within transaction
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
@@ -308,6 +311,16 @@ async fn example_transaction_based_test() {
 
     assert_eq!(count, 1);
 
-    // Explicit rollback to prevent connection leak
-    tx.rollback().await.unwrap();
+    // Transaction automatically rolls back when dropped
+    // No explicit rollback needed, but we can be explicit for clarity
+    drop(tx);
+
+    // Verify data was rolled back (no longer exists in database)
+    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_one(env.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(count_after, 0, "Data should not persist after transaction rollback");
 }
