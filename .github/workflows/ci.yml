@@ -49,21 +49,6 @@ jobs:
           - rust: nightly
             experimental: true
     continue-on-error: ${{ matrix.experimental == true }}
-    services:
-      postgres-test:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --tmpfs /var/lib/postgresql/data:size=2g
 
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +57,18 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
 
+      # Use Docker Compose for consistent database setup
+      - name: Start test database with Docker Compose
+        run: |
+          docker compose up -d postgres-test
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          until docker compose exec -T postgres-test pg_isready -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+
       - name: Install sqlx-cli
         run: |
           cargo install sqlx-cli \
@@ -79,16 +76,6 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
-
-      - name: Wait for PostgreSQL
-        run: |
-          until pg_isready -h localhost -p 5433 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-
-      - name: Run migrations
-        run: sqlx migrate run --database-url $DATABASE_URL
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
@@ -99,29 +86,30 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc --workspace
 
+      - name: Clean up Docker containers
+        if: always()
+        run: docker compose down
+
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
-    services:
-      postgres-test:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --tmpfs /var/lib/postgresql/data:size=2g
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # Use Docker Compose for consistent database setup
+      - name: Start test database with Docker Compose
+        run: |
+          docker compose up -d postgres-test
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          until docker compose exec -T postgres-test pg_isready -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
 
       - name: Install dependencies
         run: |
@@ -131,16 +119,6 @@ jobs:
             --features=${{ env.SQLX_FEATURES }} \
             --no-default-features \
             --locked
-
-      - name: Wait for PostgreSQL
-        run: |
-          until pg_isready -h localhost -p 5433 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-
-      - name: Run migrations
-        run: sqlx migrate run --database-url $DATABASE_URL
 
       - name: Install nextest
         uses: taiki-e/install-action@nextest
@@ -155,6 +133,10 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+
+      - name: Clean up Docker containers
+        if: always()
+        run: docker compose down
 
   security:
     name: Security Audit
@@ -195,27 +177,23 @@ jobs:
   sqlx-prepare:
     name: SQLx Prepare Check
     runs-on: ubuntu-latest
-    services:
-      postgres-test:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: kapsel_test
-          POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --shm-size=1g
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # Use Docker Compose for consistent database setup
+      - name: Start test database with Docker Compose
+        run: |
+          docker compose up -d postgres-test
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          until docker compose exec -T postgres-test pg_isready -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
 
       - name: Install sqlx-cli
         run: |
@@ -225,18 +203,12 @@ jobs:
             --no-default-features \
             --locked
 
-      - name: Wait for PostgreSQL
-        run: |
-          until pg_isready -h localhost -p 5433 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-
-      - name: Run migrations
-        run: sqlx migrate run --database-url $DATABASE_URL
-
       - name: Check sqlx prepare
         run: cargo sqlx prepare --check --workspace
+
+      - name: Clean up Docker containers
+        if: always()
+        run: docker compose down
 
   msrv:
     name: Minimum Supported Rust Version
