@@ -15,413 +15,395 @@ use kapsel_testing::{events::test_events, TestEnv};
 use uuid::Uuid;
 
 #[tokio::test]
-async fn storage_health_check() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
+async fn storage_health_check() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let storage = Storage::new(env.pool().clone(), &clock);
 
-    // Health check should succeed
-    assert!(storage.health_check().await.is_ok());
+        // Health check should succeed
+        assert!(storage.health_check().await.is_ok());
+
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
-async fn tenant_repository_crud_operations() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let mut tx = env.pool().begin().await.unwrap();
+async fn tenant_repository_crud_operations() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        // Create tenant - no transaction needed for isolated tests
+        let tenant_id = env.create_tenant("test-tenant").await?;
 
-    // Create tenant using transaction helper
-    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
+        // Test find by ID
+        let found = env.find_tenant_by_id(tenant_id).await?;
+        assert!(found.is_some());
+        let tenant = found.unwrap();
+        assert_eq!(tenant.id, tenant_id);
+        assert!(tenant.name.contains("test-tenant"));
 
-    // Test find by ID
-    let found = env.find_tenant_by_id_tx(&mut tx, tenant_id).await.unwrap();
-    assert!(found.is_some());
-    let tenant = found.unwrap();
-    assert_eq!(tenant.id, tenant_id);
-    assert!(tenant.name.contains("test-tenant"));
+        // Test find by name
+        let found_by_name = env.find_tenant_by_name(&tenant.name).await?;
+        assert!(found_by_name.is_some());
+        assert_eq!(found_by_name.unwrap().id, tenant_id);
 
-    // Test find by name
-    let found_by_name = env.find_tenant_by_name_tx(&mut tx, &tenant.name).await.unwrap();
-    assert!(found_by_name.is_some());
-    assert_eq!(found_by_name.unwrap().id, tenant_id);
+        // Test exists
+        assert!(env.tenant_exists(tenant_id).await?);
 
-    // Test exists
-    assert!(env.tenant_exists_tx(&mut tx, tenant_id).await.unwrap());
+        // Test name exists
+        assert!(env.tenant_name_exists(&tenant.name).await?);
 
-    // Test name exists
-    assert!(env.tenant_name_exists_tx(&mut tx, &tenant.name).await.unwrap());
+        // Test tier operations using helpers
+        let initial_tier = env.get_tenant_tier(tenant_id).await?;
+        assert_eq!(initial_tier, "free"); // default tier
 
-    // Test tier operations within transaction using helpers
-    let initial_tier = env.get_tenant_tier_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(initial_tier, "free"); // default tier
+        // Test update tier using helper
+        env.update_tenant_tier(tenant_id, "enterprise").await?;
 
-    // Test update tier using helper
-    env.update_tenant_tier_tx(&mut tx, tenant_id, "enterprise").await.unwrap();
+        let updated_tier = env.get_tenant_tier(tenant_id).await?;
+        assert_eq!(updated_tier, "enterprise");
 
-    let updated_tier = env.get_tenant_tier_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(updated_tier, "enterprise");
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
-async fn endpoint_repository_crud_operations() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let mut tx = env.pool().begin().await.unwrap();
+async fn endpoint_repository_crud_operations() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        // Create test data - no transaction needed for isolated tests
+        let tenant_id = env.create_tenant("test-tenant").await?;
+        let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
 
-    // Create test data within transaction
-    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
-    let endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        // Test find by ID
+        let found = env.find_endpoint_by_id(endpoint_id).await?;
+        assert!(found.is_some());
+        let endpoint = found.unwrap();
+        assert_eq!(endpoint.id, endpoint_id);
+        assert_eq!(endpoint.tenant_id, tenant_id);
+        assert_eq!(endpoint.url, "https://example.com/webhook");
+        assert!(endpoint.is_active);
 
-    // Test find by ID
-    let found = env.find_endpoint_by_id_tx(&mut tx, endpoint_id).await.unwrap();
-    assert!(found.is_some());
-    let endpoint = found.unwrap();
-    assert_eq!(endpoint.id, endpoint_id);
-    assert_eq!(endpoint.tenant_id, tenant_id);
-    assert_eq!(endpoint.url, "https://example.com/webhook");
-    assert!(endpoint.is_active);
+        // Test find by tenant
+        let endpoints = env.find_endpoints_by_tenant(tenant_id).await?;
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].id, endpoint_id);
 
-    // Test find by tenant
-    let endpoints = env.find_endpoints_by_tenant_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(endpoints.len(), 1);
-    assert_eq!(endpoints[0].id, endpoint_id);
+        // Test find active by tenant
+        let active = env.find_active_endpoints_by_tenant(tenant_id).await?;
+        assert_eq!(active.len(), 1);
 
-    // Test find active by tenant
-    let active = env.find_active_endpoints_by_tenant_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(active.len(), 1);
+        // Test set enabled/disabled
+        env.set_endpoint_enabled(endpoint_id, false).await?;
+        let disabled = env.find_endpoint_by_id(endpoint_id).await?.unwrap();
+        assert!(!disabled.is_active);
 
-    // Test set enabled/disabled
-    env.set_endpoint_enabled_tx(&mut tx, endpoint_id, false).await.unwrap();
-    let disabled = env.find_endpoint_by_id_tx(&mut tx, endpoint_id).await.unwrap().unwrap();
-    assert!(!disabled.is_active);
+        // Active endpoints should now be empty
+        let active = env.find_active_endpoints_by_tenant(tenant_id).await?;
+        assert_eq!(active.len(), 0);
 
-    // Active endpoints should now be empty
-    let active = env.find_active_endpoints_by_tenant_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(active.len(), 0);
+        // Test circuit breaker operations
+        env.update_circuit_breaker(endpoint_id, CircuitState::Open, 5, 0).await?;
+        env.update_circuit_breaker(endpoint_id, CircuitState::HalfOpen, 2, 1).await?;
+        env.update_circuit_breaker(endpoint_id, CircuitState::Closed, 0, 3).await?;
 
-    // Test circuit breaker operations within transaction
-    env.update_circuit_breaker_tx(&mut tx, endpoint_id, CircuitState::Open, 5, 0).await.unwrap();
-    env.update_circuit_breaker_tx(&mut tx, endpoint_id, CircuitState::HalfOpen, 2, 1)
-        .await
-        .unwrap();
-    env.update_circuit_breaker_tx(&mut tx, endpoint_id, CircuitState::Closed, 0, 3).await.unwrap();
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
-async fn webhook_event_repository_crud_operations() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let _storage = Storage::new(env.pool().clone(), &clock);
+async fn webhook_event_repository_crud_operations() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let _storage = Storage::new(env.pool().clone(), &clock);
 
-    let mut tx = env.pool().begin().await.unwrap();
+        let tenant_id = env.create_tenant("test-tenant").await?;
+        let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
 
-    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
-    let endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        // Create a webhook event using fixtures
+        let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
+        let event_id = env.ingest_webhook(&webhook).await?;
 
-    // Create a webhook event using fixtures
-    let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
-    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
+        // Test find by ID
+        let found = env.find_webhook_event_by_id(event_id).await?;
+        assert!(found.is_some());
+        let event = found.unwrap();
+        assert_eq!(event.id, event_id);
+        assert_eq!(event.tenant_id, tenant_id);
+        assert_eq!(event.endpoint_id, endpoint_id);
+        assert_eq!(event.status, EventStatus::Pending);
 
-    // Test find by ID within transaction
-    let found = env.find_webhook_event_by_id_tx(&mut tx, event_id).await.unwrap();
-    assert!(found.is_some());
-    let event = found.unwrap();
-    assert_eq!(event.id, event_id);
-    assert_eq!(event.tenant_id, tenant_id);
-    assert_eq!(event.endpoint_id, endpoint_id);
-    assert_eq!(event.status, EventStatus::Pending);
+        // Test find duplicate
+        let duplicate =
+            env.find_webhook_event_duplicate(endpoint_id, &webhook.source_event_id).await?;
+        assert!(duplicate.is_some());
+        assert_eq!(duplicate.unwrap().id, event_id);
 
-    // Test find duplicate within transaction
-    let duplicate = env
-        .find_webhook_event_duplicate_tx(&mut tx, endpoint_id, &webhook.source_event_id)
-        .await
-        .unwrap();
-    assert!(duplicate.is_some());
-    assert_eq!(duplicate.unwrap().id, event_id);
+        // Test find by tenant
+        let events = env.find_webhook_events_by_tenant(tenant_id).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, event_id);
 
-    // Test find by tenant within transaction
-    let events = env.find_webhook_events_by_tenant_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].id, event_id);
+        // Test count by tenant
+        let tenant_count = env.count_webhook_events_by_tenant(tenant_id).await?;
+        assert_eq!(tenant_count, 1);
 
-    // Test count by tenant within transaction
-    let tenant_count = env.count_webhook_events_by_tenant_tx(&mut tx, tenant_id).await.unwrap();
-    assert_eq!(tenant_count, 1);
+        // Test status update
+        env.update_webhook_event_status(event_id, EventStatus::Delivering).await?;
+        let updated = env.find_webhook_event_by_id(event_id).await?.unwrap();
+        assert_eq!(updated.status, EventStatus::Delivering);
 
-    // Test status update within transaction
-    env.update_webhook_event_status_tx(&mut tx, event_id, EventStatus::Delivering).await.unwrap();
-    let updated = env.find_webhook_event_by_id_tx(&mut tx, event_id).await.unwrap().unwrap();
-    assert_eq!(updated.status, EventStatus::Delivering);
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
-async fn webhook_event_claim_and_delivery_flow() {
-    let env = TestEnv::new_shared().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
+async fn webhook_event_claim_and_delivery_flow() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let storage = Storage::new(env.pool().clone(), &clock);
 
-    let mut tx = env.pool().begin().await.unwrap();
+        let tenant_id = env.create_tenant("test-tenant").await?;
+        let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
 
-    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
-    let endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
+        // Create multiple events
+        let mut event_ids = Vec::new();
+        for i in 0..3 {
+            let webhook = test_events::create_test_webhook_with_payload(
+                tenant_id,
+                endpoint_id,
+                &format!("{{\"message\": \"test{i}\"}}"),
+            );
+            let event_id = env.ingest_webhook(&webhook).await?;
+            event_ids.push(event_id);
+        }
 
-    // Create multiple events within the same transaction
-    let mut event_ids = Vec::new();
-    for i in 0..3 {
-        let webhook = test_events::create_test_webhook_with_payload(
-            tenant_id,
+        // Test claim pending events
+        let claimed = storage.webhook_events.claim_pending(2).await?;
+        assert_eq!(claimed.len(), 2);
+
+        // All claimed events should have status 'delivering'
+        for event in &claimed {
+            assert_eq!(event.status, EventStatus::Delivering);
+            assert!(event.last_attempt_at.is_some());
+        }
+
+        // Test mark as delivered
+        storage.webhook_events.mark_delivered(claimed[0].id).await?;
+        let delivered = storage.webhook_events.find_by_id(claimed[0].id).await?.unwrap();
+        assert_eq!(delivered.status, EventStatus::Delivered);
+        assert!(delivered.delivered_at.is_some());
+
+        // Test mark failed with retry
+        let next_retry =
+            DateTime::<Utc>::from(env.clock.now_system()) + chrono::Duration::seconds(60);
+        storage.webhook_events.mark_failed(claimed[1].id, 1, Some(next_retry)).await?;
+
+        let failed = storage.webhook_events.find_by_id(claimed[1].id).await?.unwrap();
+        assert_eq!(failed.status, EventStatus::Pending); // Should be pending for retry
+        assert_eq!(failed.failure_count, 1);
+        assert!(failed.next_retry_at.is_some());
+
+        // Test mark permanently failed
+        storage.webhook_events.mark_failed(claimed[1].id, 4, None).await?;
+        let permanently_failed = storage.webhook_events.find_by_id(claimed[1].id).await?.unwrap();
+        assert_eq!(permanently_failed.status, EventStatus::Failed);
+        assert!(permanently_failed.failed_at.is_some());
+
+        // Verify counts by status
+        let delivered_count =
+            storage.webhook_events.count_by_status(EventStatus::Delivered).await?;
+        assert_eq!(delivered_count, 1);
+
+        let failed_count = storage.webhook_events.count_by_status(EventStatus::Failed).await?;
+        assert_eq!(failed_count, 1);
+
+        let pending_count = storage.webhook_events.count_by_status(EventStatus::Pending).await?;
+        assert_eq!(pending_count, 1); // One remaining unclaimed event
+
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn concurrent_event_claiming() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let storage = Storage::new(env.pool().clone(), &clock);
+
+        let tenant_id = env.create_tenant("concurrent-test-tenant").await?;
+        let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
+
+        // Create 5 events
+        for i in 0..5 {
+            let webhook = test_events::create_test_webhook_with_payload(
+                tenant_id,
+                endpoint_id,
+                &format!("{{\"message\": \"concurrent{i}\"}}"),
+            );
+            env.ingest_webhook(&webhook).await?;
+        }
+
+        // Spawn two concurrent claim operations
+        let storage1 = storage.clone();
+        let storage2 = storage.clone();
+
+        let handle1: tokio::task::JoinHandle<Vec<kapsel_core::models::WebhookEvent>> =
+            tokio::spawn(async move { storage1.webhook_events.claim_pending(3).await.unwrap() });
+
+        let handle2: tokio::task::JoinHandle<Vec<kapsel_core::models::WebhookEvent>> =
+            tokio::spawn(async move { storage2.webhook_events.claim_pending(3).await.unwrap() });
+
+        let results1: Vec<kapsel_core::models::WebhookEvent> = handle1.await.unwrap();
+        let results2: Vec<kapsel_core::models::WebhookEvent> = handle2.await.unwrap();
+
+        // Verify no overlap between claimed events (SKIP LOCKED should prevent this)
+        let ids1: Vec<_> = results1.iter().map(|e| e.id).collect();
+        let ids2: Vec<_> = results2.iter().map(|e| e.id).collect();
+
+        for id in &ids1 {
+            assert!(!ids2.contains(id), "Event {id:?} claimed by both workers");
+        }
+
+        // Total should be 5 (all events claimed)
+        assert_eq!(ids1.len() + ids2.len(), 5);
+
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn delivery_attempt_repository_operations() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let storage = Storage::new(env.pool().clone(), &clock);
+
+        let tenant_id = env.create_tenant("test-tenant").await?;
+        let endpoint_id = env.create_endpoint(tenant_id, "https://example.com/webhook").await?;
+
+        // Create a webhook event for the delivery attempt
+        let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
+        let event_id = env.ingest_webhook(&webhook).await?;
+
+        // Create delivery attempt
+        let mut request_headers = HashMap::new();
+        request_headers.insert("User-Agent".to_string(), "Kapsel/1.0".to_string());
+
+        let mut response_headers = HashMap::new();
+        response_headers.insert("Content-Type".to_string(), "text/plain".to_string());
+
+        let attempt = DeliveryAttempt {
+            id: Uuid::new_v4(),
+            event_id,
+            attempt_number: 1,
             endpoint_id,
-            &format!("{{\"message\": \"test{i}\"}}"),
-        );
-        let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
-        event_ids.push(event_id);
-    }
+            request_headers: request_headers.clone(),
+            request_body: b"test request".to_vec(),
+            response_status: Some(200),
+            response_headers: Some(response_headers.clone()),
+            response_body: Some(b"OK".to_vec()),
+            attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
+            succeeded: true,
+            error_message: None,
+        };
 
-    // Test claim pending events within transaction
-    let claimed = storage.webhook_events.claim_pending_in_tx(&mut tx, 2).await.unwrap();
-    assert_eq!(claimed.len(), 2);
+        // Test create
+        let attempt_id = storage.delivery_attempts.create(&attempt).await?;
+        assert_eq!(attempt_id, attempt.id);
 
-    // All claimed events should have status 'delivering'
-    for event in &claimed {
-        assert_eq!(event.status, EventStatus::Delivering);
-        assert!(event.last_attempt_at.is_some());
-    }
+        // Test find by event
+        let attempts = storage.delivery_attempts.find_by_event(event_id).await?;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].id, attempt.id);
+        assert_eq!(attempts[0].attempt_number, 1);
+        assert!(attempts[0].succeeded);
 
-    // Test mark as delivered
-    storage.webhook_events.mark_delivered_in_tx(&mut tx, claimed[0].id).await.unwrap();
-    let delivered =
-        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[0].id).await.unwrap().unwrap();
-    assert_eq!(delivered.status, EventStatus::Delivered);
-    assert!(delivered.delivered_at.is_some());
+        // Test find latest by event
+        let latest = storage.delivery_attempts.find_latest_by_event(event_id).await?;
+        assert!(latest.is_some());
+        assert_eq!(latest.unwrap().id, attempt.id);
 
-    // Test mark failed with retry
-    let next_retry = DateTime::<Utc>::from(env.clock.now_system()) + chrono::Duration::seconds(60);
-    storage
-        .webhook_events
-        .mark_failed_in_tx(&mut tx, claimed[1].id, 1, Some(next_retry))
-        .await
-        .unwrap();
+        // Test count operations
+        let count = storage.delivery_attempts.count_by_event(event_id).await?;
+        assert_eq!(count, 1);
 
-    let failed =
-        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[1].id).await.unwrap().unwrap();
-    assert_eq!(failed.status, EventStatus::Pending); // Should be pending for retry
-    assert_eq!(failed.failure_count, 1);
-    assert!(failed.next_retry_at.is_some());
+        let successful = storage.delivery_attempts.count_successful_by_event(event_id).await?;
+        assert_eq!(successful, 1);
 
-    // Test mark permanently failed
-    storage.webhook_events.mark_failed_in_tx(&mut tx, claimed[1].id, 4, None).await.unwrap();
-    let permanently_failed =
-        storage.webhook_events.find_by_id_in_tx(&mut tx, claimed[1].id).await.unwrap().unwrap();
-    assert_eq!(permanently_failed.status, EventStatus::Failed);
-    assert!(permanently_failed.failed_at.is_some());
+        // Test success rate
+        let rate = storage.delivery_attempts.success_rate_by_endpoint(endpoint_id, None).await?;
+        assert!((rate - 1.0).abs() < f64::EPSILON); // 1 success out of 1 attempt
 
-    // Verify counts by status
-    let delivered_count = storage
-        .webhook_events
-        .count_by_status_in_tx(&mut tx, EventStatus::Delivered)
-        .await
-        .unwrap();
-    assert_eq!(delivered_count, 1);
-
-    let failed_count =
-        storage.webhook_events.count_by_status_in_tx(&mut tx, EventStatus::Failed).await.unwrap();
-    assert_eq!(failed_count, 1);
-
-    let pending_count =
-        storage.webhook_events.count_by_status_in_tx(&mut tx, EventStatus::Pending).await.unwrap();
-    assert_eq!(pending_count, 1); // One remaining unclaimed event
-}
-
-#[tokio::test]
-async fn concurrent_event_claiming() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
-
-    let mut tx = env.pool().begin().await.unwrap();
-
-    let tenant_id = env.create_tenant_tx(&mut tx, "concurrent-test-tenant").await.unwrap();
-    let endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
-
-    // Create 5 events within transaction
-    for i in 0..5 {
-        let webhook = test_events::create_test_webhook_with_payload(
-            tenant_id,
+        // Add a failed attempt
+        let failed_attempt = DeliveryAttempt {
+            id: Uuid::new_v4(),
+            event_id,
+            attempt_number: 2,
             endpoint_id,
-            &format!("{{\"message\": \"concurrent{i}\"}}"),
-        );
-        env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
-    }
+            request_headers,
+            request_body: b"test request 2".to_vec(),
+            response_status: Some(404),
+            response_headers: Some(response_headers),
+            response_body: Some(b"Not Found".to_vec()),
+            attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
+            succeeded: false,
+            error_message: Some("Server error".to_string()),
+        };
 
-    // Commit so concurrent claiming operations can see the events
-    tx.commit().await.unwrap();
+        storage.delivery_attempts.create(&failed_attempt).await?;
 
-    // Spawn two concurrent claim operations
-    let storage1 = storage.clone();
-    let storage2 = storage.clone();
+        // Test success rate with mixed results
+        let rate = storage.delivery_attempts.success_rate_by_endpoint(endpoint_id, None).await?;
+        assert!((rate - 0.5).abs() < f64::EPSILON); // 1 success out of 2 attempts
 
-    let handle1: tokio::task::JoinHandle<Vec<kapsel_core::models::WebhookEvent>> =
-        tokio::spawn(async move { storage1.webhook_events.claim_pending(3).await.unwrap() });
+        // Test find by endpoint
+        let endpoint_attempts =
+            storage.delivery_attempts.find_by_endpoint(endpoint_id, Some(10)).await?;
+        assert_eq!(endpoint_attempts.len(), 2);
 
-    let handle2: tokio::task::JoinHandle<Vec<kapsel_core::models::WebhookEvent>> =
-        tokio::spawn(async move { storage2.webhook_events.claim_pending(3).await.unwrap() });
+        // Test recent failures
+        let failures = storage
+            .delivery_attempts
+            .find_recent_failures_by_endpoint(
+                endpoint_id,
+                DateTime::<Utc>::from(env.clock.now_system()) - chrono::Duration::hours(1),
+                Some(10),
+            )
+            .await?;
+        assert_eq!(failures.len(), 1); // Only the failed attempt
+        assert_eq!(failures[0].id, failed_attempt.id);
 
-    let results1: Vec<kapsel_core::models::WebhookEvent> = handle1.await.unwrap();
-    let results2: Vec<kapsel_core::models::WebhookEvent> = handle2.await.unwrap();
-
-    // Verify no overlap between claimed events (SKIP LOCKED should prevent this)
-    let ids1: Vec<_> = results1.iter().map(|e| e.id).collect();
-    let ids2: Vec<_> = results2.iter().map(|e| e.id).collect();
-
-    for id in &ids1 {
-        assert!(!ids2.contains(id), "Event {id:?} claimed by both workers");
-    }
-
-    // Total should be 5 (all events claimed)
-    assert_eq!(ids1.len() + ids2.len(), 5);
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
-async fn delivery_attempt_repository_operations() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
+async fn transactional_operations_rollback() -> anyhow::Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let storage = Storage::new(env.pool().clone(), &clock);
 
-    let mut tx = env.pool().begin().await.unwrap();
+        // Create tenant in a transaction that will be rolled back
+        let tenant_id = {
+            let mut tx = env.pool().begin().await?;
+            let tenant_id = env.create_tenant_tx(&mut tx, "rollback-test-tenant").await?;
 
-    let tenant_id = env.create_tenant_tx(&mut tx, "test-tenant").await.unwrap();
-    let endpoint_id =
-        env.create_endpoint_tx(&mut tx, tenant_id, "https://example.com/webhook").await.unwrap();
+            // Explicitly rollback the transaction
+            tx.rollback().await?;
+            tenant_id
+        };
 
-    // Create a webhook event for the delivery attempt
-    let webhook = test_events::create_test_webhook(tenant_id, endpoint_id);
-    let event_id = env.ingest_webhook_tx(&mut tx, &webhook).await.unwrap();
+        // Tenant should not exist after rollback
+        let found_after_rollback = storage.tenants.find_by_id(tenant_id).await?;
+        assert!(found_after_rollback.is_none());
 
-    // Create delivery attempt
-    let mut request_headers = HashMap::new();
-    request_headers.insert("User-Agent".to_string(), "Kapsel/1.0".to_string());
-
-    let mut response_headers = HashMap::new();
-    response_headers.insert("Content-Type".to_string(), "text/plain".to_string());
-
-    let attempt = DeliveryAttempt {
-        id: Uuid::new_v4(),
-        event_id,
-        attempt_number: 1,
-        endpoint_id,
-        request_headers: request_headers.clone(),
-        request_body: b"test request".to_vec(),
-        response_status: Some(200),
-        response_headers: Some(response_headers.clone()),
-        response_body: Some(b"OK".to_vec()),
-        attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
-        succeeded: true,
-        error_message: None,
-    };
-
-    // Test create
-    let attempt_id = storage.delivery_attempts.create_in_tx(&mut tx, &attempt).await.unwrap();
-    assert_eq!(attempt_id, attempt.id);
-
-    // Test find by event
-    let attempts = storage.delivery_attempts.find_by_event_in_tx(&mut tx, event_id).await.unwrap();
-    assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0].id, attempt.id);
-    assert_eq!(attempts[0].attempt_number, 1);
-    assert!(attempts[0].succeeded);
-
-    // Test find latest by event
-    let latest =
-        storage.delivery_attempts.find_latest_by_event_in_tx(&mut tx, event_id).await.unwrap();
-    assert!(latest.is_some());
-    assert_eq!(latest.unwrap().id, attempt.id);
-
-    // Test count operations
-    let count = storage.delivery_attempts.count_by_event_in_tx(&mut tx, event_id).await.unwrap();
-    assert_eq!(count, 1);
-
-    let successful =
-        storage.delivery_attempts.count_successful_by_event_in_tx(&mut tx, event_id).await.unwrap();
-    assert_eq!(successful, 1);
-
-    // Test success rate
-    let rate = storage
-        .delivery_attempts
-        .success_rate_by_endpoint_in_tx(&mut tx, endpoint_id, None)
-        .await
-        .unwrap();
-    assert!((rate - 1.0).abs() < f64::EPSILON); // 1 success out of 1 attempt
-
-    // Add a failed attempt
-    let failed_attempt = DeliveryAttempt {
-        id: Uuid::new_v4(),
-        event_id,
-        attempt_number: 2,
-        endpoint_id,
-        request_headers,
-        request_body: b"test request 2".to_vec(),
-        response_status: Some(404),
-        response_headers: Some(response_headers),
-        response_body: Some(b"Not Found".to_vec()),
-        attempted_at: DateTime::<Utc>::from(env.clock.now_system()),
-        succeeded: false,
-        error_message: Some("Server error".to_string()),
-    };
-
-    storage.delivery_attempts.create_in_tx(&mut tx, &failed_attempt).await.unwrap();
-
-    // Test success rate with mixed results
-    let rate = storage
-        .delivery_attempts
-        .success_rate_by_endpoint_in_tx(&mut tx, endpoint_id, None)
-        .await
-        .unwrap();
-    assert!((rate - 0.5).abs() < f64::EPSILON); // 1 success out of 2 attempts
-
-    // Test find by endpoint
-    let endpoint_attempts = storage
-        .delivery_attempts
-        .find_by_endpoint_in_tx(&mut tx, endpoint_id, Some(10))
-        .await
-        .unwrap();
-    assert_eq!(endpoint_attempts.len(), 2);
-
-    // Test recent failures
-    let failures = storage
-        .delivery_attempts
-        .find_recent_failures_by_endpoint_in_tx(
-            &mut tx,
-            endpoint_id,
-            DateTime::<Utc>::from(env.clock.now_system()) - chrono::Duration::hours(1),
-            Some(10),
-        )
-        .await
-        .unwrap();
-    assert_eq!(failures.len(), 1); // Only the failed attempt
-    assert_eq!(failures[0].id, failed_attempt.id);
-}
-
-#[tokio::test]
-async fn transactional_operations_rollback() {
-    let env = TestEnv::new_isolated().await.unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
-    let storage = Storage::new(env.pool().clone(), &clock);
-
-    // Create tenant in a transaction that will be rolled back
-    let tenant_id = {
-        let mut tx = env.pool().begin().await.unwrap();
-        let tenant_id = env.create_tenant_tx(&mut tx, "rollback-test-tenant").await.unwrap();
-
-        // Explicitly rollback the transaction
-        tx.rollback().await.unwrap();
-        tenant_id
-    };
-
-    // Tenant should not exist after rollback
-    let found_after_rollback = storage.tenants.find_by_id(tenant_id).await.unwrap();
-    assert!(found_after_rollback.is_none());
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

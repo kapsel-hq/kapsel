@@ -58,19 +58,20 @@ async fn profile_isolated_database_creation() -> Result<()> {
     init_test_tracing();
 
     let start = Instant::now();
-    println!("=== PROFILING: TestEnv::new_isolated() ===");
+    println!("=== PROFILING: TestEnv::run_isolated_test() ===");
 
-    let env = TestEnv::new_isolated().await?;
+    TestEnv::run_isolated_test(|env| async move {
+        let elapsed = start.elapsed();
+        println!("=== ISOLATED DB CREATION TIME: {:?} ===", elapsed);
 
-    let elapsed = start.elapsed();
-    println!("=== ISOLATED DB CREATION TIME: {:?} ===", elapsed);
+        // Verify it works
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(env.pool()).await?;
+        println!("=== TENANT COUNT: {} ===", count);
 
-    // Verify it works
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM tenants").fetch_one(env.pool()).await?;
-    println!("Tenant count in isolated DB: {}", count);
-
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

@@ -221,17 +221,19 @@ async fn test_count_methods() -> Result<()> {
 async fn test_isolated_vs_shared() -> Result<()> {
     // Test that both initialization methods work
     let shared_env = TestEnv::new_shared().await?;
-    let isolated_env = TestEnv::new_isolated().await?;
 
-    // Both should have working pool access
-    let _pool1 = shared_env.pool();
-    let _pool2 = isolated_env.pool();
+    TestEnv::run_isolated_test(|isolated_env| async move {
+        // Both should have working pool access
+        let _pool1 = shared_env.pool();
+        let _pool2 = isolated_env.pool();
 
-    // Verify isolation flag is set correctly
-    assert!(!shared_env.is_isolated_test());
-    assert!(isolated_env.is_isolated_test());
+        // Verify isolation flag is set correctly
+        assert!(!shared_env.is_isolated_test());
+        assert!(isolated_env.is_isolated_test());
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

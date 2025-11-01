@@ -726,6 +726,183 @@ impl TestEnv {
         Ok(endpoint_id)
     }
 
+    /// Create endpoint with full configuration.
+    pub async fn create_endpoint_with_config(
+        &self,
+        tenant_id: TenantId,
+        url: &str,
+        name: &str,
+        max_retries: i32,
+        timeout_seconds: i32,
+    ) -> Result<EndpointId> {
+        let mut tx = self.pool().begin().await?;
+        let endpoint_id = self
+            .create_endpoint_with_config_tx(
+                &mut tx,
+                tenant_id,
+                url,
+                name,
+                max_retries,
+                timeout_seconds,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(endpoint_id)
+    }
+
+    /// Find tenant by ID.
+    pub async fn find_tenant_by_id(&self, tenant_id: TenantId) -> Result<Option<Tenant>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_tenant_by_id_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Find tenant by name.
+    pub async fn find_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_tenant_by_name_tx(&mut tx, name).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Check if tenant exists.
+    pub async fn tenant_exists(&self, tenant_id: TenantId) -> Result<bool> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.tenant_exists_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Check if tenant name exists.
+    pub async fn tenant_name_exists(&self, name: &str) -> Result<bool> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.tenant_name_exists_tx(&mut tx, name).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Get tenant tier.
+    pub async fn get_tenant_tier(&self, tenant_id: TenantId) -> Result<String> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.get_tenant_tier_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Update tenant tier.
+    pub async fn update_tenant_tier(&self, tenant_id: TenantId, tier: &str) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.update_tenant_tier_tx(&mut tx, tenant_id, tier).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Find endpoint by ID.
+    pub async fn find_endpoint_by_id(&self, endpoint_id: EndpointId) -> Result<Option<Endpoint>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_endpoint_by_id_tx(&mut tx, endpoint_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Find endpoints by tenant.
+    pub async fn find_endpoints_by_tenant(&self, tenant_id: TenantId) -> Result<Vec<Endpoint>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_endpoints_by_tenant_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Find active endpoints by tenant.
+    pub async fn find_active_endpoints_by_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<Endpoint>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_active_endpoints_by_tenant_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Set endpoint enabled/disabled.
+    pub async fn set_endpoint_enabled(&self, endpoint_id: EndpointId, enabled: bool) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.set_endpoint_enabled_tx(&mut tx, endpoint_id, enabled).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Update circuit breaker state.
+    pub async fn update_circuit_breaker(
+        &self,
+        endpoint_id: EndpointId,
+        state: CircuitState,
+        failure_count: i32,
+        success_count: i32,
+    ) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.update_circuit_breaker_tx(&mut tx, endpoint_id, state, failure_count, success_count)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Find webhook event by ID.
+    pub async fn find_webhook_event_by_id(
+        &self,
+        event_id: EventId,
+    ) -> Result<Option<WebhookEvent>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_webhook_event_by_id_tx(&mut tx, event_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Find webhook event duplicate.
+    pub async fn find_webhook_event_duplicate(
+        &self,
+        endpoint_id: EndpointId,
+        source_event_id: &str,
+    ) -> Result<Option<WebhookEvent>> {
+        let mut tx = self.pool().begin().await?;
+        let result =
+            self.find_webhook_event_duplicate_tx(&mut tx, endpoint_id, source_event_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Find webhook events by tenant.
+    pub async fn find_webhook_events_by_tenant(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<WebhookEvent>> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.find_webhook_events_by_tenant_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Count webhook events by tenant.
+    pub async fn count_webhook_events_by_tenant(&self, tenant_id: TenantId) -> Result<i64> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.count_webhook_events_by_tenant_tx(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Update webhook event status.
+    pub async fn update_webhook_event_status(
+        &self,
+        event_id: EventId,
+        status: EventStatus,
+    ) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        self.update_webhook_event_status_tx(&mut tx, event_id, status).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Clean up tenant and all associated data.
     pub async fn cleanup_tenant(&self, tenant_id: TenantId) -> Result<()> {
         let mut tx = self.pool().begin().await?;
