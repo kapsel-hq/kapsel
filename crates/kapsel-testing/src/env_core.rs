@@ -1,9 +1,9 @@
-//! Core TestEnv implementation - basic environment setup and manage//! Core
-//! TestEnv implementation - basic environment setup and management
+//! Core TestEnv implementation - basic environment setup and management
 
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use futures::FutureExt;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService};
 use kapsel_core::{storage::Storage, Clock};
 use kapsel_delivery::{
@@ -13,7 +13,7 @@ use kapsel_delivery::{
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{database::TestDatabase, http, TestClock, TestEnv};
+use crate::{database, database::TestDatabase, http, time, TestClock, TestEnv};
 
 /// Builder for configuring TestEnv with production engines.
 pub struct TestEnvBuilder {
@@ -465,5 +465,132 @@ impl TestEnv {
         }
 
         Ok(())
+    }
+
+    /// Runs a test function within a fully isolated, temporary database.
+    ///
+    /// This function GUARANTEES cleanup by:
+    /// 1. Creating a new database from a template.
+    /// 2. Constructing a TestEnv pointing to this new database.
+    /// 3. Running the provided async test closure with the new TestEnv.
+    /// 4. Dropping the temporary database AFTER the test closure completes,
+    ///    regardless of whether it passed or failed.
+    ///
+    /// This is the recommended pattern for all tests that require a committed
+    /// state or background workers (`new_isolated` use cases).
+    pub async fn run_isolated_test<F, Fut>(test_fn: F) -> Result<()>
+    where
+        F: FnOnce(Self) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        database::ensure_template_database_exists()
+            .await
+            .context("failed to ensure template database exists")?;
+
+        let admin_pool =
+            database::create_admin_pool().await.context("failed to create admin pool")?;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let db_name = format!("test_{}_{}", timestamp, Uuid::new_v4().simple());
+
+        database::create_database_from_template(&admin_pool, &db_name)
+            .await
+            .with_context(|| format!("failed to create isolated database: {db_name}"))?;
+
+        let env = Self::build_for_isolated_db(&db_name)
+            .await
+            .with_context(|| format!("failed to build TestEnv for database: {db_name}"))?;
+
+        let test_result = std::panic::AssertUnwindSafe(test_fn(env)).catch_unwind().await;
+
+        match database::drop_database_immediate(&admin_pool, &db_name).await {
+            Ok(()) => {
+                tracing::debug!(database = %db_name, "Successfully cleaned up isolated test database");
+            },
+            Err(e) => {
+                let error_msg = e.to_string().to_lowercase();
+                if error_msg.contains("does not exist") || error_msg.contains("not exist") {
+                    tracing::debug!(database = %db_name, "Database already cleaned up (container restart?)");
+                } else {
+                    tracing::error!(database = %db_name, error = %e, "CRITICAL: Failed to clean up isolated test database!");
+
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\""))
+                            .execute(&admin_pool),
+                    )
+                    .await;
+                }
+            },
+        }
+
+        match test_result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => std::panic::resume_unwind(e),
+        }
+    }
+
+    /// Build TestEnv for a specific isolated database.
+    async fn build_for_isolated_db(database_name: &str) -> Result<Self> {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
+            )
+            .with_test_writer()
+            .try_init();
+
+        let database = database::create_database_pool(database_name)
+            .await
+            .with_context(|| format!("failed to create pool for database: {database_name}"))?;
+
+        let test_run_id = Uuid::new_v4().simple().to_string();
+        let http_mock = http::MockServer::start().await;
+        let clock = time::TestClock::new();
+        let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
+        let storage = Arc::new(Storage::new(database.clone(), &clock_arc));
+
+        let delivery_config = DeliveryConfig {
+            worker_count: 1,
+            batch_size: 10,
+            poll_interval: Duration::from_millis(100),
+            shutdown_timeout: Duration::from_secs(5),
+            client_config: ClientConfig::default(),
+            default_retry_policy: RetryPolicy {
+                max_attempts: 10,
+                base_delay: Duration::from_secs(1),
+                max_delay: Duration::from_secs(600),
+                jitter_factor: 0.0,
+                backoff_strategy: BackoffStrategy::Exponential,
+            },
+        };
+
+        let event_handler =
+            Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+
+        let delivery_engine = Some(
+            DeliveryEngine::with_event_handler(
+                database.clone(),
+                delivery_config,
+                clock_arc,
+                event_handler,
+            )
+            .context("failed to create delivery engine")?,
+        );
+
+        Ok(Self {
+            http_mock,
+            clock,
+            database,
+            storage,
+            attestation_service: None,
+            test_run_id,
+            is_isolated: true,
+            delivery_engine,
+        })
     }
 }

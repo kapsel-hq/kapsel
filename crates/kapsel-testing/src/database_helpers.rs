@@ -16,7 +16,56 @@ use kapsel_core::{
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{EndpointId, EventId, TenantId, TestEnv, TestWebhook, WebhookEventData};
+use crate::{EndpointId, EventId, TenantId, TestEnv, TestWebhook};
+
+/// Simplified webhook event data for invariant checking.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct WebhookEventData {
+    /// Event identifier
+    pub id: EventId,
+    /// Tenant identifier
+    pub tenant_id: TenantId,
+    /// Endpoint identifier
+    pub endpoint_id: Uuid,
+    /// Source event identifier
+    pub source_event_id: String,
+    /// Idempotency strategy used
+    pub idempotency_strategy: String,
+    /// Current event status
+    pub status: EventStatus,
+    /// Number of failed delivery attempts
+    pub failure_count: i32,
+    /// Last delivery attempt time
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// Next scheduled retry time
+    pub next_retry_at: Option<DateTime<Utc>>,
+    /// HTTP headers as JSON
+    pub headers: serde_json::Value,
+    /// Request body as bytes
+    pub body: Vec<u8>,
+    /// Content type header
+    pub content_type: String,
+    /// Payload size in bytes
+    pub payload_size: i32,
+    /// Whether signature is valid
+    pub signature_valid: Option<bool>,
+    /// Signature validation error
+    pub signature_error: Option<String>,
+    /// When event was received
+    pub received_at: DateTime<Utc>,
+    /// When event was delivered (if successful)
+    pub delivered_at: Option<DateTime<Utc>>,
+    /// When event permanently failed (if applicable)
+    pub failed_at: Option<DateTime<Utc>>,
+}
+
+impl WebhookEventData {
+    /// Number of delivery attempts made (failure_count + 1 for initial
+    /// attempt).
+    pub fn attempt_count(&self) -> u32 {
+        u32::try_from(self.failure_count + 1).unwrap_or(1)
+    }
+}
 
 impl TestEnv {
     /// Create tenant within a transaction.

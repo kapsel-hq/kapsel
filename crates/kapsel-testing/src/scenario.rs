@@ -8,7 +8,17 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::{Context, Result};
 use kapsel_core::models::EventStatus;
 
-use crate::{http, AssertionFn, EventId, InvariantCheckFn, TestEnv, TestWebhook};
+use crate::{http, EventId, TestEnv, TestWebhook};
+
+// Type aliases for scenario building
+type InvariantCheckFn = Box<
+    dyn for<'a> Fn(
+        &'a mut TestEnv,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>,
+>;
+
+type AssertionFn = Box<dyn Fn(&mut TestEnv) -> Result<()>>;
 
 /// Test scenario builder for complex multi-step tests.
 ///

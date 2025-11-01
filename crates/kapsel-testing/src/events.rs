@@ -22,6 +22,8 @@ use uuid::Uuid;
 /// Provides consistent event creation across all test modules to eliminate
 /// duplication and ensure standardized test data patterns.
 pub mod test_events {
+    use std::collections::HashMap;
+
     use chrono::{DateTime, Utc};
     use kapsel_core::{
         events::{DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent},
@@ -29,7 +31,7 @@ pub mod test_events {
     };
     use uuid::Uuid;
 
-    use crate::{fixtures::TestWebhook, HashMap};
+    use crate::fixtures::TestWebhook;
 
     /// Creates a standard successful delivery event for testing.
     pub fn create_delivery_succeeded_event() -> DeliveryEvent {
