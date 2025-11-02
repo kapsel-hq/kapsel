@@ -573,9 +573,7 @@ impl TestEnv {
     {
         let start_time = Instant::now();
 
-        database::ensure_template_database_exists()
-            .await
-            .context("failed to ensure template database exists")?;
+        database::ensure_template_database_exists();
 
         let admin_pool_start = Instant::now();
         let admin_pool =

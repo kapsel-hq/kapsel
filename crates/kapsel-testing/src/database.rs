@@ -136,9 +136,7 @@ impl IsolatedTestDatabase {
 }
 
 /// Ensure template database exists for isolated test creation.
-pub async fn ensure_template_database_exists() -> Result<()> {
-    Ok(())
-}
+pub fn ensure_template_database_exists() {}
 
 /// Create database from template.
 pub async fn create_database_from_template(admin_pool: &PgPool, database_name: &str) -> Result<()> {
@@ -146,7 +144,11 @@ pub async fn create_database_from_template(admin_pool: &PgPool, database_name: &
 
     // Acquire semaphore permit to limit concurrent database operations
     let permit_start = Instant::now();
-    let _permit = DB_CREATION_SEMAPHORE.acquire().await.unwrap();
+    #[allow(clippy::expect_used)]
+    let _permit = DB_CREATION_SEMAPHORE
+        .acquire()
+        .await
+        .expect("failed to acquire database creation semaphore");
     let permit_duration = permit_start.elapsed();
 
     if permit_duration > Duration::from_millis(100) {
@@ -200,10 +202,10 @@ pub async fn drop_database_immediate(admin_pool: &PgPool, database_name: &str) -
     .execute(admin_pool)
     .await;
 
-    if let Err(_) =
-        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\" WITH (FORCE)"))
-            .execute(admin_pool)
-            .await
+    if sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\" WITH (FORCE)"))
+        .execute(admin_pool)
+        .await
+        .is_err()
     {
         sqlx::query(&format!("DROP DATABASE IF EXISTS \"{database_name}\""))
             .execute(admin_pool)
