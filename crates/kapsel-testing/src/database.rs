@@ -318,7 +318,7 @@ async fn create_shared_pool() -> Result<PgPool> {
         .min_connections(0)
         .max_lifetime(Duration::from_secs(300))
         .idle_timeout(Duration::from_secs(30))
-        .acquire_timeout(Duration::from_secs(3))
+        .acquire_timeout(Duration::from_secs(30))
         .connect_with(opts)
         .await
         .context("failed to create shared connection pool")?;
