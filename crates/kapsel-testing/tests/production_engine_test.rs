@@ -60,41 +60,6 @@ async fn test_clock_integration() -> Result<()> {
     .await
 }
 
-// TODO: This test needs custom builder configuration which run_isolated_test
-// doesn't support. Need to either extend run_isolated_test to accept config or
-// create a custom cleanup pattern.
-#[tokio::test]
-#[ignore = "needs custom configuration support in run_isolated_test"]
-async fn builder_configures_engine_correctly() -> Result<()> {
-    let env = TestEnv::builder()
-        .worker_count(3)
-        .batch_size(20)
-        .poll_interval(Duration::from_millis(200))
-        .shutdown_timeout(Duration::from_secs(10))
-        .isolated()
-        .build()
-        .await?;
-
-    // Verify engine was created
-    assert!(env.delivery_stats().await.is_some());
-
-    Ok(())
-}
-
-// TODO: This test needs builder without delivery engine which run_isolated_test
-// doesn't support. Need to either extend run_isolated_test to accept config or
-// create a custom cleanup pattern.
-#[tokio::test]
-#[ignore = "needs custom configuration support in run_isolated_test"]
-async fn test_env_without_engine() -> Result<()> {
-    let env = TestEnv::builder().without_delivery_engine().isolated().build().await?;
-
-    // Should have no delivery stats when engine disabled
-    assert!(env.delivery_stats().await.is_none());
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn database_operations_work() -> Result<()> {
     TestEnv::run_isolated_test(|env| async move {
