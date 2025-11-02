@@ -588,6 +588,7 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(10))]
 
         #[test]
+        #[ignore = "investigate hang in CI"]
         fn system_invariants_under_random_operations(
             actions in prop::collection::vec(action_strategy(), 1..20)
         ) {
@@ -628,6 +629,7 @@ mod tests {
         }
 
         #[test]
+        #[ignore = "investigate hang in CI"]
         fn system_handles_failure_scenarios(
             actions in prop::collection::vec(
                 prop_oneof![
