@@ -10,37 +10,35 @@ use kapsel_testing::{
     fixtures::{scenarios, EndpointBuilder, WebhookBuilder},
     http::{MockEndpoint, ScenarioBuilder as HttpScenarioBuilder},
     time::{backoff, TestClock},
+    TestUtilities,
 };
 use serde_json::json;
 
 #[tokio::test]
 async fn test_infrastructure_components_work() {
-    // Test infrastructure components without database setup
-    let clock = TestClock::new();
+    // Test infrastructure components without database setup using TestUtilities
+    let utils = TestUtilities::new().await.expect("Failed to create test utilities");
 
     // Act & Assert - Test time manipulation
-    let start = clock.now();
-    clock.advance(Duration::from_secs(30));
-    let elapsed = clock.now().duration_since(start);
+    let start = utils.now();
+    utils.advance_time(Duration::from_secs(30));
+    let end = utils.now();
+    let elapsed = (end - start).to_std().unwrap_or(Duration::from_secs(0));
     assert_eq!(elapsed, Duration::from_secs(30));
 
     // Test HTTP mocking (no database needed)
-    let mock_server = kapsel_testing::http::MockServer::start().await;
-    assert!(!mock_server.url().is_empty());
+    assert!(!utils.mock_url().is_empty());
 
     // Configure mock endpoint
-    mock_server
-        .mock_endpoint(
-            MockEndpoint::success("/webhook")
-                .with_header("Content-Type", "application/json")
-                .with_body(r#"{"status": "received"}"#),
-        )
-        .await;
+    let endpoint = MockEndpoint::success("/webhook")
+        .with_header("Content-Type", "application/json")
+        .with_body(r#"{"status": "received"}"#);
+    utils.mock_endpoint(endpoint).await;
 
     // Test that we can make requests to mock
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/webhook", mock_server.url()))
+        .post(format!("{}/webhook", utils.mock_url()))
         .json(&json!({"test": "data"}))
         .send()
         .await
@@ -161,24 +159,26 @@ fn backoff_calculation_works() {
     assert_eq!(max_test, Duration::from_secs(5));
 }
 
-#[test]
-fn test_clock_deterministic_behavior() {
-    // Test deterministic time control
-    let clock = TestClock::new();
-    let start = clock.now();
+#[tokio::test]
+async fn test_clock_deterministic_behavior() {
+    // Test deterministic time control using TestUtilities
+    let utils = TestUtilities::new().await.expect("Failed to create test utilities");
+    let start = utils.now();
 
     // Advance in steps
-    clock.advance(Duration::from_secs(10));
-    clock.advance(Duration::from_secs(5));
-    clock.advance(Duration::from_millis(500));
+    utils.advance_time(Duration::from_secs(10));
+    utils.advance_time(Duration::from_secs(5));
+    utils.advance_time(Duration::from_millis(500));
 
-    let total_elapsed = clock.now().duration_since(start);
+    let end = utils.now();
+    let total_elapsed = (end - start).to_std().unwrap_or(Duration::from_secs(0));
     assert_eq!(total_elapsed, Duration::from_millis(15500));
 
-    // Test system time advancement
-    let sys_start = clock.now_system();
-    clock.advance(Duration::from_secs(60));
-    let sys_elapsed = clock.now_system().duration_since(sys_start).unwrap();
+    // Test system time advancement through utilities
+    let sys_start = utils.now();
+    utils.advance_time(Duration::from_secs(60));
+    let sys_end = utils.now();
+    let sys_elapsed = (sys_end - sys_start).to_std().unwrap_or(Duration::from_secs(0));
     assert_eq!(sys_elapsed, Duration::from_secs(60));
 }
 
@@ -186,23 +186,22 @@ fn test_clock_deterministic_behavior() {
 #[tokio::test]
 async fn retry_logic_exponential_backoff_timing() {
     // Arrange
-    let clock = TestClock::new();
-    let mock = kapsel_testing::http::MockServer::start().await;
+    let utils = TestUtilities::new().await.expect("Failed to create test utilities");
 
     // Configure endpoint to fail then succeed
-    mock.mock_endpoint(MockEndpoint::failure("/webhook", http::StatusCode::SERVICE_UNAVAILABLE))
-        .await;
+    let endpoint = MockEndpoint::failure("/webhook", http::StatusCode::SERVICE_UNAVAILABLE);
+    utils.mock_endpoint(endpoint).await;
 
     // Act - Simulate retry attempts with deterministic timing
     let mut attempt_times = Vec::new();
 
     for attempt in 0..3 {
         let delay = backoff::standard_webhook_backoff(attempt);
-        attempt_times.push(clock.now());
-        clock.advance(delay);
+        attempt_times.push(utils.now());
+        utils.advance_time(delay);
 
         // Would make actual HTTP request here in real implementation
-        tracing::debug!("Attempt {} at {:?} after delay {:?}", attempt + 1, clock.now(), delay);
+        tracing::debug!("Attempt {} at {:?} after delay {:?}", attempt + 1, utils.now(), delay);
     }
 
     // Assert - Verify exponential backoff timing
@@ -210,8 +209,8 @@ async fn retry_logic_exponential_backoff_timing() {
 
     // Each attempt should be roughly double the previous delay (with jitter
     // tolerance)
-    let delay1 = attempt_times[1].duration_since(attempt_times[0]);
-    let delay2 = attempt_times[2].duration_since(attempt_times[1]);
+    let delay1 = (attempt_times[1] - attempt_times[0]).to_std().unwrap_or(Duration::from_secs(0));
+    let delay2 = (attempt_times[2] - attempt_times[1]).to_std().unwrap_or(Duration::from_secs(0));
 
     // With jitter, second delay should be roughly 2x first (allowing 50% variance)
     assert!(delay2.as_millis() >= delay1.as_millis() / 2);

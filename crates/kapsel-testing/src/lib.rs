@@ -15,14 +15,15 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 // Public modules
+pub mod connection;
 pub mod database;
 pub mod events;
 pub mod fixtures;
 pub mod http;
 pub mod invariants;
-
 pub mod scenario;
 pub mod time;
+pub mod utilities;
 
 // Implementation modules
 mod attestation;
@@ -32,6 +33,7 @@ mod env_core;
 mod snapshots;
 
 // Public re-exports
+pub use connection::{TestConnection, TestPool, TestStrategy};
 pub use database::TestDatabase;
 pub use database_helpers::WebhookEventData;
 pub use env_core::TestEnvBuilder;
@@ -45,6 +47,7 @@ pub use kapsel_core::{
 };
 pub use scenario::{FailureKind, ScenarioBuilder};
 pub use time::TestClock;
+pub use utilities::TestUtilities;
 
 /// Test environment with database isolation for integration testing.
 ///
