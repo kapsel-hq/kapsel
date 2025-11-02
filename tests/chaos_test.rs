@@ -22,6 +22,8 @@ use serde_json::json;
 #[tokio::test]
 async fn intermittent_endpoint_failures() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("chaos-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -100,6 +102,8 @@ async fn intermittent_endpoint_failures() -> Result<()> {
 #[tokio::test]
 async fn permanent_endpoint_failure() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("chaos-tenant").await?;
         let endpoint_id = env
             .create_endpoint_with_config(
@@ -330,7 +334,9 @@ async fn concurrent_load_with_mixed_outcomes() -> Result<()> {
 #[tokio::test]
 async fn idempotency_under_chaos() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
-        let tenant_id = env.create_tenant("chaos-idempotency").await?;
+        env.create_delivery_engine()?;
+
+        let tenant_id = env.create_tenant("idempotency-chaos").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
         // Chaos pattern: Success, then duplicate attempts should be ignored
@@ -397,7 +403,9 @@ async fn idempotency_under_chaos() -> Result<()> {
 #[tokio::test]
 async fn database_transaction_chaos() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
-        let tenant_id = env.create_tenant("tx-chaos").await?;
+        env.create_delivery_engine()?;
+
+        let tenant_id = env.create_tenant("transaction-chaos").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
         env.http_mock.mock_sequence().respond_with(200, "Success").build().await;

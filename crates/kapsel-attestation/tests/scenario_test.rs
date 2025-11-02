@@ -27,6 +27,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf_via_events() -> anyhow::Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        // Create delivery engine for delivery operations
+        env.create_delivery_engine()?;
         // Setup mock webhook destination
         let mock_server = MockServer::start().await;
         Mock::given(wiremock::matchers::method("POST"))
@@ -99,6 +101,8 @@ async fn successful_delivery_creates_attestation_leaf_via_events() -> anyhow::Re
 #[tokio::test]
 async fn multiple_deliveries_create_multiple_attestation_leaves() -> anyhow::Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        // Create delivery engine for delivery operations
+        env.create_delivery_engine()?;
         // Setup mock server that accepts all requests
         let mock_server = MockServer::start().await;
         Mock::given(wiremock::matchers::method("POST"))
@@ -177,6 +181,8 @@ async fn multiple_deliveries_create_multiple_attestation_leaves() -> anyhow::Res
 #[tokio::test]
 async fn failed_delivery_does_not_create_attestation_leaf() -> anyhow::Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        // Create delivery engine for delivery operations
+        env.create_delivery_engine()?;
         // Setup mock server that always returns 500 (failure)
         let mock_server = MockServer::start().await;
         Mock::given(wiremock::matchers::method("POST"))
@@ -301,7 +307,9 @@ async fn direct_success_event_creates_attestation_leaf() {
 /// demonstrating the batching behavior of the merkle service.
 #[tokio::test]
 async fn multiple_events_enable_batch_attestation_commitment() -> anyhow::Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        // Create delivery engine for delivery operations
+        env.create_delivery_engine()?;
         // Setup attestation service
         let merkle_service = env.create_test_attestation_service().await?;
         let merkle_service = Arc::new(RwLock::new(merkle_service));

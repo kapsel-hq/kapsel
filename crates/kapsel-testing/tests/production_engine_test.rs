@@ -8,7 +8,9 @@ use kapsel_testing::TestEnv;
 
 #[tokio::test]
 async fn production_engine_can_be_created() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Verify engine was created and has initial stats
         let stats = env.delivery_stats().await;
         assert!(stats.is_some(), "delivery engine should be configured");

@@ -37,6 +37,8 @@ async fn snapshot_events_table_works() -> Result<()> {
 #[tokio::test]
 async fn snapshot_delivery_attempts_works() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup successful delivery - no transaction needed for isolated tests
         let tenant_id = env.create_tenant("delivery-snapshot").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
@@ -83,6 +85,8 @@ async fn snapshot_database_schema_works() -> Result<()> {
 #[tokio::test]
 async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Testing complete snapshot functionality - no transaction needed for isolated
         // tests
         let tenant_id = env.create_tenant("e2e-snapshot").await?;
@@ -150,6 +154,8 @@ async fn comprehensive_end_to_end_snapshot_test() -> Result<()> {
 #[tokio::test]
 async fn validation_first_snapshot_test() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("validation").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -199,6 +205,8 @@ async fn validation_first_snapshot_test() -> Result<()> {
 #[tokio::test]
 async fn snapshot_with_multiple_tenants() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Create multiple tenants with webhooks - no transaction needed for isolated
         // tests
         let tenant1 = env.create_tenant("tenant-1").await?;
@@ -256,6 +264,8 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
 #[tokio::test]
 async fn snapshot_with_failed_attempts() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("failure-snapshot").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 

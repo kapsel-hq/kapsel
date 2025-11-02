@@ -21,6 +21,8 @@ use serde_json::json;
 #[tokio::test]
 async fn golden_webhook_delivery_with_retry_backoff() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("test-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 

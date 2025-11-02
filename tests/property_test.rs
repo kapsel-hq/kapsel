@@ -541,6 +541,8 @@ fn property_webhook_delivery_retry_scenarios() {
         .run(&(0u32..5, any::<[u8; 12]>()), |(num_failures, webhook_data)| {
             rt.block_on(async {
                 TestEnv::run_isolated_test(|mut env| async move {
+                    env.create_delivery_engine()?;
+
                     let tenant_name = "prop-test-tenant";
                     let tenant_id = env.create_tenant(tenant_name).await?;
                     let endpoint_id = env
@@ -627,6 +629,8 @@ fn property_idempotency_under_duress() {
         .run(&(1usize..4, 0u32..3), |(duplicate_count, initial_failures)| {
             rt.block_on(async {
                 TestEnv::run_isolated_test(|mut env| async move {
+                    env.create_delivery_engine()?;
+
                     let tenant_name = "idempotency-tenant";
                     let tenant_id = env.create_tenant(tenant_name).await?;
                     let endpoint_id = env
@@ -732,6 +736,8 @@ fn property_circuit_breaker_resilience() {
             |response_sequence| {
                 rt.block_on(async {
                     TestEnv::run_isolated_test(|mut env| async move {
+                        env.create_delivery_engine()?;
+
                         let tenant_name = "circuit-breaker-tenant";
                         let tenant_id = env.create_tenant(tenant_name).await?;
                         let endpoint_id = env

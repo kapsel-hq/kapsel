@@ -14,6 +14,8 @@ use serial_test::serial;
 #[tokio::test]
 async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Set up attestation service
         let merkle_service = env.create_test_attestation_service().await?;
         env.enable_attestation(merkle_service)?;
@@ -55,6 +57,8 @@ async fn successful_delivery_creates_attestation_leaf() -> Result<()> {
 #[tokio::test]
 async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let merkle_service = env.create_test_attestation_service().await?;
         env.enable_attestation(merkle_service)?;
 
@@ -114,6 +118,8 @@ async fn failed_delivery_preserves_attestation_invariants() -> Result<()> {
 #[tokio::test]
 async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // No attestation service configured - attestation disabled
 
         // Create tenant and endpoint - no transaction needed for isolated tests
@@ -148,6 +154,8 @@ async fn attestation_disabled_preserves_delivery_behavior() -> Result<()> {
 #[tokio::test]
 async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let merkle_service = env.create_test_attestation_service().await?;
         env.enable_attestation(merkle_service)?;
 
@@ -195,6 +203,8 @@ async fn attestation_preserves_idempotency_guarantees() -> Result<()> {
 #[serial]
 async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let merkle_service = env.create_test_attestation_service().await?;
         env.enable_attestation(merkle_service)?;
 
@@ -245,6 +255,8 @@ async fn concurrent_deliveries_maintain_attestation_integrity() -> Result<()> {
 #[tokio::test]
 async fn attestation_batch_commitment_scenario() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let merkle_service = env.create_test_attestation_service().await?;
         env.enable_attestation(merkle_service)?;
 

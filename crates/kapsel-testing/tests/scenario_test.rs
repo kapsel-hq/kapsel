@@ -89,6 +89,8 @@ async fn scenario_builder_invariant_failure_caught() -> Result<()> {
 #[tokio::test]
 async fn scenario_builder_snapshot_integration() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("scenario-snapshot").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -131,6 +133,8 @@ async fn scenario_builder_snapshot_integration() -> Result<()> {
 #[tokio::test]
 async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("scenario-comprehensive").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -175,6 +179,8 @@ async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
 #[tokio::test]
 async fn scenario_builder_with_retries() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("retry-scenario").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 

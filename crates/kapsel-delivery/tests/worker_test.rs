@@ -18,6 +18,8 @@ use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn production_engine_successful_delivery() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that returns success
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
@@ -62,6 +64,8 @@ async fn production_engine_successful_delivery() -> Result<()> {
 #[tokio::test]
 async fn production_engine_retryable_error() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that fails once, then succeeds
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
@@ -115,6 +119,8 @@ async fn production_engine_retryable_error() -> Result<()> {
 #[tokio::test]
 async fn production_engine_non_retryable_error() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that returns 400 Bad Request
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
@@ -157,6 +163,8 @@ async fn production_engine_non_retryable_error() -> Result<()> {
 #[tokio::test]
 async fn production_engine_batch_processing() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that accepts all requests
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
@@ -214,6 +222,8 @@ async fn production_engine_batch_processing() -> Result<()> {
 #[tokio::test]
 async fn production_engine_stats_tracking() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let mock_server = MockServer::start().await;
 
         // Setup success response
@@ -266,6 +276,8 @@ async fn production_engine_stats_tracking() -> Result<()> {
 #[tokio::test]
 async fn production_engine_webhook_headers() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let mock_server = MockServer::start().await;
 
         // Verify specific headers are sent
@@ -313,6 +325,8 @@ async fn production_engine_webhook_headers() -> Result<()> {
 #[tokio::test]
 async fn production_engine_retry_exhaustion() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that always fails
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
@@ -365,7 +379,9 @@ async fn production_engine_retry_exhaustion() -> Result<()> {
 #[tokio::test]
 async fn production_engine_circuit_breaker() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
-        // Setup mock endpoint that always fails to trigger circuit breaker
+        env.create_delivery_engine()?;
+
+        // Setup mock endpoint that always fails (triggers circuit breaker)
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(ResponseTemplate::new(500).set_body_string("Server Error"))
@@ -421,7 +437,9 @@ async fn production_engine_circuit_breaker() -> Result<()> {
 #[tokio::test]
 async fn production_engine_concurrent_processing() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
-        // Setup mock endpoint that accepts all requests
+        env.create_delivery_engine()?;
+
+        // Setup mock endpoint that accepts requests
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
@@ -478,6 +496,8 @@ async fn production_engine_concurrent_processing() -> Result<()> {
 #[tokio::test]
 async fn production_engine_timeout_handling() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup mock endpoint that doesn't respond (simulating timeout)
         // TestEnv mock server will handle the timeout behavior
         let tenant = env.create_tenant("timeout-test").await?;
@@ -522,6 +542,8 @@ async fn production_engine_timeout_handling() -> Result<()> {
 #[tokio::test]
 async fn production_engine_database_resilience() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
@@ -573,6 +595,8 @@ async fn production_engine_database_resilience() -> Result<()> {
 #[tokio::test]
 async fn production_engine_graceful_shutdown() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
@@ -634,6 +658,8 @@ async fn production_engine_graceful_shutdown() -> Result<()> {
 #[tokio::test]
 async fn production_engine_precise_retry_exhaustion() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Setup endpoint that always fails
         let mock_server = MockServer::start().await;
         Mock::given(matchers::method("POST"))

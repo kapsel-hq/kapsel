@@ -1,6 +1,10 @@
 //! Core TestEnv implementation - basic environment setup and management
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use futures::FutureExt;
@@ -11,6 +15,7 @@ use kapsel_delivery::{
     ClientConfig, DeliveryConfig, DeliveryEngine,
 };
 use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{database, database::TestDatabase, http, time, TestClock, TestEnv};
@@ -32,8 +37,8 @@ impl Default for TestEnvBuilder {
             batch_size: 10,
             poll_interval: Duration::from_millis(100),
             shutdown_timeout: Duration::from_secs(5),
-            enable_delivery_engine: true,
-            is_isolated: false, // Default to shared database to prevent leaks
+            enable_delivery_engine: false, // Disabled by default for performance
+            is_isolated: false,            // Default to shared database to prevent leaks
         }
     }
 }
@@ -101,6 +106,8 @@ impl TestEnvBuilder {
 
     /// Builds the test environment with configured production engines.
     pub async fn build(self) -> Result<TestEnv> {
+        let start_time = Instant::now();
+
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
@@ -109,6 +116,7 @@ impl TestEnvBuilder {
             .with_test_writer()
             .try_init();
 
+        let db_start = Instant::now();
         let database = if self.is_isolated {
             TestDatabase::new_isolated()
                 .await
@@ -118,24 +126,35 @@ impl TestEnvBuilder {
         } else {
             TestDatabase::new().await.context("failed to create test database")?.pool().clone()
         };
+        let db_duration = db_start.elapsed();
 
         let test_run_id = Uuid::new_v4().simple().to_string();
+
+        let http_start = Instant::now();
         let http_mock = http::MockServer::start().await;
+        let http_duration = http_start.elapsed();
+
         let clock = TestClock::new();
         let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
         let storage = Arc::new(Storage::new(database.clone(), &clock_arc));
 
+        let delivery_start = Instant::now();
         let delivery_engine = if self.enable_delivery_engine {
             let delivery_config = DeliveryConfig {
                 worker_count: self.worker_count,
                 batch_size: self.batch_size,
                 poll_interval: self.poll_interval,
                 shutdown_timeout: self.shutdown_timeout,
-                client_config: ClientConfig::default(),
+                client_config: ClientConfig {
+                    timeout: Duration::from_secs(2),
+                    user_agent: "Kapsel-Test/1.0".to_string(),
+                    max_redirects: 2,
+                    verify_tls: false,
+                },
                 default_retry_policy: RetryPolicy {
-                    max_attempts: 10,
-                    base_delay: Duration::from_secs(1),
-                    max_delay: Duration::from_secs(600),
+                    max_attempts: 2,
+                    base_delay: Duration::from_millis(100),
+                    max_delay: Duration::from_secs(5),
                     jitter_factor: 0.0, // Zero jitter for deterministic tests
                     backoff_strategy: BackoffStrategy::Exponential,
                 },
@@ -160,6 +179,26 @@ impl TestEnvBuilder {
         } else {
             None
         };
+        let delivery_duration = delivery_start.elapsed();
+
+        let total_duration = start_time.elapsed();
+
+        if total_duration > Duration::from_millis(500) {
+            warn!(
+                "TestEnv::build() took {}ms (DB: {}ms, HTTP: {}ms, Delivery: {}ms, isolated: {})",
+                total_duration.as_millis(),
+                db_duration.as_millis(),
+                http_duration.as_millis(),
+                delivery_duration.as_millis(),
+                self.is_isolated
+            );
+        } else {
+            debug!(
+                "TestEnv::build() completed in {}ms (isolated: {})",
+                total_duration.as_millis(),
+                self.is_isolated
+            );
+        }
 
         Ok(TestEnv {
             http_mock,
@@ -444,12 +483,17 @@ impl TestEnv {
                 worker_count: 1,
                 batch_size: 10,
                 poll_interval: std::time::Duration::from_millis(100),
-                client_config: kapsel_delivery::ClientConfig::default(),
+                client_config: kapsel_delivery::ClientConfig {
+                    timeout: Duration::from_secs(2),
+                    user_agent: "Kapsel-Test/1.0".to_string(),
+                    max_redirects: 2,
+                    verify_tls: false,
+                },
                 default_retry_policy: kapsel_delivery::retry::RetryPolicy {
                     jitter_factor: 0.0, // Deterministic for tests
                     ..Default::default()
                 },
-                shutdown_timeout: std::time::Duration::from_secs(5),
+                shutdown_timeout: std::time::Duration::from_secs(1),
             };
 
             let new_engine = DeliveryEngine::with_event_handler(
@@ -464,6 +508,50 @@ impl TestEnv {
             tracing::debug!("Successfully created new delivery engine with attestation");
         }
 
+        Ok(())
+    }
+
+    /// Create delivery engine on demand for tests that need it.
+    ///
+    /// This avoids the performance penalty of creating delivery engines
+    /// for tests that don't need delivery functionality.
+    pub fn create_delivery_engine(&mut self) -> anyhow::Result<()> {
+        if self.delivery_engine.is_some() {
+            return Ok(()); // Already exists
+        }
+
+        let delivery_config = DeliveryConfig {
+            worker_count: 1,
+            batch_size: 10,
+            poll_interval: Duration::from_millis(100),
+            shutdown_timeout: Duration::from_secs(1),
+            client_config: ClientConfig {
+                timeout: Duration::from_secs(2),
+                user_agent: "Kapsel-Test/1.0".to_string(),
+                max_redirects: 2,
+                verify_tls: false,
+            },
+            default_retry_policy: RetryPolicy {
+                max_attempts: 2,
+                base_delay: Duration::from_millis(100),
+                max_delay: Duration::from_secs(5),
+                jitter_factor: 0.0,
+                backoff_strategy: BackoffStrategy::Exponential,
+            },
+        };
+
+        let clock_arc: Arc<dyn Clock> = Arc::new(self.clock.clone());
+        let event_handler =
+            Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+
+        let engine = DeliveryEngine::with_event_handler(
+            self.database.clone(),
+            delivery_config,
+            clock_arc,
+            event_handler,
+        )?;
+
+        self.delivery_engine = Some(engine);
         Ok(())
     }
 
@@ -483,12 +571,16 @@ impl TestEnv {
         F: FnOnce(Self) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
+        let start_time = Instant::now();
+
         database::ensure_template_database_exists()
             .await
             .context("failed to ensure template database exists")?;
 
+        let admin_pool_start = Instant::now();
         let admin_pool =
             database::create_admin_pool().await.context("failed to create admin pool")?;
+        let admin_pool_duration = admin_pool_start.elapsed();
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -496,26 +588,45 @@ impl TestEnv {
             .as_secs();
         let db_name = format!("test_{}_{}", timestamp, Uuid::new_v4().simple());
 
+        let db_create_start = Instant::now();
         database::create_database_from_template(&admin_pool, &db_name)
             .await
             .with_context(|| format!("failed to create isolated database: {db_name}"))?;
+        let db_create_duration = db_create_start.elapsed();
 
+        let env_build_start = Instant::now();
         let env = Self::build_for_isolated_db(&db_name)
             .await
             .with_context(|| format!("failed to build TestEnv for database: {db_name}"))?;
+        let env_build_duration = env_build_start.elapsed();
 
+        let setup_duration = start_time.elapsed();
+        if setup_duration > Duration::from_millis(1000) {
+            warn!(
+                "Isolated test setup took {}ms (admin pool: {}ms, DB create: {}ms, env build: {}ms) for {}",
+                setup_duration.as_millis(),
+                admin_pool_duration.as_millis(),
+                db_create_duration.as_millis(),
+                env_build_duration.as_millis(),
+                db_name
+            );
+        }
+
+        let test_start = Instant::now();
         let test_result = std::panic::AssertUnwindSafe(test_fn(env)).catch_unwind().await;
+        let test_duration = test_start.elapsed();
 
+        let cleanup_start = Instant::now();
         match database::drop_database_immediate(&admin_pool, &db_name).await {
             Ok(()) => {
-                tracing::debug!(database = %db_name, "Successfully cleaned up isolated test database");
+                debug!(database = %db_name, "Successfully cleaned up isolated test database");
             },
             Err(e) => {
                 let error_msg = e.to_string().to_lowercase();
                 if error_msg.contains("does not exist") || error_msg.contains("not exist") {
-                    tracing::debug!(database = %db_name, "Database already cleaned up (container restart?)");
+                    debug!(database = %db_name, "Database already cleaned up (container restart?)");
                 } else {
-                    tracing::error!(database = %db_name, error = %e, "CRITICAL: Failed to clean up isolated test database!");
+                    warn!(database = %db_name, error = %e, "Failed to clean up isolated test database");
 
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
@@ -526,6 +637,17 @@ impl TestEnv {
                 }
             },
         }
+        let cleanup_duration = cleanup_start.elapsed();
+
+        let total_duration = start_time.elapsed();
+        info!(
+            "Isolated test {} completed in {}ms (setup: {}ms, test: {}ms, cleanup: {}ms)",
+            db_name,
+            total_duration.as_millis(),
+            setup_duration.as_millis(),
+            test_duration.as_millis(),
+            cleanup_duration.as_millis()
+        );
 
         match test_result {
             Ok(Ok(())) => Ok(()),
@@ -536,6 +658,8 @@ impl TestEnv {
 
     /// Build TestEnv for a specific isolated database.
     async fn build_for_isolated_db(database_name: &str) -> Result<Self> {
+        let start_time = Instant::now();
+
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
@@ -544,42 +668,32 @@ impl TestEnv {
             .with_test_writer()
             .try_init();
 
+        let pool_start = Instant::now();
         let database = database::create_database_pool(database_name)
             .await
             .with_context(|| format!("failed to create pool for database: {database_name}"))?;
+        let pool_duration = pool_start.elapsed();
 
         let test_run_id = Uuid::new_v4().simple().to_string();
+
+        let http_start = Instant::now();
         let http_mock = http::MockServer::start().await;
+        let http_duration = http_start.elapsed();
+
         let clock = time::TestClock::new();
         let clock_arc: Arc<dyn Clock> = Arc::new(clock.clone());
         let storage = Arc::new(Storage::new(database.clone(), &clock_arc));
 
-        let delivery_config = DeliveryConfig {
-            worker_count: 1,
-            batch_size: 10,
-            poll_interval: Duration::from_millis(100),
-            shutdown_timeout: Duration::from_secs(5),
-            client_config: ClientConfig::default(),
-            default_retry_policy: RetryPolicy {
-                max_attempts: 10,
-                base_delay: Duration::from_secs(1),
-                max_delay: Duration::from_secs(600),
-                jitter_factor: 0.0,
-                backoff_strategy: BackoffStrategy::Exponential,
-            },
-        };
+        let delivery_engine = None;
 
-        let event_handler =
-            Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+        let total_duration = start_time.elapsed();
 
-        let delivery_engine = Some(
-            DeliveryEngine::with_event_handler(
-                database.clone(),
-                delivery_config,
-                clock_arc,
-                event_handler,
-            )
-            .context("failed to create delivery engine")?,
+        debug!(
+            "build_for_isolated_db({}) took {}ms (pool: {}ms, HTTP: {}ms)",
+            database_name,
+            total_duration.as_millis(),
+            pool_duration.as_millis(),
+            http_duration.as_millis()
         );
 
         Ok(Self {

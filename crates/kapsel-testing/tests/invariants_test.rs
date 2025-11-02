@@ -11,7 +11,9 @@ use kapsel_testing::{MockEndpoint, TestEnv, WebhookBuilder};
 
 #[tokio::test]
 async fn production_engine_maintains_state_invariants() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Create test data using production code paths
         let tenant_id = env.create_tenant("invariant-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
@@ -49,7 +51,9 @@ async fn production_engine_maintains_state_invariants() -> Result<()> {
 
 #[tokio::test]
 async fn idempotency_invariant_prevents_duplicates() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("idempotency-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -88,7 +92,9 @@ async fn idempotency_invariant_prevents_duplicates() -> Result<()> {
 
 #[tokio::test]
 async fn retry_invariant_maintains_pending_state() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("retry-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -121,6 +127,8 @@ async fn retry_invariant_maintains_pending_state() -> Result<()> {
 #[tokio::test]
 async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("batch-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -169,7 +177,9 @@ async fn batch_processing_invariant_handles_multiple_events() -> Result<()> {
 
 #[tokio::test]
 async fn database_consistency_invariant_after_delivery_cycle() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("consistency-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
@@ -204,7 +214,9 @@ async fn database_consistency_invariant_after_delivery_cycle() -> Result<()> {
 
 #[tokio::test]
 async fn engine_lifecycle_invariant_handles_restart() -> Result<()> {
-    TestEnv::run_isolated_test(|env| async move {
+    TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         let tenant_id = env.create_tenant("lifecycle-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 

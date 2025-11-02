@@ -1,4 +1,7 @@
 [profile.default]
+# Limit test parallelism to avoid PostgreSQL connection exhaustion
+test-threads = 4
+
 # Only show failures, not all test output
 status-level = "fail"
 

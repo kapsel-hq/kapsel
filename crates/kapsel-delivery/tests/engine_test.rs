@@ -17,6 +17,8 @@ use kapsel_testing::{http::MockResponse, TestEnv};
 #[tokio::test]
 async fn delivery_engine_processes_pending_events() -> Result<()> {
     TestEnv::run_isolated_test(|mut env| async move {
+        env.create_delivery_engine()?;
+
         // Create test data - no transactions needed for isolated tests
         let tenant_id = env.create_tenant("test-tenant").await?;
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
