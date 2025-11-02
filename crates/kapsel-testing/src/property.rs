@@ -573,6 +573,7 @@ mod tests {
         #![proptest_config(ProptestConfig {
             cases: 3,
             timeout: 15000,
+            fork: false,
             ..ProptestConfig::default()
         })]
 
