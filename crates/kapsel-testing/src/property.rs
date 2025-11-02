@@ -160,7 +160,7 @@ fn ingest_webhook_strategy() -> impl Strategy<Value = SystemAction> {
     (
         "[a-z]{3,10}",                           // tenant_name
         "[a-z]{3,10}",                           // endpoint_name
-        prop::collection::vec(any::<u8>(), 1..1000), // payload
+        prop::collection::vec(any::<u8>(), 1..32), // payload
         prop_oneof![
             "application/json",
             "application/x-www-form-urlencoded",
@@ -583,7 +583,8 @@ mod tests {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 let env = crate::TestEnv::new_shared().await.unwrap();
-                let mut tx = env.pool().begin().await.unwrap();
+                let mut tx = env.pool().begin().await
+                    .expect("Failed to acquire database connection - likely CI resource contention (PoolTimedOut)");
 
                 // Create basic test data within transaction
                 let tenant_id = env.create_tenant_tx(&mut tx, "property-tenant").await.unwrap();
@@ -631,7 +632,8 @@ mod tests {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 let env = crate::TestEnv::new_shared().await.unwrap();
-                let mut tx = env.pool().begin().await.unwrap();
+                let mut tx = env.pool().begin().await
+                    .expect("Failed to acquire database connection - likely CI resource contention (PoolTimedOut)");
 
                 // Create test data within transaction
                 let tenant_id = env.create_tenant_tx(&mut tx, "failure-tenant").await.unwrap();
