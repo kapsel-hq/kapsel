@@ -20,7 +20,7 @@ pub mod events;
 pub mod fixtures;
 pub mod http;
 pub mod invariants;
-pub mod property;
+
 pub mod scenario;
 pub mod time;
 
