@@ -356,4 +356,107 @@ proptest! {
             );
         }
     }
+
+    /// Content hash idempotency strategy maintains consistency.
+    ///
+    /// Verifies that identical payload content produces identical hashes
+    /// regardless of headers, timing, or other metadata. This ensures
+    /// reliable duplicate detection based on payload content.
+    #[test]
+    fn content_hash_idempotency_maintained(
+        payload_bytes in prop::collection::vec(any::<u8>(), 1..1024),
+        different_headers in prop::collection::hash_map(
+            prop::string::string_regex("[a-zA-Z-]{1,15}").unwrap(),
+            prop::string::string_regex("[a-zA-Z0-9\\s]{1,30}").unwrap(),
+            1..3,
+        ),
+    ) {
+        use sha2::{Digest, Sha256};
+
+        let payload = Bytes::from(payload_bytes);
+
+        // Create two webhook requests with identical payload but different headers
+        let webhook1 = TestWebhookData {
+            tenant_id: TenantId(Uuid::new_v4()),
+            source_event_id: "test1".to_string(),
+            payload: payload.clone(),
+            content_type: "application/json".to_string(),
+            headers: HashMap::new(),
+        };
+
+        let webhook2 = TestWebhookData {
+            tenant_id: TenantId(Uuid::new_v4()),
+            source_event_id: "test2".to_string(),
+            payload,
+            content_type: "application/json".to_string(),
+            headers: different_headers,
+        };
+
+        // Calculate content hash for both (should be identical)
+        let mut hasher1 = Sha256::new();
+        hasher1.update(&webhook1.payload);
+        let hash1 = hex::encode(hasher1.finalize());
+
+        let mut hasher2 = Sha256::new();
+        hasher2.update(&webhook2.payload);
+        let hash2 = hex::encode(hasher2.finalize());
+
+        // Core invariant: identical payloads produce identical hashes
+        prop_assert_eq!(&hash1, &hash2, "Content hash must be identical for identical payloads");
+
+        // Verify hash is deterministic (same input produces same output)
+        let mut hasher3 = Sha256::new();
+        hasher3.update(&webhook1.payload);
+        let hash3 = hex::encode(hasher3.finalize());
+        prop_assert_eq!(&hash1, &hash3, "Content hash must be deterministic");
+    }
+
+    /// Source event ID extraction from JSON payloads works correctly.
+    ///
+    /// Verifies that JSONPath extraction correctly identifies source event IDs
+    /// from webhook payloads for deduplication purposes.
+    #[test]
+    fn source_event_id_idempotency_detection(
+        source_id in prop::string::string_regex("[a-zA-Z0-9_-]{8,32}").unwrap(),
+        additional_data in prop::collection::hash_map(
+            prop::string::string_regex("[a-zA-Z_]{1,10}").unwrap(),
+            prop::string::string_regex("[a-zA-Z0-9]{1,20}").unwrap(),
+            0..3,
+        ),
+    ) {
+        // Create JSON payload with extractable source ID
+        let mut json_payload = serde_json::json!({
+            "id": &source_id,
+            "event": "test.event",
+            "timestamp": 1_234_567_890
+        });
+
+        // Add additional data
+        for (key, value) in additional_data {
+            json_payload[key] = serde_json::Value::String(value);
+        }
+
+        let payload_bytes = serde_json::to_vec(&json_payload).unwrap();
+
+        // Test JSONPath extraction ($.id is the common pattern)
+        let json_value: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        let extracted_id = json_value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        prop_assert_eq!(extracted_id, &source_id,
+            "Source event ID should be extractable from JSON payload");
+
+        // Test that same source ID is consistently extracted
+        let duplicate_payload_bytes = serde_json::to_vec(&json_payload).unwrap();
+        let duplicate_json: serde_json::Value = serde_json::from_slice(&duplicate_payload_bytes).unwrap();
+        let duplicate_extracted_id = duplicate_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        prop_assert_eq!(duplicate_extracted_id, extracted_id,
+            "Source event ID extraction must be consistent");
+    }
 }

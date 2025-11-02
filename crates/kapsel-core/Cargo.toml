@@ -25,6 +25,8 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 proptest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 kapsel-testing = { path = "../kapsel-testing" }
 
 [lints]

@@ -335,6 +335,61 @@ async fn ingest_webhook_handles_different_content_types() -> Result<()> {
     .await
 }
 
+/// Test webhook ingestion with form-urlencoded content type.
+///
+/// Verifies that application/x-www-form-urlencoded payloads are properly
+/// processed, stored, and the content-type header is preserved correctly.
+#[tokio::test]
+async fn ingest_form_urlencoded_content_type() -> Result<()> {
+    TestEnv::run_isolated_test(|env| async move {
+        let tenant_id = env.create_tenant("form-test-tenant").await?;
+        let (api_key, _key_hash) = env.create_api_key(tenant_id, "form-test-key").await?;
+        let endpoint_id =
+            env.create_endpoint(tenant_id, "https://example.com/form-webhook").await?;
+
+        let app = create_test_router(env.pool().clone(), Arc::new(env.clock.clone()));
+
+        // Test form-urlencoded payload with proper encoding
+        let form_payload =
+            "event=payment.completed&amount=1000&currency=USD&user_id=12345&status=success";
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/ingest/{endpoint_id}"))
+            .header(AUTHORIZATION, format!("Bearer {api_key}"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("x-idempotency-key", "form-urlencoded-test")
+            .body(Body::from(form_payload))?;
+
+        let response = app.oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK, "Form-urlencoded ingestion should succeed");
+
+        // Verify form-urlencoded content type and payload were stored correctly
+        let stored_events =
+            env.storage().webhook_events.find_by_tenant(tenant_id, Some(10)).await?;
+        let form_event = stored_events
+            .into_iter()
+            .find(|e| e.source_event_id == "form-urlencoded-test")
+            .expect("form-urlencoded event should be stored");
+
+        assert_eq!(form_event.content_type, "application/x-www-form-urlencoded");
+
+        // Verify the raw form data is preserved in the body
+        let body_str =
+            String::from_utf8(form_event.body.clone()).expect("body should be valid UTF-8");
+        assert_eq!(body_str, form_payload);
+
+        // Verify payload size is correctly calculated
+        assert_eq!(
+            form_event.payload_size,
+            i32::try_from(form_payload.len()).expect("payload size fits in i32")
+        );
+
+        Ok(())
+    })
+    .await
+}
+
 /// Test webhook ingestion with empty idempotency key.
 ///
 /// Verifies that webhooks without idempotency keys are processed
