@@ -41,9 +41,8 @@ impl TestEnv {
     /// start.
     pub async fn process_batch(&self) -> Result<()> {
         if let Some(ref engine) = self.delivery_engine {
-            let processed_count =
-                engine.process_batch().await.context("failed to process batch")?;
-            tracing::debug!(processed_count, "batch processing completed");
+            engine.process_batch().await.context("failed to process batch")?;
+            tracing::debug!("batch processing completed");
             Ok(())
         } else {
             anyhow::bail!(

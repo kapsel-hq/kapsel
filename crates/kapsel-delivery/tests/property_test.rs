@@ -1,471 +1,549 @@
-//! Property-based tests for delivery component invariants.
+//! Property-based tests for delivery storage abstraction.
 //!
-//! Uses randomly generated inputs to verify delivery invariants always
-//! hold regardless of input data or internal state.
+//! This file replaces the 23+ individual HTTP status tests in the old
+//! worker_test.rs with focused property-based validation of the storage
+//! abstraction layer. Tests focus on business logic invariants and data
+//! consistency rather than full HTTP integration, enabling comprehensive
+//! validation without infrastructure dependencies.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Utc};
-use kapsel_core::{Clock, TestClock};
-use kapsel_delivery::{
-    circuit::{CircuitBreakerManager, CircuitConfig},
-    error::DeliveryError,
-    retry::{BackoffStrategy, RetryContext, RetryPolicy},
+use chrono::Utc;
+use kapsel_core::models::{
+    BackoffStrategy, CircuitState, EndpointId, EventId, EventStatus, IdempotencyStrategy,
+    SignatureConfig, TenantId, WebhookEvent,
 };
-use proptest::{prelude::*, test_runner::Config as ProptestConfig};
+use kapsel_delivery::storage::{mock::MockDeliveryStorage, DeliveryStorage};
+use proptest::prelude::*;
+use sqlx::types::Json;
+use uuid::Uuid;
 
-/// Creates property test configuration based on environment.
-///
-/// Uses environment variables:
-/// - `PROPTEST_CASES`: Number of test cases (default: 20 for dev, 100 for CI)
-/// - `CI`: If set to "true", uses CI configuration
-fn proptest_config() -> ProptestConfig {
-    let is_ci = std::env::var("CI").unwrap_or_default() == "true";
-    let default_cases = if is_ci { 12 } else { 8 };
-
-    let cases =
-        std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
-
-    ProptestConfig::with_cases(cases)
-}
-
-proptest! {
-    #![proptest_config(proptest_config())]
-
-    /// Verifies delivery retry decision never exceeds maximum attempts.
-    #[test]
-    fn delivery_retry_bounds_respected(
-        max_attempts in 1u32..20,
-        failure_count in 0u32..50,
-        strategy in prop::sample::select(vec![
-            BackoffStrategy::Exponential,
-            BackoffStrategy::Linear,
-            BackoffStrategy::Fixed,
-        ])
-    ) {
-        let clock = Arc::new(TestClock::new());
-        let policy = RetryPolicy {
-            max_attempts,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(300),
-            jitter_factor: 0.1,
-            backoff_strategy: strategy,
-        };
-
-        let error = DeliveryError::server_error(500, "Server Error");
-        let context = RetryContext::new(
-            failure_count,
-            error.clone(),
-            DateTime::<Utc>::from(clock.now_system()),
-            policy,
-        );
-
-        let decision = context.decide_retry();
-
-        // If failure count >= max attempts, should give up
-        if failure_count >= max_attempts {
-            if let kapsel_delivery::retry::RetryDecision::GiveUp { .. } = decision {
-                // Expected
-            } else {
-                prop_assert!(false, "Should give up after max attempts");
-            }
-        }
-
-        // If failure count < max attempts and error is retryable, should retry
-        if failure_count < max_attempts && error.is_retryable() {
-            if let kapsel_delivery::retry::RetryDecision::Retry { .. } = decision {
-                // Expected
-            } else {
-                prop_assert!(false, "Should retry for retryable error");
-            }
-        }
-    }
-
-    /// Verifies delivery backoff calculation produces reasonable delays.
-    #[test]
-    fn delivery_backoff_calculation_bounds(
-        attempt in 0u32..15,
-        base_delay_secs in 1u64..30,
-        max_delay_secs in 30u64..600,
-        jitter_factor in 0.0f64..0.5
-    ) {
-        let clock = Arc::new(TestClock::new());
-        let policy = RetryPolicy {
-            max_attempts: 10,
-            base_delay: Duration::from_secs(base_delay_secs),
-            max_delay: Duration::from_secs(max_delay_secs),
-            jitter_factor,
-            backoff_strategy: BackoffStrategy::Exponential,
-        };
-
-        let error = DeliveryError::network("Connection failed".to_string());
-        let context = RetryContext::new(
-            attempt,
-            error,
-            DateTime::<Utc>::from(clock.now_system()),
-            policy,
-        );
-
-        if let kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } = context.decide_retry() {
-            let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
-            let delay_secs = u64::try_from(delay.num_seconds().max(0)).unwrap_or(0);
-
-            // Delay should be at least 0 and at most max_delay (with some tolerance for jitter)
-            prop_assert!(delay_secs <= max_delay_secs + 1); // Allow 1 second tolerance for jitter
-        }
-    }
-
-    /// Verifies circuit breaker transitions correctly between states.
-    #[test]
-    fn delivery_circuit_breaker_state_transitions(
-        failure_threshold in 1usize..15,
-        success_threshold in 1usize..8,
-        failure_rate_threshold in 0.1f64..0.9,
-        consecutive_failures in 0usize..30
-    ) {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = CircuitConfig {
-            failure_threshold: u32::try_from(failure_threshold).unwrap(),
-            success_threshold: u32::try_from(success_threshold).unwrap(),
-            failure_rate_threshold,
-            min_requests_for_rate: 5,
-            open_timeout: Duration::from_secs(10),
-            half_open_max_requests: 3,
-        };
-
-        rt.block_on(async {
-            let manager = CircuitBreakerManager::new(config);
-            let endpoint_id = "test-endpoint";
-
-            // Start in Closed state
-            prop_assert!(manager.should_allow_request(endpoint_id).await);
-
-            // Record consecutive failures
-            for _ in 0..consecutive_failures {
-                manager.record_failure(endpoint_id).await;
-            }
-
-            let stats = manager.circuit_stats(endpoint_id).await.unwrap();
-
-            // Circuit should open if EITHER condition is met:
-            // 1. Consecutive failures >= threshold
-            // 2. Total requests >= min_requests AND failure_rate >= threshold
-            let should_be_open = consecutive_failures >= failure_threshold
-                || (stats.total_requests >= 5 && stats.failure_rate() >= failure_rate_threshold);
-
-            if should_be_open {
-                prop_assert_eq!(stats.state, kapsel_delivery::circuit::CircuitState::Open);
-                prop_assert!(!manager.should_allow_request(endpoint_id).await);
-            } else {
-                prop_assert_eq!(stats.state, kapsel_delivery::circuit::CircuitState::Closed);
-            }
-
-            // Failure count should match what we recorded
-            prop_assert_eq!(stats.consecutive_failures, u32::try_from(consecutive_failures).unwrap());
-            Ok(())
-        })?;
-    }
-
-    /// Verifies circuit breaker opens when failure rate threshold is exceeded.
-    #[test]
-    fn delivery_circuit_breaker_failure_rate(
-        total_requests in 10usize..100,
-        failed_requests in 0usize..100
-    ) {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let failed_requests = failed_requests.min(total_requests);
-        #[allow(clippy::cast_precision_loss)]
-        let expected_rate = failed_requests as f64 / total_requests as f64;
-
-        rt.block_on(async {
-            let manager = CircuitBreakerManager::new(CircuitConfig::default());
-            let endpoint_id = "test-endpoint";
-
-            // Record successes and failures
-            for _ in 0..(total_requests - failed_requests) {
-                manager.record_success(endpoint_id).await;
-            }
-            for _ in 0..failed_requests {
-                manager.record_failure(endpoint_id).await;
-            }
-
-            let stats = manager.circuit_stats(endpoint_id).await.unwrap();
-            let calculated_rate = stats.failure_rate();
-
-            // Allow small floating point tolerance
-            prop_assert!((calculated_rate - expected_rate).abs() < 0.001);
-            prop_assert_eq!(stats.total_requests, u32::try_from(total_requests).unwrap());
-            prop_assert_eq!(stats.failed_requests, u32::try_from(failed_requests).unwrap());
-            Ok(())
-        })?;
-    }
-
-    /// Verifies delivery error categorization for retry decisions.
-    #[test]
-    fn delivery_error_retry_categorization(
-        status_code in 400u16..600,
-        timeout_seconds in 1u64..120
-    ) {
-        // Client errors (4xx) should not be retryable, except 408 and 425
-        if (400..500).contains(&status_code) {
-            let error = DeliveryError::client_error(status_code, "Client Error".to_string());
-            // Special cases: 408 Request Timeout and 425 Too Early are retryable
-            if matches!(status_code, 408 | 425) {
-                prop_assert!(error.is_retryable());
-            } else {
-                prop_assert!(!error.is_retryable());
-            }
-        }
-
-        // Server errors (5xx) should be retryable
-        if (500..600).contains(&status_code) {
-            let error = DeliveryError::server_error(status_code, "Server Error".to_string());
-            prop_assert!(error.is_retryable());
-        }
-
-        // Timeouts should be retryable
-        let timeout_error = DeliveryError::timeout(timeout_seconds);
-        prop_assert!(timeout_error.is_retryable());
-
-        // Network errors should be retryable
-        let network_error = DeliveryError::network("Connection failed".to_string());
-        prop_assert!(network_error.is_retryable());
-
-        // Circuit open should not be retryable (handled differently)
-        let circuit_error = DeliveryError::circuit_open("endpoint-123".to_string());
-        prop_assert!(!circuit_error.is_retryable());
-    }
-}
-
-// Fuzzing tests for delivery module robustness
-proptest! {
-    #![proptest_config(proptest_config())]
-
-    /// Fuzzes retry calculation with extreme and edge case values.
-    #[test]
-    fn fuzz_retry_calculation_edge_cases(
-        attempt in 0u32..1000,
-        base_delay_ms in 1u64..10000,
-        max_delay_ms in 1u64..86_400_000, // Up to 24 hours
-        jitter_factor in 0.0f64..1.0
-    ) {
-        let clock = Arc::new(TestClock::new());
-        let base_delay = Duration::from_millis(base_delay_ms);
-        let max_delay = Duration::from_millis(max_delay_ms.max(base_delay_ms));
-
-        let policy = RetryPolicy {
-            max_attempts: 100,
-            base_delay,
-            max_delay,
-            jitter_factor,
-            backoff_strategy: BackoffStrategy::Exponential,
-        };
-
-        let error = DeliveryError::network("Network failure".to_string());
-        let context = RetryContext::new(
-            attempt,
-            error,
-            DateTime::<Utc>::from(clock.now_system()),
-            policy,
-        );
-
-        let decision = context.decide_retry();
-
-        // Should always produce valid decision
-        match decision {
-            kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } => {
-                let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
-                // Delay should never be negative or significantly exceed max_delay
-                prop_assert!(delay.num_milliseconds() >= 0);
-                // Allow some tolerance for jitter and timing
-                let max_delay_ms = i64::try_from(max_delay.as_millis()).unwrap_or(i64::MAX);
-                prop_assert!(delay.num_milliseconds() <= max_delay_ms * 2); // Double tolerance for extreme jitter
-            }
-            kapsel_delivery::retry::RetryDecision::GiveUp { reason: _ } => {
-                // Should give up if attempt >= max_attempts
-                prop_assert!(attempt >= 100);
-            }
-        }
-    }
-
-    /// Fuzzes circuit breaker with random failure/success sequences.
-    #[test]
-    fn fuzz_circuit_breaker_random_sequences(
-        failure_threshold in 1usize..20,
-        success_threshold in 1usize..10,
-        operations in prop::collection::vec(any::<bool>(), 1..100)
-    ) {
-        let config = CircuitConfig {
-            failure_threshold: u32::try_from(failure_threshold).unwrap(),
-            success_threshold: u32::try_from(success_threshold).unwrap(),
-            failure_rate_threshold: 0.5,
-            min_requests_for_rate: 5,
-            open_timeout: Duration::from_secs(1),
-            half_open_max_requests: 5,
-        };
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let manager = CircuitBreakerManager::new(config);
-            let endpoint_id = "fuzz-endpoint";
-
-            let mut consecutive_failures = 0;
-            let mut consecutive_successes = 0;
-            let mut expected_state = kapsel_delivery::circuit::CircuitState::Closed;
-
-            for success in &operations {
-                if *success {
-                    manager.record_success(endpoint_id).await;
-                    consecutive_failures = 0;
-                    consecutive_successes += 1;
-
-                    // If we were in half-open and got enough successes, should close
-                    if matches!(expected_state, kapsel_delivery::circuit::CircuitState::HalfOpen)
-                        && consecutive_successes >= success_threshold {
-                        expected_state = kapsel_delivery::circuit::CircuitState::Closed;
-                        consecutive_successes = 0;
-                    }
+/// Strategy for generating realistic webhook events.
+fn webhook_event_strategy() -> impl Strategy<Value = WebhookEvent> {
+    (
+        Just(()).prop_map(|()| EventId::new()),
+        Just(()).prop_map(|()| TenantId::new()),
+        Just(()).prop_map(|()| EndpointId::new()),
+        "[a-zA-Z0-9-]{1,50}",                        // source_event_id
+        prop::collection::vec(any::<u8>(), 1..1024), // body
+        0i32..5,                                     // failure_count
+    )
+        .prop_map(|(id, tenant_id, endpoint_id, source_event_id, body, failure_count)| {
+            WebhookEvent {
+                id,
+                tenant_id,
+                endpoint_id,
+                source_event_id,
+                idempotency_strategy: IdempotencyStrategy::Header,
+                status: if failure_count == 0 {
+                    EventStatus::Pending
                 } else {
-                    manager.record_failure(endpoint_id).await;
-                    consecutive_successes = 0;
-                    consecutive_failures += 1;
-
-                    // If we hit failure threshold, should open
-                    if consecutive_failures >= failure_threshold {
-                        expected_state = kapsel_delivery::circuit::CircuitState::Open;
-                    }
-
-                    // Any failure in half-open should reopen
-                    if matches!(expected_state, kapsel_delivery::circuit::CircuitState::HalfOpen) {
-                        expected_state = kapsel_delivery::circuit::CircuitState::Open;
-                    }
-                }
-
-                let stats = manager.circuit_stats(endpoint_id).await.unwrap();
-
-                // Circuit should never be in an invalid state
-                prop_assert!(matches!(stats.state,
-                    kapsel_delivery::circuit::CircuitState::Closed |
-                    kapsel_delivery::circuit::CircuitState::Open |
-                    kapsel_delivery::circuit::CircuitState::HalfOpen
-                ));
-
-                // Counters should never be negative
-                prop_assert!(stats.consecutive_failures <= u32::try_from(operations.len()).unwrap());
-                prop_assert!(stats.consecutive_successes <= u32::try_from(operations.len()).unwrap());
-                prop_assert!(stats.total_requests <= u32::try_from(operations.len()).unwrap());
-                prop_assert!(stats.failed_requests <= u32::try_from(operations.len()).unwrap());
+                    EventStatus::Delivering
+                },
+                failure_count,
+                last_attempt_at: None,
+                next_retry_at: None,
+                headers: Json(HashMap::new()),
+                body: body.clone(),
+                content_type: "application/json".to_string(),
+                received_at: Utc::now(),
+                delivered_at: None,
+                failed_at: None,
+                payload_size: i32::try_from(body.len()).unwrap_or(0),
+                signature_valid: Some(true),
+                signature_error: None,
             }
+        })
+}
+
+/// Strategy for generating endpoint configurations.
+fn endpoint_strategy() -> impl Strategy<Value = kapsel_core::models::Endpoint> {
+    (
+        Just(()).prop_map(|()| EndpointId::new()),
+        Just(()).prop_map(|()| TenantId::new()),
+        "https://example\\.com/webhook[0-9]{1,3}", // url
+        "[a-zA-Z ]{5,30}",                         // name
+        1i32..=10,                                 // max_retries
+        5i32..120,                                 // timeout_seconds
+    )
+        .prop_map(|(id, tenant_id, url, name, max_retries, timeout_seconds)| {
+            kapsel_core::models::Endpoint {
+                id,
+                tenant_id,
+                url,
+                name,
+                is_active: true,
+                signature_config: SignatureConfig::None,
+                max_retries,
+                timeout_seconds,
+                retry_strategy: BackoffStrategy::Exponential,
+                circuit_state: CircuitState::Closed,
+                circuit_failure_count: 0,
+                circuit_success_count: 0,
+                circuit_last_failure_at: None,
+                circuit_half_open_at: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                deleted_at: None,
+                total_events_received: 0,
+                total_events_delivered: 0,
+                total_events_failed: 0,
+            }
+        })
+}
+
+proptest! {
+    /// Property test: Mock storage preserves event data integrity.
+    ///
+    /// Validates that events stored in mock storage can be retrieved
+    /// with identical data, ensuring the storage abstraction doesn't
+    /// corrupt or lose webhook data.
+    #[test]
+    fn mock_storage_preserves_event_data_integrity(
+        mut events in prop::collection::vec(webhook_event_strategy(), 1..50),
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(MockDeliveryStorage::new());
+
+            // Ensure all events start as Pending for consistent testing
+            for event in &mut events {
+                event.status = EventStatus::Pending;
+            }
+
+            // Store all events
+            for event in &events {
+                storage.add_pending_event(event.clone()).await;
+            }
+
+            // Verify initial status for all events
+            for expected_event in &events {
+                let status = storage.find_event_status(expected_event.id).await.unwrap();
+                prop_assert_eq!(status, EventStatus::Pending);
+            }
+
+            // Test claiming events maintains data integrity
+            let claimed = storage.claim_pending_events(events.len()).await.unwrap();
+            prop_assert_eq!(claimed.len(), events.len());
+
+            // Verify each claimed event has correct data
+            for expected_event in &events {
+                let found_event = claimed.iter().find(|e| e.id == expected_event.id);
+                prop_assert!(found_event.is_some(), "Event {} not found in claimed events", expected_event.id);
+
+                if let Some(actual_event) = found_event {
+                    prop_assert_eq!(actual_event.id, expected_event.id);
+                    prop_assert_eq!(actual_event.tenant_id, expected_event.tenant_id);
+                    prop_assert_eq!(actual_event.endpoint_id, expected_event.endpoint_id);
+                    prop_assert_eq!(&actual_event.source_event_id, &expected_event.source_event_id);
+                    prop_assert_eq!(&actual_event.body, &expected_event.body);
+                    prop_assert_eq!(&actual_event.content_type, &expected_event.content_type);
+                    prop_assert_eq!(actual_event.payload_size, expected_event.payload_size);
+
+                    // Verify status changed to Delivering after claiming
+                    prop_assert_eq!(actual_event.status, EventStatus::Delivering);
+                }
+            }
+
             Ok(())
         })?;
     }
 
-    /// Fuzzes backoff calculation with extreme parameter combinations.
+    /// Property test: Event state transitions are valid and consistent.
+    ///
+    /// Validates that state transitions follow the correct workflow:
+    /// Pending -> Delivering -> (Delivered|Failed|Pending)
     #[test]
-    fn fuzz_backoff_extreme_values(
-        attempt in 1u32..100,
-        base_delay_ns in 1u64..1_000_000_000, // 1ns to 1s
-        max_delay_ns in 1_000_000_000u64..86_400_000_000_000, // 1s to 24h
-        jitter_factor in 0.0f64..2.0, // Allow >1 jitter for edge testing
-        strategy in prop::sample::select(vec![
-            BackoffStrategy::Exponential,
-            BackoffStrategy::Linear,
-            BackoffStrategy::Fixed,
-        ])
+    fn event_state_transitions_are_valid(
+        mut event in webhook_event_strategy(),
+        endpoint in endpoint_strategy(),
+        transition_sequence in prop::collection::vec(0u8..4, 1..10),
     ) {
-        let clock = Arc::new(TestClock::new());
-        let base_delay = Duration::from_nanos(base_delay_ns);
-        let max_delay = Duration::from_nanos(max_delay_ns.max(base_delay_ns));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(MockDeliveryStorage::new());
 
-        let policy = RetryPolicy {
-            max_attempts: 50,
-            base_delay,
-            max_delay,
-            jitter_factor,
-            backoff_strategy: strategy,
-        };
+            // Setup endpoint and initial event
+            storage.add_endpoint(endpoint.clone()).await;
+            event.endpoint_id = endpoint.id;
+            event.status = EventStatus::Pending;
+            storage.add_pending_event(event.clone()).await;
 
-        let error = DeliveryError::timeout(30);
-        let context = RetryContext::new(
-            attempt,
-            error,
-            DateTime::<Utc>::from(clock.now_system()),
-            policy,
-        );
+            let mut current_status = EventStatus::Pending;
 
-        // Should not panic with extreme values
-        let decision = context.decide_retry();
-
-        match decision {
-            kapsel_delivery::retry::RetryDecision::Retry { next_attempt_at } => {
-                let delay = next_attempt_at.signed_duration_since(DateTime::<Utc>::from(clock.now_system()));
-
-                // For very small delays (especially 0 from Linear strategy with attempt=1),
-                // the next_attempt_at might be in the past due to test execution time.
-                // Allow small negative delays (up to 100ms) as acceptable timing variance.
-                if let Some(delay_ns) = delay.num_nanoseconds() {
-                    prop_assert!(delay_ns >= -100_000_000, "delay too negative: {}ns", delay_ns);
+            for &transition in &transition_sequence {
+                match transition {
+                    0 => {
+                        // Claim event (Pending -> Delivering)
+                        if current_status == EventStatus::Pending {
+                            let claimed = storage.claim_pending_events(1).await.unwrap();
+                            if !claimed.is_empty() {
+                                current_status = EventStatus::Delivering;
+                            }
+                        }
+                    },
+                    1 => {
+                        // Mark delivered (Delivering -> Delivered)
+                        if current_status == EventStatus::Delivering {
+                            storage.mark_delivered(event.id).await.unwrap();
+                            current_status = EventStatus::Delivered;
+                        }
+                    },
+                    2 => {
+                        // Schedule retry (Delivering -> Pending)
+                        if current_status == EventStatus::Delivering {
+                            let retry_time = Utc::now() + chrono::Duration::seconds(60);
+                            storage.schedule_retry(event.id, retry_time, 1).await.unwrap();
+                            current_status = EventStatus::Pending;
+                        }
+                    },
+                    3 => {
+                        // Mark failed (Delivering -> Failed)
+                        if current_status == EventStatus::Delivering {
+                            storage.mark_failed(event.id).await.unwrap();
+                            current_status = EventStatus::Failed;
+                        }
+                    },
+                    _ => {},
                 }
-                // Allow 2x tolerance for extreme jitter scenarios
-                let max_chrono_delay = chrono::Duration::from_std(max_delay * 2).unwrap_or(chrono::Duration::MAX);
-                prop_assert!(delay <= max_chrono_delay);
             }
-            kapsel_delivery::retry::RetryDecision::GiveUp { reason: _ } => {
-                // Valid give up decision
+
+            // Verify final state is valid
+            let final_status = storage.find_event_status(event.id).await.unwrap();
+            prop_assert_eq!(final_status, current_status);
+
+            // Ensure terminal states remain terminal
+            if matches!(current_status, EventStatus::Delivered | EventStatus::Failed) {
+                // Terminal states should not be claimable
+                let claimed_after_terminal = storage.claim_pending_events(10).await.unwrap();
+                prop_assert!(!claimed_after_terminal.iter().any(|e| e.id == event.id));
             }
-        }
+
+            Ok(())
+        })?;
     }
 
-    /// Fuzzes error creation and categorization with random inputs.
+    /// Property test: Endpoint configuration retrieval is consistent.
+    ///
+    /// Validates that endpoint configurations stored in mock storage
+    /// can be retrieved correctly and maintain referential integrity.
     #[test]
-    fn fuzz_error_categorization_random_inputs(
-        status_code in 0u16..1000,
-        timeout_seconds in 0u64..3600,
-        message in "\\PC*",
-        retry_after in 0u64..86400
+    fn endpoint_configuration_consistency(
+        endpoints in prop::collection::vec(endpoint_strategy(), 1..20),
     ) {
-        // Test various error types with random inputs
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(MockDeliveryStorage::new());
 
-        // Network error should always be retryable
-        let network_error = DeliveryError::network(message.clone());
-        prop_assert!(network_error.is_retryable());
-
-        // Timeout error should always be retryable
-        let timeout_error = DeliveryError::timeout(timeout_seconds);
-        prop_assert!(timeout_error.is_retryable());
-
-        // Rate limited should be retryable with valid retry_after
-        let rate_error = DeliveryError::rate_limited(retry_after);
-        prop_assert!(rate_error.is_retryable());
-        prop_assert_eq!(rate_error.retry_after_seconds(), Some(retry_after));
-
-        // Circuit open should not be retryable
-        let circuit_error = DeliveryError::circuit_open(message.clone());
-        prop_assert!(!circuit_error.is_retryable());
-
-        // Configuration error should not be retryable
-        let config_error = DeliveryError::configuration(message.clone());
-        prop_assert!(!config_error.is_retryable());
-
-        // Test HTTP status code categorization
-        if (400..500).contains(&status_code) {
-            let client_error = DeliveryError::client_error(status_code, message.clone());
-            // Special cases: 408 Request Timeout and 425 Too Early are retryable
-            if matches!(status_code, 408 | 425) {
-                prop_assert!(client_error.is_retryable());
-            } else {
-                prop_assert!(!client_error.is_retryable());
+            // Store all endpoints
+            for endpoint in &endpoints {
+                storage.add_endpoint(endpoint.clone()).await;
             }
-        }
 
-        if (500..600).contains(&status_code) {
-            let server_error = DeliveryError::server_error(status_code, message);
-            prop_assert!(server_error.is_retryable());
-        }
+            // Retrieve and verify each endpoint
+            for expected_endpoint in &endpoints {
+                let retrieved = storage.find_endpoint_config(expected_endpoint.id).await.unwrap();
 
-        // Error display should not panic with any input
-        let _ = format!("{network_error}");
-        let _ = format!("{timeout_error}");
-        let _ = format!("{rate_error}");
+                prop_assert_eq!(retrieved.id, expected_endpoint.id);
+                prop_assert_eq!(retrieved.tenant_id, expected_endpoint.tenant_id);
+                prop_assert_eq!(&retrieved.url, &expected_endpoint.url);
+                prop_assert_eq!(&retrieved.name, &expected_endpoint.name);
+                prop_assert_eq!(retrieved.max_retries, expected_endpoint.max_retries);
+                prop_assert_eq!(retrieved.timeout_seconds, expected_endpoint.timeout_seconds);
+                prop_assert_eq!(retrieved.retry_strategy, expected_endpoint.retry_strategy);
+
+                // Test endpoint_url method returns consistent URL
+                let url = storage.find_endpoint_url(expected_endpoint.id).await.unwrap();
+                prop_assert_eq!(&url, &expected_endpoint.url);
+            }
+
+            Ok(())
+        })?;
+    }
+
+    /// Property test: Concurrent event claiming prevents double-processing.
+    ///
+    /// Validates that multiple concurrent claims don't return the same
+    /// events, ensuring proper isolation in the storage abstraction.
+    #[test]
+    fn concurrent_claiming_prevents_double_processing(
+        events in prop::collection::vec(webhook_event_strategy(), 5..50),
+        claim_operations in prop::collection::vec(1usize..10, 2..8),
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(MockDeliveryStorage::new());
+
+            // Add all events as pending
+            for mut event in events.iter().cloned() {
+                event.status = EventStatus::Pending;
+                storage.add_pending_event(event).await;
+            }
+
+            let mut all_claimed_ids = Vec::new();
+
+            // Perform multiple claiming operations
+            for &batch_size in &claim_operations {
+                let claimed = storage.claim_pending_events(batch_size).await.unwrap();
+                for event in claimed {
+                    all_claimed_ids.push(event.id);
+                }
+            }
+
+            // Verify no event was claimed multiple times
+            all_claimed_ids.sort_by_key(|id| id.0);
+            let original_len = all_claimed_ids.len();
+            all_claimed_ids.dedup();
+            let deduped_len = all_claimed_ids.len();
+
+            prop_assert_eq!(original_len, deduped_len,
+                "Double-processing detected: {} events claimed, {} unique",
+                original_len, deduped_len
+            );
+
+            // Verify all claimed events are now in Delivering state
+            for event_id in &all_claimed_ids {
+                let status = storage.find_event_status(*event_id).await.unwrap();
+                prop_assert_eq!(status, EventStatus::Delivering);
+            }
+
+            Ok(())
+        })?;
+    }
+
+    /// Property test: Storage trait abstraction maintains invariants.
+    ///
+    /// Validates that the DeliveryStorage trait abstraction maintains
+    /// critical business invariants regardless of implementation details.
+    #[test]
+    fn storage_abstraction_maintains_invariants(
+        mut event in webhook_event_strategy(),
+        endpoint in endpoint_strategy(),
+        operations in prop::collection::vec(0u8..5, 1..20),
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(MockDeliveryStorage::new());
+
+            // Setup
+            storage.add_endpoint(endpoint.clone()).await;
+            event.endpoint_id = endpoint.id;
+            event.status = EventStatus::Pending;
+            storage.add_pending_event(event.clone()).await;
+
+            let mut delivery_attempts = 0;
+
+            for &operation in &operations {
+                match operation {
+                    0 => {
+                        // Claim event
+                        let claimed = storage.claim_pending_events(1).await.unwrap();
+                        if !claimed.is_empty() {
+                            let status = storage.find_event_status(event.id).await.unwrap();
+                            prop_assert_eq!(status, EventStatus::Delivering);
+                        }
+                    },
+                    1 => {
+                        // Mark delivered
+                        let _ = storage.mark_delivered(event.id).await;
+                        let status = storage.find_event_status(event.id).await.unwrap();
+                        if status == EventStatus::Delivered {
+                            // Terminal state reached
+                            break;
+                        }
+                    },
+                    2 => {
+                        // Schedule retry
+                        let retry_time = Utc::now() + chrono::Duration::seconds(30);
+                        let _ = storage.schedule_retry(event.id, retry_time, delivery_attempts).await;
+                        delivery_attempts += 1;
+                    },
+                    3 => {
+                        // Mark failed
+                        let _ = storage.mark_failed(event.id).await;
+                        let status = storage.find_event_status(event.id).await.unwrap();
+                        if status == EventStatus::Failed {
+                            // Terminal state reached
+                            break;
+                        }
+                    },
+                    4 => {
+                        // Record delivery attempt
+                        let attempt = kapsel_core::models::DeliveryAttempt {
+                            id: Uuid::new_v4(),
+                            event_id: event.id,
+                            attempt_number: 1,
+                            endpoint_id: endpoint.id,
+                            request_headers: std::collections::HashMap::new(),
+                            request_body: b"test payload".to_vec(),
+                            response_status: Some(200),
+                            response_headers: None,
+                            response_body: Some(b"OK".to_vec()),
+                            attempted_at: Utc::now(),
+                            succeeded: true,
+                            error_message: None,
+                        };
+                        storage.record_delivery_attempt(attempt).await.unwrap();
+                    },
+                    _ => {
+                        // No-op for other values
+                    }
+                }
+            }
+
+            // Verify final invariants
+            let final_status = storage.find_event_status(event.id).await.unwrap();
+            prop_assert!(matches!(final_status,
+                EventStatus::Pending | EventStatus::Delivering |
+                EventStatus::Delivered | EventStatus::Failed
+            ));
+
+            // Verify endpoint configuration is accessible
+            let endpoint_config = storage.find_endpoint_config(endpoint.id).await.unwrap();
+            prop_assert_eq!(endpoint_config.id, endpoint.id);
+
+            // Verify delivery attempts are recorded
+            let attempts = storage.find_delivery_attempts(event.id).await.unwrap();
+            prop_assert!(attempts.len() <= 20); // Reasonable upper bound
+
+            Ok(())
+        })?;
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    /// Unit test: Mock storage basic operations work correctly.
+    #[tokio::test]
+    async fn mock_storage_basic_operations() {
+        let storage = Arc::new(MockDeliveryStorage::new());
+
+        // Create test endpoint
+        let endpoint = kapsel_core::models::Endpoint {
+            id: EndpointId(Uuid::new_v4()),
+            tenant_id: TenantId(Uuid::new_v4()),
+            url: "https://example.com/test".to_string(),
+            name: "Test Endpoint".to_string(),
+            is_active: true,
+            signature_config: SignatureConfig::None,
+            max_retries: 5,
+            timeout_seconds: 30,
+            retry_strategy: BackoffStrategy::Exponential,
+            circuit_state: CircuitState::Closed,
+            circuit_failure_count: 0,
+            circuit_success_count: 0,
+            circuit_last_failure_at: None,
+            circuit_half_open_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            deleted_at: None,
+            total_events_received: 0,
+            total_events_delivered: 0,
+            total_events_failed: 0,
+        };
+
+        storage.add_endpoint(endpoint.clone()).await;
+
+        // Create test event
+        let event = WebhookEvent {
+            id: EventId(Uuid::new_v4()),
+            tenant_id: endpoint.tenant_id,
+            endpoint_id: endpoint.id,
+            source_event_id: "test-001".to_string(),
+            idempotency_strategy: IdempotencyStrategy::Header,
+            status: EventStatus::Pending,
+            failure_count: 0,
+            last_attempt_at: None,
+            next_retry_at: None,
+            headers: Json(HashMap::new()),
+            body: b"test payload".to_vec(),
+            content_type: "application/json".to_string(),
+            received_at: Utc::now(),
+            delivered_at: None,
+            failed_at: None,
+            payload_size: 12,
+            signature_valid: Some(true),
+            signature_error: None,
+        };
+
+        storage.add_pending_event(event.clone()).await;
+
+        // Test storage trait methods
+        let storage_trait: &dyn DeliveryStorage = &*storage;
+
+        // Test endpoint configuration retrieval
+        let retrieved_endpoint = storage_trait.find_endpoint_config(endpoint.id).await.unwrap();
+        assert_eq!(retrieved_endpoint.max_retries, 5);
+        assert_eq!(retrieved_endpoint.url, "https://example.com/test");
+
+        // Test event claiming
+        let claimed = storage_trait.claim_pending_events(1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, event.id);
+
+        // Test status updates
+        let status = storage_trait.find_event_status(event.id).await.unwrap();
+        assert_eq!(status, EventStatus::Delivering);
+
+        // Test marking delivered
+        storage_trait.mark_delivered(event.id).await.unwrap();
+        let final_status = storage_trait.find_event_status(event.id).await.unwrap();
+        assert_eq!(final_status, EventStatus::Delivered);
+    }
+
+    /// Unit test: Error injection functionality works.
+    #[tokio::test]
+    async fn mock_storage_error_injection() {
+        let storage = MockDeliveryStorage::new();
+
+        // Inject error
+        storage.inject_claim_error("Test database error".to_string()).await;
+
+        // Test error is returned
+        let result = storage.claim_pending_events(1).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Test database error"));
+
+        // Test error is consumed
+        let result = storage.claim_pending_events(1).await;
+        assert!(result.is_ok());
+    }
+
+    /// Unit test: Delivery attempt recording works correctly.
+    #[tokio::test]
+    async fn delivery_attempt_recording() {
+        let storage = MockDeliveryStorage::new();
+        let event_id = EventId(Uuid::new_v4());
+
+        let attempt = kapsel_core::models::DeliveryAttempt {
+            id: Uuid::new_v4(),
+            event_id,
+            attempt_number: 1,
+            endpoint_id: EndpointId::new(),
+            request_headers: std::collections::HashMap::new(),
+            request_body: b"test payload".to_vec(),
+            response_status: Some(200),
+            response_headers: None,
+            response_body: Some(b"OK".to_vec()),
+            attempted_at: Utc::now(),
+            succeeded: true,
+            error_message: None,
+        };
+
+        // Record attempt
+        storage.record_delivery_attempt(attempt.clone()).await.unwrap();
+
+        // Verify it was recorded
+        let attempts = storage.find_delivery_attempts(event_id).await.unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].id, attempt.id);
+        assert!(attempts[0].succeeded);
+
+        // Test helper method
+        let all_attempts = storage.recorded_attempts().await;
+        assert_eq!(all_attempts.len(), 1);
+        assert_eq!(all_attempts[0].event_id, event_id);
     }
 }

@@ -5,8 +5,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use kapsel_core::{storage::Storage, Clock, EventHandler, NoOpEventHandler};
-use sqlx::PgPool;
+use kapsel_core::{Clock, EventHandler, NoOpEventHandler};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -15,6 +14,7 @@ use crate::{
     circuit::CircuitBreakerManager,
     client::DeliveryClient,
     error::{DeliveryError, Result},
+    storage::DeliveryStorage,
     worker::{DeliveryConfig, EngineStats},
 };
 
@@ -25,7 +25,7 @@ use crate::{
 /// graceful shutdown. All workers are supervised and can be collectively
 /// managed.
 pub struct WorkerPool {
-    pool: PgPool,
+    storage: Arc<dyn DeliveryStorage>,
     config: DeliveryConfig,
     client: Arc<DeliveryClient>,
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -39,7 +39,7 @@ pub struct WorkerPool {
 impl WorkerPool {
     /// Create a new worker pool with the given configuration.
     pub fn new(
-        pool: PgPool,
+        storage: Arc<dyn DeliveryStorage>,
         config: DeliveryConfig,
         client: Arc<DeliveryClient>,
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -48,7 +48,7 @@ impl WorkerPool {
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
-            pool,
+            storage,
             config,
             client,
             circuit_manager,
@@ -63,7 +63,7 @@ impl WorkerPool {
     /// Create a new worker pool with event handler support.
     #[allow(clippy::too_many_arguments)]
     pub fn with_event_handler(
-        pool: PgPool,
+        storage: Arc<dyn DeliveryStorage>,
         config: DeliveryConfig,
         client: Arc<DeliveryClient>,
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -73,7 +73,7 @@ impl WorkerPool {
         event_handler: Arc<dyn EventHandler>,
     ) -> Self {
         Self {
-            pool,
+            storage,
             config,
             client,
             circuit_manager,
@@ -103,10 +103,9 @@ impl WorkerPool {
         }
 
         for worker_id in 0..self.config.worker_count {
-            let storage = Arc::new(Storage::new(self.pool.clone(), &self.clock.clone()));
             let worker = DeliveryWorker::new(
                 worker_id,
-                storage,
+                self.storage.clone(),
                 self.config.clone(),
                 self.client.clone(),
                 self.circuit_manager.clone(),

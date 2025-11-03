@@ -64,11 +64,8 @@ async fn engine_starts_with_configured_workers() -> Result<()> {
     TestEnv::run_isolated_test(|env| async move {
         let config = DeliveryConfig { worker_count: 5, ..Default::default() };
 
-        let mut engine = DeliveryEngine::new(
-            env.pool().clone(),
-            config,
-            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
-        )?;
+        let mut engine =
+            DeliveryEngine::new(env.pool(), config, Arc::new(env.clock.clone()) as Arc<dyn Clock>)?;
 
         engine.start().await?;
 
@@ -91,11 +88,8 @@ async fn engine_shuts_down_gracefully() -> Result<()> {
     TestEnv::run_isolated_test(|env| async move {
         let config = DeliveryConfig::default();
 
-        let mut engine = DeliveryEngine::new(
-            env.pool().clone(),
-            config,
-            Arc::new(env.clock.clone()) as Arc<dyn Clock>,
-        )?;
+        let mut engine =
+            DeliveryEngine::new(env.pool(), config, Arc::new(env.clock.clone()) as Arc<dyn Clock>)?;
 
         engine.start().await?;
 

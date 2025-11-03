@@ -29,6 +29,8 @@ wiremock = { workspace = true }
 proptest = { workspace = true }
 http = { workspace = true }
 anyhow = { workspace = true }
+tokio-test = { workspace = true }
+
 
 [lints]
 workspace = true

@@ -53,6 +53,7 @@ pub mod circuit;
 pub mod client;
 pub mod error;
 pub mod retry;
+pub mod storage;
 pub mod worker;
 pub mod worker_pool;
 
@@ -62,6 +63,7 @@ pub use kapsel_core::{
     DeliveryEvent, DeliveryFailedEvent, DeliverySucceededEvent, EventHandler,
     MulticastEventHandler, NoOpEventHandler,
 };
+pub use storage::{DeliveryStorage, PostgresDeliveryStorage};
 pub use worker::{DeliveryConfig, DeliveryEngine};
 pub use worker_pool::WorkerPool;
 

@@ -8,6 +8,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use kapsel_api::Config;
 use kapsel_core::{time::RealClock, Clock};
+use kapsel_delivery::DeliveryEngine;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
 
@@ -35,11 +36,8 @@ async fn main() -> Result<()> {
 
     let clock: Arc<dyn Clock> = Arc::new(RealClock::new());
 
-    let mut delivery_engine = kapsel_delivery::worker::DeliveryEngine::new(
-        db_pool.clone(),
-        config.to_delivery_config(),
-        clock.clone(),
-    )?;
+    let mut delivery_engine =
+        DeliveryEngine::new(&db_pool, config.to_delivery_config(), clock.clone())?;
 
     delivery_engine.start().await.context("Failed to start delivery engine")?;
     info!(worker_count = config.worker_pool_size, "Delivery engine started");

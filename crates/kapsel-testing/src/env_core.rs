@@ -9,10 +9,11 @@ use std::{
 use anyhow::{Context, Result};
 use futures::FutureExt;
 use kapsel_attestation::{AttestationEventSubscriber, MerkleService};
-use kapsel_core::{storage::Storage, Clock};
+use kapsel_core::{storage::Storage, Clock, EventHandler, NoOpEventHandler};
 use kapsel_delivery::{
     retry::{BackoffStrategy, RetryPolicy},
-    ClientConfig, DeliveryConfig, DeliveryEngine,
+    storage::PostgresDeliveryStorage,
+    ClientConfig, DeliveryConfig, DeliveryEngine, DeliveryStorage,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -164,12 +165,14 @@ impl TestEnvBuilder {
 
             // Use NoOpEventHandler by default for test isolation
             // This avoids coupling delivery tests to the attestation system
-            let event_handler =
-                Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+            let event_handler = Arc::new(NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
 
+            let concrete_storage = Arc::new(Storage::new(database.clone(), &clock_arc));
+            let delivery_storage: Arc<dyn kapsel_delivery::storage::DeliveryStorage> =
+                Arc::new(PostgresDeliveryStorage::new(concrete_storage));
             Some(
                 DeliveryEngine::with_event_handler(
-                    database.clone(),
+                    delivery_storage,
                     delivery_config,
                     clock_arc,
                     event_handler,
@@ -496,8 +499,14 @@ impl TestEnv {
                 shutdown_timeout: std::time::Duration::from_secs(1),
             };
 
-            let new_engine = DeliveryEngine::with_event_handler(
+            let concrete_storage = Arc::new(Storage::new(
                 self.database.clone(),
+                &(Arc::new(self.clock.clone()) as Arc<dyn Clock>),
+            ));
+            let delivery_storage: Arc<dyn kapsel_delivery::storage::DeliveryStorage> =
+                Arc::new(PostgresDeliveryStorage::new(concrete_storage));
+            let new_engine = DeliveryEngine::with_event_handler(
+                delivery_storage,
                 delivery_config,
                 Arc::new(self.clock.clone()) as Arc<dyn Clock>,
                 Arc::new(attestation_subscriber),
@@ -541,11 +550,13 @@ impl TestEnv {
         };
 
         let clock_arc: Arc<dyn Clock> = Arc::new(self.clock.clone());
-        let event_handler =
-            Arc::new(kapsel_core::NoOpEventHandler) as Arc<dyn kapsel_core::EventHandler>;
+        let event_handler = Arc::new(NoOpEventHandler) as Arc<dyn EventHandler>;
 
+        let concrete_storage = Arc::new(Storage::new(self.database.clone(), &clock_arc));
+        let delivery_storage: Arc<dyn DeliveryStorage> =
+            Arc::new(PostgresDeliveryStorage::new(concrete_storage));
         let engine = DeliveryEngine::with_event_handler(
-            self.database.clone(),
+            delivery_storage,
             delivery_config,
             clock_arc,
             event_handler,

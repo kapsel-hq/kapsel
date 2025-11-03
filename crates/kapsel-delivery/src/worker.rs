@@ -25,7 +25,8 @@ use crate::{
     circuit::{CircuitBreakerManager, CircuitConfig},
     client::{extract_retry_after_seconds, ClientConfig, DeliveryClient, DeliveryRequest},
     error::{DeliveryError, Result},
-    retry::{RetryContext, RetryPolicy},
+    retry::{RetryContext, RetryDecision, RetryPolicy},
+    storage::{DeliveryStorage, PostgresDeliveryStorage},
     worker_pool::WorkerPool,
 };
 
@@ -83,7 +84,7 @@ pub struct EngineStats {
 
 /// Main delivery engine coordinating webhook delivery workers.
 pub struct DeliveryEngine {
-    pool: PgPool,
+    storage: Arc<dyn DeliveryStorage>,
     config: DeliveryConfig,
     client: Arc<DeliveryClient>,
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -105,7 +106,7 @@ impl DeliveryEngine {
     ///
     /// Returns error if the delivery client cannot be initialized.
     pub fn with_event_handler(
-        pool: PgPool,
+        storage: Arc<dyn DeliveryStorage>,
         config: DeliveryConfig,
         clock: Arc<dyn Clock>,
         event_handler: Arc<dyn EventHandler>,
@@ -117,7 +118,7 @@ impl DeliveryEngine {
         let cancellation_token = CancellationToken::new();
 
         Ok(Self {
-            pool,
+            storage,
             config,
             client,
             circuit_manager,
@@ -137,19 +138,21 @@ impl DeliveryEngine {
     /// # Errors
     ///
     /// Returns error if the delivery client cannot be initialized.
-    pub fn new(pool: PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
+    pub fn new(pool: &PgPool, config: DeliveryConfig, clock: Arc<dyn Clock>) -> Result<Self> {
         let mut event_handler = MulticastEventHandler::new(clock.clone());
         let signing_service = SigningService::ephemeral();
-        let storage = Arc::new(Storage::new(pool.clone(), &clock.clone()));
+        let concrete_storage = Arc::new(Storage::new(pool.clone(), &clock.clone()));
         let merkle_service = Arc::new(tokio::sync::RwLock::new(MerkleService::new(
-            storage,
+            concrete_storage.clone(),
             signing_service,
             clock.clone(),
         )));
         let attestation_subscriber = Arc::new(AttestationEventSubscriber::new(merkle_service));
         event_handler.add_subscriber(attestation_subscriber);
 
-        Self::with_event_handler(pool, config, clock, Arc::new(event_handler))
+        let delivery_storage: Arc<dyn DeliveryStorage> =
+            Arc::new(PostgresDeliveryStorage::new(concrete_storage));
+        Self::with_event_handler(delivery_storage, config, clock, Arc::new(event_handler))
     }
 
     /// Starts the delivery engine with configured worker pool.
@@ -168,7 +171,7 @@ impl DeliveryEngine {
         );
 
         let mut worker_pool = WorkerPool::with_event_handler(
-            self.pool.clone(),
+            self.storage.clone(),
             self.config.clone(),
             self.client.clone(),
             self.circuit_manager.clone(),
@@ -222,13 +225,11 @@ impl DeliveryEngine {
     /// # Errors
     ///
     /// Returns error if batch processing fails.
-    pub async fn process_batch(&self) -> Result<usize> {
-        let storage = Arc::new(Storage::new(self.pool.clone(), &self.clock.clone()));
-
-        // Create a temporary worker for this batch
+    pub async fn process_batch(&self) -> Result<()> {
+        // Create and run a temporary worker for this batch
         let worker = DeliveryWorker::new(
-            0, // worker_id
-            storage,
+            0, // Single worker ID
+            self.storage.clone(),
             self.config.clone(),
             self.client.clone(),
             self.circuit_manager.clone(),
@@ -238,8 +239,7 @@ impl DeliveryEngine {
             self.clock.clone(),
         );
 
-        // Process exactly one batch synchronously
-        worker.process_batch().await
+        worker.process_batch().await.map(|_| ())
     }
 
     /// Forces a specific circuit breaker state for testing.
@@ -260,7 +260,7 @@ impl DeliveryEngine {
 /// Individual worker that processes webhook deliveries.
 pub struct DeliveryWorker {
     id: usize,
-    storage: Arc<Storage>,
+    storage: Arc<dyn DeliveryStorage>,
     config: DeliveryConfig,
     client: Arc<DeliveryClient>,
     circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -275,7 +275,7 @@ impl DeliveryWorker {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
-        storage: Arc<Storage>,
+        storage: Arc<dyn DeliveryStorage>,
         config: DeliveryConfig,
         client: Arc<DeliveryClient>,
         circuit_manager: Arc<RwLock<CircuitBreakerManager>>,
@@ -380,9 +380,9 @@ impl DeliveryWorker {
     /// Returns error if database transaction or query fails.
     pub async fn claim_pending_events(&self) -> Result<Vec<WebhookEvent>> {
         let events =
-            self.storage.webhook_events.claim_pending(self.config.batch_size).await.map_err(
-                |e| DeliveryError::database(format!("failed to claim pending events: {e}")),
-            )?;
+            self.storage.claim_pending_events(self.config.batch_size).await.map_err(|e| {
+                DeliveryError::database(format!("failed to claim pending events: {e}"))
+            })?;
 
         debug!(
             worker_id = self.id,
@@ -658,94 +658,194 @@ impl DeliveryWorker {
         self.circuit_manager.write().await.record_failure(endpoint_key).await;
 
         if error.is_retryable() {
-            // Fetch endpoint to get specific max_retries configuration
-            let endpoint = self
-                .storage
-                .endpoints
-                .find_by_id(event.endpoint_id)
+            self.handle_retryable_failure(event_id, attempt_number, error, response_headers, event)
                 .await
-                .map_err(|e| DeliveryError::database(format!("failed to fetch endpoint: {e}")))?
-                .ok_or_else(|| {
-                    DeliveryError::configuration(format!(
-                        "endpoint {} not found",
-                        event.endpoint_id
-                    ))
-                })?;
-
-            // Create retry policy using endpoint-specific max_retries
-            // max_retries means total attempts = max_retries + 1 (initial attempt)
-            let endpoint_retry_policy = RetryPolicy {
-                max_attempts: u32::try_from(endpoint.max_retries + 1).unwrap_or(10),
-                ..self.config.default_retry_policy.clone()
-            };
-
-            // Calculate retry timing using endpoint-specific policy
-            let retry_context = RetryContext::new(
-                attempt_number,
-                error.clone(),
-                DateTime::<Utc>::from(self.clock.now_system()),
-                endpoint_retry_policy,
-            );
-
-            match retry_context.decide_retry() {
-                crate::retry::RetryDecision::Retry { mut next_attempt_at } => {
-                    // Check for Retry-After header to override calculated delay
-                    if let Some(headers) = response_headers {
-                        if let Some(retry_after_seconds) =
-                            extract_retry_after_seconds(headers, self.clock.as_ref())
-                        {
-                            let retry_after_duration = chrono::Duration::seconds(
-                                i64::try_from(retry_after_seconds).unwrap_or(i64::MAX),
-                            );
-                            let retry_after_time = DateTime::<Utc>::from(self.clock.now_system())
-                                + retry_after_duration;
-
-                            // Use the later of the two times to respect server's preference
-                            if retry_after_time > next_attempt_at {
-                                next_attempt_at = retry_after_time;
-                            }
-                        }
-                    }
-
-                    // Schedule retry
-                    self.schedule_retry(event, next_attempt_at).await?;
-
-                    warn!(
-                        worker_id = self.id,
-                        event_id = %event_id,
-                        attempt_number,
-                        next_retry_at = %next_attempt_at,
-                        error = %error,
-                        "delivery failed, retry scheduled"
-                    );
-                },
-                crate::retry::RetryDecision::GiveUp { reason } => {
-                    // Mark as permanently failed
-                    self.mark_event_failed(event).await?;
-
-                    error!(
-                        worker_id = self.id,
-                        event_id = %event_id,
-                        attempt_number,
-                        reason = %reason,
-                        error = %error,
-                        "delivery permanently failed"
-                    );
-                },
-            }
         } else {
-            // Non-retryable error - mark as failed immediately
-            self.mark_event_failed(event).await?;
-
-            error!(
-                worker_id = self.id,
-                event_id = %event_id,
-                attempt_number,
-                error = %error,
-                "delivery failed with non-retryable error"
-            );
+            self.handle_non_retryable_failure(event_id, attempt_number, error, event).await
         }
+    }
 
+    async fn handle_retryable_failure(
+        &self,
+        event_id: &EventId,
+        attempt_number: u32,
+        error: crate::error::DeliveryError,
+        response_headers: Option<&std::collections::HashMap<String, String>>,
+        event: &WebhookEvent,
+    ) -> Result<()> {
+        // Get endpoint configuration to use endpoint-specific retry limits
+        let endpoint_config = match self.storage.find_endpoint_config(event.endpoint_id).await {
+            Ok(config) => config,
+            Err(e) => {
+                return self
+                    .handle_fallback_retry_policy(event_id, attempt_number, error, event, e)
+                    .await;
+            },
+        };
+
+        let endpoint_retry_policy = self.build_endpoint_retry_policy(&endpoint_config);
+        self.execute_retry_decision(
+            event_id,
+            attempt_number,
+            error,
+            response_headers,
+            event,
+            endpoint_retry_policy,
+        )
+        .await
+    }
+
+    async fn handle_fallback_retry_policy(
+        &self,
+        event_id: &EventId,
+        attempt_number: u32,
+        error: crate::error::DeliveryError,
+        event: &WebhookEvent,
+        config_error: kapsel_core::error::CoreError,
+    ) -> Result<()> {
+        error!(
+            worker_id = self.id,
+            event_id = %event_id,
+            endpoint_id = %event.endpoint_id,
+            error = %config_error,
+            "failed to retrieve endpoint config, using defaults"
+        );
+
+        let retry_context = RetryContext::new(
+            attempt_number,
+            error.clone(),
+            DateTime::<Utc>::from(self.clock.now_system()),
+            self.config.default_retry_policy.clone(),
+        );
+
+        match retry_context.decide_retry() {
+            RetryDecision::GiveUp { reason } => {
+                self.mark_event_failed(event).await?;
+                error!(
+                    worker_id = self.id,
+                    event_id = %event_id,
+                    attempt_number,
+                    reason = %reason,
+                    error = %error,
+                    "delivery permanently failed"
+                );
+            },
+            RetryDecision::Retry { next_attempt_at } => {
+                self.schedule_retry(event, next_attempt_at).await?;
+                warn!(
+                    worker_id = self.id,
+                    event_id = %event_id,
+                    attempt_number,
+                    next_retry_at = %next_attempt_at,
+                    error = %error,
+                    "delivery failed, retry scheduled with default policy"
+                );
+            },
+        }
+        Ok(())
+    }
+
+    fn build_endpoint_retry_policy(
+        &self,
+        endpoint_config: &kapsel_core::models::Endpoint,
+    ) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: u32::try_from(endpoint_config.max_retries).unwrap_or(3) + 1, /* +1 for initial attempt */
+            base_delay: self.config.default_retry_policy.base_delay,
+            max_delay: self.config.default_retry_policy.max_delay,
+            jitter_factor: self.config.default_retry_policy.jitter_factor,
+            backoff_strategy: match endpoint_config.retry_strategy {
+                kapsel_core::models::BackoffStrategy::Fixed => crate::retry::BackoffStrategy::Fixed,
+                kapsel_core::models::BackoffStrategy::Exponential => {
+                    crate::retry::BackoffStrategy::Exponential
+                },
+                kapsel_core::models::BackoffStrategy::Linear => {
+                    crate::retry::BackoffStrategy::Linear
+                },
+            },
+        }
+    }
+
+    async fn execute_retry_decision(
+        &self,
+        event_id: &EventId,
+        attempt_number: u32,
+        error: crate::error::DeliveryError,
+        response_headers: Option<&std::collections::HashMap<String, String>>,
+        event: &WebhookEvent,
+        retry_policy: RetryPolicy,
+    ) -> Result<()> {
+        let retry_context = RetryContext::new(
+            attempt_number,
+            error.clone(),
+            DateTime::<Utc>::from(self.clock.now_system()),
+            retry_policy,
+        );
+
+        match retry_context.decide_retry() {
+            RetryDecision::Retry { mut next_attempt_at } => {
+                // Check for Retry-After header to override calculated delay
+                if let Some(headers) = response_headers {
+                    if let Some(retry_after_seconds) =
+                        extract_retry_after_seconds(headers, self.clock.as_ref())
+                    {
+                        let retry_after_delay = chrono::Duration::try_seconds(
+                            i64::try_from(retry_after_seconds).unwrap_or(i64::MAX),
+                        )
+                        .unwrap_or(chrono::Duration::zero());
+                        next_attempt_at =
+                            DateTime::<Utc>::from(self.clock.now_system()) + retry_after_delay;
+
+                        debug!(
+                            worker_id = self.id,
+                            event_id = %event_id,
+                            retry_after_seconds,
+                            calculated_retry_at = %next_attempt_at,
+                            "using Retry-After header for retry timing"
+                        );
+                    }
+                }
+
+                self.schedule_retry(event, next_attempt_at).await?;
+                warn!(
+                    worker_id = self.id,
+                    event_id = %event_id,
+                    attempt_number,
+                    next_retry_at = %next_attempt_at,
+                    error = %error,
+                    "delivery failed, retry scheduled"
+                );
+            },
+            RetryDecision::GiveUp { reason } => {
+                self.mark_event_failed(event).await?;
+                error!(
+                    worker_id = self.id,
+                    event_id = %event_id,
+                    attempt_number,
+                    reason = %reason,
+                    error = %error,
+                    "delivery permanently failed"
+                );
+            },
+        }
+        Ok(())
+    }
+
+    async fn handle_non_retryable_failure(
+        &self,
+        event_id: &EventId,
+        attempt_number: u32,
+        error: crate::error::DeliveryError,
+        event: &WebhookEvent,
+    ) -> Result<()> {
+        self.mark_event_failed(event).await?;
+        error!(
+            worker_id = self.id,
+            event_id = %event_id,
+            attempt_number,
+            error = %error,
+            "delivery failed with non-retryable error"
+        );
         Ok(())
     }
 
@@ -755,17 +855,10 @@ impl DeliveryWorker {
     ///
     /// Returns error if endpoint is not found or database query fails.
     async fn endpoint_url(&self, endpoint_id: &EndpointId) -> Result<String> {
-        let endpoint = self
-            .storage
-            .endpoints
-            .find_by_id(*endpoint_id)
+        self.storage
+            .find_endpoint_url(*endpoint_id)
             .await
-            .map_err(|e| DeliveryError::database(format!("failed to fetch endpoint: {e}")))?
-            .ok_or_else(|| {
-                DeliveryError::configuration(format!("endpoint {endpoint_id} not found"))
-            })?;
-
-        Ok(endpoint.url)
+            .map_err(|e| DeliveryError::database(format!("failed to fetch endpoint: {e}")))
     }
 
     /// Updates event status to 'delivered' after successful delivery.
@@ -774,11 +867,10 @@ impl DeliveryWorker {
     ///
     /// Returns error if database update fails.
     async fn mark_event_delivered(&self, event_id: &EventId) -> Result<()> {
-        self.storage.webhook_events.mark_delivered(*event_id).await.map_err(|e| {
-            DeliveryError::database(format!("failed to mark event as delivered: {e}"))
-        })?;
-
-        Ok(())
+        self.storage
+            .mark_delivered(*event_id)
+            .await
+            .map_err(|e| DeliveryError::database(format!("failed to mark event as delivered: {e}")))
     }
 
     /// Updates event with retry schedule after failed delivery.
@@ -792,12 +884,13 @@ impl DeliveryWorker {
         next_retry_at: DateTime<Utc>,
     ) -> Result<()> {
         self.storage
-            .webhook_events
-            .mark_failed(event.id, event.failure_count + 1, Some(next_retry_at))
+            .schedule_retry(
+                event.id,
+                next_retry_at,
+                u32::try_from(event.failure_count + 1).unwrap_or(0),
+            )
             .await
-            .map_err(|e| DeliveryError::database(format!("failed to schedule event retry: {e}")))?;
-
-        Ok(())
+            .map_err(|e| DeliveryError::database(format!("failed to schedule event retry: {e}")))
     }
 
     /// Marks event as permanently failed when retries are exhausted.
@@ -807,12 +900,9 @@ impl DeliveryWorker {
     /// Returns error if database update fails.
     async fn mark_event_failed(&self, event: &WebhookEvent) -> Result<()> {
         self.storage
-            .webhook_events
-            .mark_failed(event.id, event.failure_count + 1, None)
+            .mark_failed(event.id)
             .await
-            .map_err(|e| DeliveryError::database(format!("failed to mark event as failed: {e}")))?;
-
-        Ok(())
+            .map_err(|e| DeliveryError::database(format!("failed to mark event as failed: {e}")))
     }
 
     /// Records a delivery attempt in the audit trail.
@@ -850,7 +940,7 @@ impl DeliveryWorker {
             error_message,
         };
 
-        if let Err(e) = self.storage.delivery_attempts.create(&delivery_attempt).await {
+        if let Err(e) = self.storage.record_delivery_attempt(delivery_attempt).await {
             warn!(
                 worker_id = self.id,
                 event_id = %event.id,
