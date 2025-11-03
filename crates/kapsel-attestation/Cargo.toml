@@ -28,6 +28,7 @@ kapsel-delivery = { path = "../kapsel-delivery" }
 wiremock = { workspace = true }
 proptest = { workspace = true }
 serial_test = "3.0"
+http = { workspace = true }
 
 
 

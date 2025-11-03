@@ -1335,6 +1335,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "ed25519-dalek",
+ "http",
  "kapsel-core",
  "kapsel-delivery",
  "kapsel-testing",
