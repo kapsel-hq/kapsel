@@ -172,6 +172,51 @@ impl TestEnv {
         Ok(endpoint_id)
     }
 
+    /// Create endpoint with signature configuration within a transaction.
+    pub async fn create_endpoint_with_signature_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: TenantId,
+        url: &str,
+        name: &str,
+        signature_config: SignatureConfig,
+    ) -> Result<EndpointId> {
+        let endpoint_id = EndpointId::new();
+        let unique_name = format!("{}-{}-{}", name, self.test_run_id, endpoint_id.0.simple());
+        let now = DateTime::<Utc>::from(self.clock.now_system());
+
+        let endpoint = Endpoint {
+            id: endpoint_id,
+            tenant_id,
+            name: unique_name,
+            url: url.to_string(),
+            is_active: true,
+            signature_config,
+            max_retries: 3,
+            timeout_seconds: 30,
+            retry_strategy: BackoffStrategy::Exponential,
+            circuit_state: CircuitState::Closed,
+            circuit_failure_count: 0,
+            circuit_success_count: 0,
+            circuit_last_failure_at: None,
+            circuit_half_open_at: None,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            total_events_received: 0,
+            total_events_delivered: 0,
+            total_events_failed: 0,
+        };
+
+        self.storage()
+            .endpoints
+            .create_in_tx(tx, &endpoint)
+            .await
+            .context("failed to create test endpoint with signature config")?;
+
+        Ok(endpoint_id)
+    }
+
     /// Create API key within a transaction.
     ///
     /// Returns both the API key string and its hash.
@@ -794,6 +839,25 @@ impl TestEnv {
                 max_retries,
                 timeout_seconds,
             )
+            .await?;
+        tx.commit().await?;
+        Ok(endpoint_id)
+    }
+
+    /// Create endpoint with signature configuration.
+    ///
+    /// This is a convenience wrapper around `create_endpoint_with_signature_tx`
+    /// that handles the transaction automatically.
+    pub async fn create_endpoint_with_signature(
+        &self,
+        tenant_id: TenantId,
+        url: &str,
+        name: &str,
+        signature_config: SignatureConfig,
+    ) -> Result<EndpointId> {
+        let mut tx = self.pool().begin().await?;
+        let endpoint_id = self
+            .create_endpoint_with_signature_tx(&mut tx, tenant_id, url, name, signature_config)
             .await?;
         tx.commit().await?;
         Ok(endpoint_id)
