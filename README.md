@@ -1,18 +1,4 @@
-<p align="center">
-  <img width="60%" src="docs/images/logo.png" alt="LOGO Screenshot">
-</p>
-
-<p align="center">
-  <b><a href="docs/STATUS.md">Status</a></b>
-  &nbsp;|&nbsp;
-  <b><a href="docs/ARCHITECTURE.md">Architecture</a></b>
-  &nbsp;|&nbsp;
-  <b><a href="docs/ATTESTATION.md">Attestation</a></b>
-  &nbsp;|&nbsp;
-  <b><a href="docs/TESTING_STRATEGY.md">Testing Strategy</a></b>
-  &nbsp;|&nbsp
-  <b><a href="docs/STYLE.md">Style Guide</a></b>
-</p>
+# kapsel
 
 > [!WARNING]
 > Kapsel is in a pre-release, alpha stage.
@@ -36,19 +22,29 @@ Kapsel is a webhook reliability service for building guaranteed at-least-once de
 
 ## Development
 
+This project uses [Docker](https://www.docker.com/), [cargo-make](https://github.com/sagiegurari/cargo-make) and [nextest](https://github.com/nextest-rs/nextest).
+
+Read the [Makefile](Makefile.toml) for all avaliable tasks.
+
 ```bash
 # Clone this repository
 git clone https://github.com/kapsel-hq/kapsel
 cd kapsel
 
-# Run tests
-cargo make test
+# Optional: Install build tooling
+cargo install cargo-make nextest
 
-# Run the dev server
-cargo make dev
+# Run tests (requires docker test database)
+cargo make db-start
+cargo make test
 ```
 
-Read [`Makefile.toml`](Makefile.toml) for all avaliable [`cargo-make`](https://github.com/sagiegurari/cargo-make) tasks.
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Attestation](docs/ATTESTATION.md)
+- [Testing Strategy](docs/TESTING_STRATEGY.md)
+- [Style Guide](docs/STYLE.md)
 
 ## License
 
