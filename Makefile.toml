@@ -78,7 +78,6 @@ docker compose up -d postgres-test
 echo "Waiting for database..."
 timeout 30 sh -c 'until docker exec kapsel-postgres-test pg_isready -U postgres; do sleep 1; done'
 echo "Running migrations..."
-sqlx migrate run
 echo "Database ready: $DATABASE_URL"
 '''
 
