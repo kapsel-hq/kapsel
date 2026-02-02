@@ -28,7 +28,7 @@ Read the [Makefile](Makefile.toml) for all avaliable tasks.
 
 ```bash
 # Clone this repository
-git clone https://github.com/kapsel-hq/kapsel
+git clone https://github.com/mitander/kapsel
 cd kapsel
 
 # Optional: Install build tooling
