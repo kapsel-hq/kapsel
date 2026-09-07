@@ -1,5 +1,14 @@
 # Evaluator commands
 
+## Receipt completion
+
+`operate` commits terminal receipt evidence in SQLite before optional filesystem export. It
+preserves filename output by exporting the committed bytes after execution. Export errors fail the
+command without reopening the terminal action. Repeating the command exports the same bytes under
+current output configuration, without dispatch or re-signing. The export directory need not exist
+during application startup or execution. Journal formats older than format 4 are rejected, not
+upgraded.
+
 Status: v0.2 beta command contract implemented by package version `0.2.0`.
 
 Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,

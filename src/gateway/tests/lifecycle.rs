@@ -85,9 +85,6 @@
     #[tokio::test]
     async fn production_writers_reload_as_their_exact_next_phase() {
         let path = database_path("writer-decoder-symmetry");
-        let output = path.parent().unwrap().join("receipts");
-        private_directory(&output);
-        let output = fs::canonicalize(output).unwrap();
         let request = request();
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
@@ -131,32 +128,18 @@
         let settings = ReceiptSettings {
             signing_seed: &[51_u8; 32],
             key_id: "symmetry-receipt-key",
-            output_directory: &output,
         };
         assert!(matches!(
             gateway.finalize_operation_receipt_once_with_fault(
                 &request.operation_id,
                 &settings,
-                Some(FaultPoint::ReceiptPreparedCommitted),
+                Some(FaultPoint::BeforeReceiptCommit),
             ),
             Err(GatewayError::InjectedFault)
         ));
         assert!(matches!(
             gateway.journal.operation(&request.operation_id).unwrap(),
-            Some(journal::LoadedOperation::ReceiptPrepared(_))
-        ));
-
-        assert!(matches!(
-            gateway.finalize_operation_receipt_once_with_fault(
-                &request.operation_id,
-                &settings,
-                Some(FaultPoint::ReceiptWrittenCommitted),
-            ),
-            Err(GatewayError::InjectedFault)
-        ));
-        assert!(matches!(
-            gateway.journal.operation(&request.operation_id).unwrap(),
-            Some(journal::LoadedOperation::ReceiptWritten(_))
+            Some(journal::LoadedOperation::ReceiverObserved(_))
         ));
 
         assert!(matches!(
@@ -353,9 +336,6 @@
     #[tokio::test]
     async fn targeted_application_finalization_does_not_sign_another_operation() {
         let path = database_path("targeted-application-finalization");
-        let output = path.parent().unwrap().join("receipts");
-        private_directory(&output);
-        let output = fs::canonicalize(output).unwrap();
         let mut first = request();
         first.operation_id = "op-a".into();
         let mut configured = request();
@@ -385,13 +365,12 @@
         let receipt_settings = ReceiptSettings {
             signing_seed: &[51_u8; 32],
             key_id: "targeted-receipt-key",
-            output_directory: &output,
         };
         assert!(matches!(
             gateway.finalize_operation_receipt_once_with_fault(
                 &configured.operation_id,
                 &receipt_settings,
-                Some(FaultPoint::ReceiptPreparedCommitted),
+                Some(FaultPoint::BeforeReceiptCommit),
             ),
             Err(GatewayError::InjectedFault)
         ));
@@ -401,11 +380,11 @@
         );
         assert_eq!(
             gateway.get(&configured.operation_id).unwrap(),
-            Some(OperationState::ReceiptPrepared)
+            Some(OperationState::ReceiverObserved)
         );
         assert_eq!(
             gateway
-                .finalize_operation_receipt_once(&configured.operation_id, &receipt_settings, None)
+                .finalize_operation_receipt_once(&configured.operation_id, &receipt_settings)
                 .unwrap(),
             Some(OperationState::Finalized)
         );

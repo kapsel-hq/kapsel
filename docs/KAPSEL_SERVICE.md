@@ -1,5 +1,15 @@
 # Kapsel service
 
+## SQLite-owned receipt storage
+
+The service uses SQLite as the canonical receipt store. Startup retains only configuration, state,
+and runtime roots. `/var/lib/kapsel/receipts` is not opened or required. The operator document's
+receipt directory is optional and is used only for CLI/MCP export. Receipt requests return committed
+SQLite bytes through the unchanged bounded bytes/digest protocol. The caller receives no journal
+access. The service-client receipt command remains a separate export. Export destination failure
+cannot change terminal status or block later retrieval. Journal versions older than format 4 are
+rejected before reconciliation and binding. This source revision is unreleased.
+
 Status: accepted unpublished service implementation; installer foundation, four recoverable fixed
 identity mutations, and private host-file publication foundation implemented; complete installer
 journey not implemented.

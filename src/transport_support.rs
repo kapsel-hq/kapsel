@@ -22,7 +22,7 @@ pub(crate) struct OperationProjection<'a> {
     pub(crate) state: &'static str,
     pub(crate) result: Option<&'static str>,
     pub(crate) target_rejection: Option<&'static str>,
-    pub(crate) receipt_file: Option<&'a str>,
+    pub(crate) receipt_file: Option<String>,
     pub(crate) receipt_sha256: Option<&'a str>,
 }
 
@@ -59,30 +59,24 @@ pub(crate) fn classify_application_operation(error: &ApplicationError) -> Failur
     }
 }
 
-pub(crate) fn project_operation(
-    report: &OperationReport,
-) -> Result<OperationProjection<'_>, FailureClass> {
-    let (receipt_file, receipt_sha256) = match &report.receipt {
-        Some(receipt) => (
-            Some(
-                receipt
-                    .path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or(FailureClass::OperationFailure)?,
-            ),
+pub(crate) fn project_operation(report: &OperationReport) -> OperationProjection<'_> {
+    let (receipt_file, receipt_sha256) = report.receipt.as_ref().map_or((None, None), |receipt| {
+        (
+            Some(format!(
+                "kap0038-{}-{}.receipt",
+                report.operation_id, receipt.digest
+            )),
             Some(receipt.digest.as_str()),
-        ),
-        None => (None, None),
-    };
-    Ok(OperationProjection {
+        )
+    });
+    OperationProjection {
         operation_id: &report.operation_id,
         state: operation_state(report.state),
         result: report.result.map(operation_result),
         target_rejection: report.target_rejection.map(target_rejection),
         receipt_file,
         receipt_sha256,
-    })
+    }
 }
 
 pub(crate) fn target_fields(targets: &kapsel::OperationTargets) -> String {
@@ -138,8 +132,6 @@ const fn operation_state(value: OperationState) -> &'static str {
         OperationState::NotAttempted => "NOT_ATTEMPTED",
         OperationState::ApplyStarted => "APPLY_STARTED",
         OperationState::ReceiverObserved => "RECEIVER_OBSERVED",
-        OperationState::ReceiptPrepared => "RECEIPT_PREPARED",
-        OperationState::ReceiptWritten => "RECEIPT_WRITTEN",
         OperationState::Finalized => "FINALIZED",
     }
 }

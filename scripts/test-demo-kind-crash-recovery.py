@@ -35,15 +35,24 @@ case "$command" in
         : >"$KAPSEL_DEMO_CONTROL_DIRECTORY/after-apply.ready"
         while :; do sleep 1; done
         ;;
-      after_receipt_publish)
-        printf receipt >"$workspace/failed-receipts/fake.receipt"
-        : >"$KAPSEL_DEMO_CONTROL_DIRECTORY/after-receipt-publish.ready"
+      after_receipt_commit)
+        python3 - "$workspace/failed-journal.sqlite3" <<'PYSQL'
+import hashlib
+import sqlite3
+import sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    connection.execute("CREATE TABLE kubernetes_image_operations(state, receipt_digest)")
+    connection.execute("INSERT INTO kubernetes_image_operations VALUES (?, ?)",
+                       ("finalized", hashlib.sha256(b"receipt").hexdigest()))
+PYSQL
+        : >"$KAPSEL_DEMO_CONTROL_DIRECTORY/after-receipt-commit.ready"
         while :; do sleep 1; done
         ;;
       *)
         if echo "$operator" | grep -q healthy; then
           printf '%s\n' '{"state":"FINALIZED","result":"SUCCEEDED"}'
         else
+          printf receipt >"$workspace/rotated-receipts/fake.receipt"
           printf '%s\n' '{"state":"FINALIZED","result":"FAILED"}'
         fi
         ;;

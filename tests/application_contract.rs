@@ -78,7 +78,7 @@ fn configuration_and_handle(root: &Path) -> (OperatorConfiguration, KubernetesHa
         mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
     let configuration = OperatorConfiguration {
         journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
-        receipt_output_directory: output,
+        receipt_output_directory: Some(output),
         authorization_trust: AuthorizationTrust {
             key_id: "application-authorization-key".into(),
             public_key: authorization_key.verifying_key().to_bytes(),
@@ -426,7 +426,14 @@ async fn terminal_status_and_exact_receipt_reads_preserve_frozen_receiver_facts(
         let report = application.execute(&request()).await.unwrap();
         let mut handle = responder.await.unwrap();
         let reference = report.receipt.unwrap();
-        let expected_bytes = fs::read(&reference.path).unwrap();
+        let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+        let expected_bytes: Vec<u8> = connection
+            .query_row(
+                "SELECT receipt_bytes FROM kubernetes_image_operations WHERE operation_id = ?1",
+                [&request().operation_id],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert_eq!(
             application
@@ -502,75 +509,62 @@ async fn status_and_receipt_fail_closed_for_incomplete_finalized_receipt_facts()
 }
 
 #[tokio::test]
-async fn receipt_read_fails_closed_for_hostile_finalized_storage() {
-    let root = std::env::temp_dir().join(format!(
-        "kapsel-application-hostile-receipt-{}",
-        std::process::id()
-    ));
+async fn export_failure_cannot_reopen_action_or_prevent_receipt_reads() {
+    let root =
+        std::env::temp_dir().join(format!("kapsel-export-independent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     private_directory(&root);
     let (configuration, handle) = configuration_and_handle(&root);
+    let output = configuration.receipt_output_directory.clone().unwrap();
+    fs::remove_dir(&output).unwrap();
     let mut application = Application::open(configuration).unwrap();
     let responder = tokio::spawn(respond_with_terminal_result(
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
     let report = application.execute(&request()).await.unwrap();
-    let _ = responder.await.unwrap();
-    let reference = report.receipt.unwrap();
-    let path = reference.path;
-    let original = fs::read(&path).unwrap();
-    let receipt = || application.read_set_deployment_image_receipt(&request().operation_id);
-    let assert_rejected = || assert!(matches!(receipt(), Err(ApplicationError::OperationFailure)));
-
-    fs::remove_file(&path).unwrap();
-    assert_rejected();
-    fs::write(&path, &original).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-
-    fs::write(&path, b"changed").unwrap();
-    assert_rejected();
-    fs::write(&path, &original).unwrap();
-
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
-    assert_rejected();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-
-    let hard_link = root.join("receipt-hard-link");
-    fs::hard_link(&path, &hard_link).unwrap();
-    assert_rejected();
-    fs::remove_file(hard_link).unwrap();
-
-    let real_receipt = root.join("real-receipt");
-    fs::rename(&path, &real_receipt).unwrap();
-    std::os::unix::fs::symlink(&real_receipt, &path).unwrap();
-    assert_rejected();
-    fs::remove_file(&path).unwrap();
-    fs::rename(&real_receipt, &path).unwrap();
-
-    fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
-    assert_rejected();
-    fs::remove_dir(&path).unwrap();
-    fs::write(&path, &original).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-
-    fs::write(&path, vec![0_u8; 16 * 1024 + 1]).unwrap();
-    assert_rejected();
-    fs::write(&path, &original).unwrap();
-
-    let receipt_directory = path.parent().unwrap();
-    fs::set_permissions(receipt_directory, fs::Permissions::from_mode(0o500)).unwrap();
-    assert_rejected();
-    fs::set_permissions(receipt_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut handle = responder.await.unwrap();
+    assert_eq!(report.state, OperationState::Finalized);
+    let original = application
+        .read_set_deployment_image_receipt(&request().operation_id)
+        .unwrap();
+    assert!(application.export_receipt().is_err());
     assert_eq!(
-        receipt().unwrap(),
-        SetDeploymentImageReceipt::Ready {
-            bytes: original,
-            sha256: reference.digest,
-        }
+        application
+            .read_set_deployment_image_receipt(&request().operation_id)
+            .unwrap(),
+        original
     );
-
+    private_directory(&output);
+    application.export_receipt().unwrap();
+    application.export_receipt().unwrap();
+    let file = fs::read_dir(&output)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let SetDeploymentImageReceipt::Ready { bytes, .. } = &original else {
+        unreachable!("successful execution has a receipt")
+    };
+    assert_eq!(&fs::read(&file).unwrap(), bytes);
+    fs::write(&file, b"collision").unwrap();
+    assert!(application.export_receipt().is_err());
+    assert_eq!(
+        application
+            .read_set_deployment_image_receipt(&request().operation_id)
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        application.reconcile().await.unwrap().unwrap().state,
+        OperationState::Finalized
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request())
+            .await
+            .is_err()
+    );
     drop(application);
     fs::remove_dir_all(root).unwrap();
 }
@@ -777,9 +771,7 @@ async fn fixed_operator_document_composes_the_existing_application_grammar() {
     let application = open_application_from_fixed_operator_document(
         &document,
         &root.join("journal.sqlite3"),
-        &root.join("receipts"),
         &access_journal,
-        &access_receipts,
         |path, maximum| {
             let bytes = match path.to_str().unwrap() {
                 "/etc/kapsel/grant.bin" => grant.clone(),
@@ -828,9 +820,7 @@ async fn fixed_operator_document_rejects_changed_state_paths_before_file_reads()
     let result = open_application_from_fixed_operator_document(
         document,
         Path::new("/var/lib/kapsel/journal.sqlite3"),
-        Path::new("/var/lib/kapsel/receipts"),
         Path::new("/proc/self/fd/7/journal.sqlite3"),
-        Path::new("/proc/self/fd/8"),
         |_, _| {
             reads += 1;
             Err(ApplicationError::InvalidOperatorConfiguration)
@@ -866,28 +856,85 @@ async fn invalid_operator_configuration_precedes_journal_creation() {
 }
 
 #[tokio::test]
-async fn relative_receipt_directory_is_rejected_before_journal_creation() {
-    let root = std::env::temp_dir().join(format!(
-        "kapsel-application-relative-receipts-{}",
-        std::process::id()
-    ));
-    let relative_name = format!("kapsel-relative-receipts-{}", std::process::id());
-    let relative_absolute = std::env::current_dir().unwrap().join(&relative_name);
+async fn absent_export_configuration_does_not_block_execution_or_retrieval() {
+    let root = std::env::temp_dir().join(format!("kapsel-no-export-config-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    let _ = fs::remove_dir_all(&relative_absolute);
     private_directory(&root);
-    private_directory(&relative_absolute);
-    let mut configuration = configuration(&root);
-    configuration.receipt_output_directory = PathBuf::from(&relative_name);
-    let journal = configuration.journal_path.clone();
-
+    let (mut configuration, handle) = configuration_and_handle(&root);
+    configuration.receipt_output_directory = None;
+    let mut application = Application::open(configuration).unwrap();
+    let responder = tokio::spawn(respond_with_terminal_result(
+        handle,
+        SetDeploymentImageStatus::Succeeded,
+    ));
+    let report = application.execute(&request()).await.unwrap();
+    let _ = responder.await.unwrap();
+    assert_eq!(report.state, OperationState::Finalized);
     assert!(matches!(
-        Application::open(configuration),
+        application.export_receipt(),
         Err(ApplicationError::InvalidReceiptOutputDirectory)
     ));
-    assert!(!journal.exists());
+    assert!(matches!(
+        application
+            .read_set_deployment_image_receipt(&request().operation_id)
+            .unwrap(),
+        SetDeploymentImageReceipt::Ready { .. }
+    ));
+    drop(application);
+    fs::remove_dir_all(root).unwrap();
+}
 
-    fs::remove_dir_all(relative_absolute).unwrap();
+#[tokio::test]
+async fn relative_export_configuration_is_rejected_only_after_finalization() {
+    let root = std::env::temp_dir().join(format!(
+        "kapsel-relative-export-config-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    private_directory(&root);
+    let (mut configuration, handle) = configuration_and_handle(&root);
+    let relative = PathBuf::from(format!("kapsel-relative-export-{}", std::process::id()));
+    private_directory(&relative);
+    configuration.receipt_output_directory = Some(relative.clone());
+    let mut application = Application::open(configuration).unwrap();
+    let responder = tokio::spawn(respond_with_terminal_result(
+        handle,
+        SetDeploymentImageStatus::Succeeded,
+    ));
+    let report = application.execute(&request()).await.unwrap();
+    let mut handle = responder.await.unwrap();
+    assert_eq!(report.state, OperationState::Finalized);
+    let original = application
+        .read_set_deployment_image_receipt(&request().operation_id)
+        .unwrap();
+    assert!(matches!(
+        application.export_receipt(),
+        Err(ApplicationError::InvalidReceiptOutputDirectory)
+    ));
+    assert!(matches!(
+        application
+            .read_set_deployment_image_receipt(&request().operation_id)
+            .unwrap(),
+        SetDeploymentImageReceipt::Ready { .. }
+    ));
+    assert_eq!(
+        application
+            .read_set_deployment_image_receipt(&request().operation_id)
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        application.reconcile().await.unwrap().unwrap().state,
+        OperationState::Finalized
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request())
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read_dir(&relative).unwrap().count(), 0);
+    fs::remove_dir(relative).unwrap();
+    drop(application);
     fs::remove_dir_all(root).unwrap();
 }
 

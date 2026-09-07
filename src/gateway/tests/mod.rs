@@ -24,12 +24,6 @@ mod receipt_behavior {
     include!("receipt.rs");
 }
 
-mod publication_behavior {
-    use super::*;
-
-    include!("publication.rs");
-}
-
 mod migration {
     use super::*;
 

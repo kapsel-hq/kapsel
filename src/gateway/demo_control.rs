@@ -10,7 +10,7 @@ use super::receipt::publication;
 const CONTROL_DIRECTORY_ENV: &str = "KAPSEL_DEMO_CONTROL_DIRECTORY";
 const PAUSE_ENV: &str = "KAPSEL_DEMO_PAUSE";
 const AFTER_APPLY: &str = "after_apply";
-const AFTER_RECEIPT_PUBLISH: &str = "after_receipt_publish";
+const AFTER_RECEIPT_COMMIT: &str = "after_receipt_commit";
 
 pub(super) fn checkpoint_after_apply() -> Result<(), ()> {
     let Some((control, selected)) = control_configuration()? else {
@@ -24,15 +24,30 @@ pub(super) fn checkpoint_after_apply() -> Result<(), ()> {
     Ok(())
 }
 
-pub(super) fn checkpoint_after_receipt_publish() -> Result<(), ()> {
+pub(super) fn checkpoint_after_receipt_commit() -> Result<(), ()> {
     let Some((control, selected)) = control_configuration()? else {
         return Ok(());
     };
-    if selected == AFTER_RECEIPT_PUBLISH {
+    if selected == AFTER_RECEIPT_COMMIT {
         create_marker(
             &control,
-            "after-receipt-publish.ready",
-            b"after_receipt_publish",
+            "after-receipt-commit.ready",
+            b"after_receipt_commit",
+        )?;
+        park_until_terminated();
+    }
+    Ok(())
+}
+
+pub(super) fn checkpoint_before_receipt_commit() -> Result<(), ()> {
+    let Some((control, selected)) = control_configuration()? else {
+        return Ok(());
+    };
+    if selected == "before_receipt_commit" {
+        create_marker(
+            &control,
+            "before-receipt-commit.ready",
+            b"before_receipt_commit",
         )?;
         park_until_terminated();
     }
@@ -45,7 +60,10 @@ fn control_configuration() -> Result<Option<(PathBuf, String)>, ()> {
     match (pause, directory) {
         (None, None) => Ok(None),
         (Some(pause), Some(directory))
-            if matches!(pause.as_str(), AFTER_APPLY | AFTER_RECEIPT_PUBLISH) =>
+            if matches!(
+                pause.as_str(),
+                AFTER_APPLY | AFTER_RECEIPT_COMMIT | "before_receipt_commit"
+            ) =>
         {
             if !directory.is_absolute() {
                 return Err(());

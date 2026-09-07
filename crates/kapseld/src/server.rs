@@ -396,7 +396,7 @@ fn open_test_application(root: &std::path::Path) -> io::Result<Application> {
         };
     Application::open(OperatorConfiguration {
         journal_path: root.join("journal.sqlite3"),
-        receipt_output_directory: receipt_directory,
+        receipt_output_directory: Some(receipt_directory),
         authorization_trust: AuthorizationTrust {
             key_id: "process-authorization-key".into(),
             public_key: authorization_key.verifying_key().to_bytes(),
@@ -2198,7 +2198,7 @@ mod linux_tests {
         let client = kube::Client::new(service, "demo");
         let configuration = |client| OperatorConfiguration {
             journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
-            receipt_output_directory: fs::canonicalize(root.join("receipts")).unwrap(),
+            receipt_output_directory: Some(fs::canonicalize(root.join("receipts")).unwrap()),
             authorization_trust: AuthorizationTrust {
                 key_id: "socket-authorization-key".into(),
                 public_key: key.verifying_key().to_bytes(),

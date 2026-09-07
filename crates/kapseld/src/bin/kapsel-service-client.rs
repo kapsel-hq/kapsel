@@ -46,7 +46,13 @@ fn main() -> ExitCode {
 
 fn run(arguments: &[String]) -> Result<(), ()> {
     let (request, output) = request(arguments)?;
-    let response = exchange(SOCKET, &request).map_err(|_| ())?;
+    #[cfg(feature = "test-harness")]
+    let test_socket = std::env::var("KAPSELD_TEST_CLIENT_SOCKET").ok();
+    #[cfg(feature = "test-harness")]
+    let socket = test_socket.as_deref().unwrap_or(SOCKET);
+    #[cfg(not(feature = "test-harness"))]
+    let socket = SOCKET;
+    let response = exchange(socket, &request).map_err(|_| ())?;
     match output {
         None => {
             std::io::stdout().write_all(&response).map_err(|_| ())?;

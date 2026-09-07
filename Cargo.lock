@@ -792,6 +792,7 @@ dependencies = [
  "http",
  "kapsel",
  "kube",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

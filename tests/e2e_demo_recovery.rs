@@ -3,6 +3,7 @@
 #![cfg(feature = "demo-harness")]
 #![allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "controlled fixture failures must fail the end-to-end test immediately"
 )]
 
@@ -13,7 +14,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -40,7 +44,8 @@ struct Fixture {
     receipts_a: PathBuf,
     receipts_b: PathBuf,
     trust: PathBuf,
-    server: Option<thread::JoinHandle<()>>,
+    server: Option<thread::JoinHandle<(usize, usize)>>,
+    stop_server: mpsc::Sender<()>,
 }
 
 impl Drop for Fixture {
@@ -123,15 +128,51 @@ fn fixture() -> Fixture {
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (stop_server, stopped) = mpsc::channel();
     let server = thread::spawn(move || {
-        for body in [
-            deployment("1", 1, false),
-            deployment("2", 2, false),
-            deployment("3", 2, true),
-        ] {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).unwrap();
+        let responses = [
+            ("GET", deployment("1", 1, false)),
+            ("PATCH", deployment("2", 2, false)),
+            ("GET", deployment("3", 2, true)),
+        ];
+        let mut requests = 0;
+        let mut patches = 0;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    match stopped.try_recv() {
+                        Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                        Err(mpsc::TryRecvError::Empty) => {},
+                    }
+                    assert!(Instant::now() < deadline, "provider fixture timed out");
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                },
+                Err(error) => panic!("provider accept failed: {error}"),
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let request = read_http_request(&mut stream);
+            let method = request.split_ascii_whitespace().next().unwrap();
+            requests += 1;
+            if method == "PATCH" {
+                patches += 1;
+            }
+            assert!(
+                requests <= responses.len(),
+                "unexpected late request: {request}"
+            );
+            let (expected_method, body) = &responses[requests - 1];
+            assert_eq!(method, *expected_method);
             write!(
                 stream,
                 concat!(
@@ -143,6 +184,7 @@ fn fixture() -> Fixture {
             .unwrap();
             stream.write_all(body.as_bytes()).unwrap();
         }
+        (requests, patches)
     });
 
     let authorization_seed = [9_u8; 32];
@@ -236,6 +278,36 @@ fn fixture() -> Fixture {
         receipts_b,
         trust,
         server: Some(server),
+        stop_server,
+    }
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    let mut bytes = Vec::new();
+    loop {
+        let mut chunk = [0_u8; 4096];
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => panic!("provider read failed: {error}"),
+        };
+        assert!(read > 0, "incomplete provider request");
+        bytes.extend_from_slice(&chunk[..read]);
+        assert!(bytes.len() <= 16 * 1024, "provider request exceeded bound");
+        let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let header_end = header_end + 4;
+        let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+        if bytes.len() >= header_end + content_length {
+            assert_eq!(bytes.len(), header_end + content_length);
+            return headers.lines().next().unwrap().to_owned();
+        }
     }
 }
 
@@ -328,20 +400,20 @@ fn production_command_recovers_both_demo_process_kill_seams() {
         "1"
     );
 
-    let mut publication = spawn_paused(&fixture, &fixture.operator_a, "after_receipt_publish");
+    let mut publication = spawn_paused(&fixture, &fixture.operator_a, "after_receipt_commit");
     wait_and_kill(
         &mut publication,
-        &fixture.control.join("after-receipt-publish.ready"),
+        &fixture.control.join("after-receipt-commit.ready"),
     );
-    fixture.server.take().unwrap().join().unwrap();
-    let receipt = fs::read_dir(&fixture.receipts_a)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let frozen = fs::read(&receipt).unwrap();
-
+    let connection = rusqlite::Connection::open(fixture.root.join("journal.sqlite3")).unwrap();
+    let frozen: Vec<u8> = connection
+        .query_row(
+            "SELECT receipt_bytes FROM kubernetes_image_operations WHERE state = 'finalized'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(fs::read_dir(&fixture.receipts_a).unwrap().count(), 0);
     let final_output = run_operate(&fixture, &fixture.operator_b);
     assert_eq!(
         final_output.status.code(),
@@ -353,8 +425,13 @@ fn production_command_recovers_both_demo_process_kill_seams() {
     assert!(String::from_utf8(final_output.stdout)
         .unwrap()
         .contains("\"state\":\"FINALIZED\""));
+    let receipt = fs::read_dir(&fixture.receipts_b)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
     assert_eq!(fs::read(&receipt).unwrap(), frozen);
-    assert_eq!(fs::read_dir(&fixture.receipts_b).unwrap().count(), 0);
     assert_eq!(
         fs::read_to_string(fixture.control.join("provider-apply-count")).unwrap(),
         "1"
@@ -379,4 +456,9 @@ fn production_command_recovers_both_demo_process_kill_seams() {
     assert!(stdout.contains("\"status\":\"INSPECTED\""));
     assert!(stdout.contains("\"result\":\"SUCCEEDED\""));
     assert!(!stdout.contains("VERIFIED"));
+    let repeated = run_operate(&fixture, &fixture.operator_b);
+    assert!(repeated.status.success());
+    assert_eq!(fs::read(&receipt).unwrap(), frozen);
+    let _ = fixture.stop_server.send(());
+    assert_eq!(fixture.server.take().unwrap().join().unwrap(), (3, 1));
 }

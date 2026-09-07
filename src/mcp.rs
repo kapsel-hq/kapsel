@@ -377,7 +377,11 @@ fn dispatch_tool_call(
     };
 
     match runtime.block_on(application.execute(&request)) {
-        Ok(report) => match render_report(&report) {
+        Ok(report) => match application
+            .export_receipt()
+            .map_err(|_| FailureClass::OperationFailure)
+            .map(|()| render_report(&report))
+        {
             Ok(text) => call_result(id, text, false),
             Err(_) => operation_failure(id),
         },
@@ -491,8 +495,8 @@ fn call_result(id: Value, text: String, is_error: bool) -> Value {
     })
 }
 
-fn render_report(report: &OperationReport) -> Result<String, FailureClass> {
-    let projection = transport_support::project_operation(report)?;
+fn render_report(report: &OperationReport) -> String {
+    let projection = transport_support::project_operation(report);
     let operation_id_json = json_text(projection.operation_id);
     let result_json = projection
         .result
@@ -502,13 +506,14 @@ fn render_report(report: &OperationReport) -> Result<String, FailureClass> {
         .map_or_else(|| String::from("null"), json_text);
     let receipt_file_json = projection
         .receipt_file
+        .as_deref()
         .map_or_else(|| String::from("null"), json_text);
     let receipt_digest_json = projection
         .receipt_sha256
         .map_or_else(|| String::from("null"), json_text);
     let fields = transport_support::target_fields(&report.targets);
     let target_fields = &fields[1..fields.len() - 1];
-    Ok(format!(
+    format!(
         concat!(
             "{{\"operation_id\":{operation_id_json},\"state\":\"{state}\",",
             "\"result\":{result_json},\"target_rejection\":{target_rejection_json},",
@@ -522,7 +527,7 @@ fn render_report(report: &OperationReport) -> Result<String, FailureClass> {
         receipt_file_json = receipt_file_json,
         target_fields = target_fields,
         receipt_digest_json = receipt_digest_json
-    ))
+    )
 }
 
 fn json_text(value: &str) -> String {

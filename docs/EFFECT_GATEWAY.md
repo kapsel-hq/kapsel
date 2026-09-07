@@ -1,6 +1,33 @@
-# Kubernetes effect-gateway experiment boundary
+# Kubernetes effect-gateway contract
 
-Status: active experiment and v0.2 beta semantic owner.
+## SQLite-owned receipt completion
+
+`receiver_observed` durably freezes the historical receiver statement before signing. One
+conditional SQLite transaction commits the exact signed receipt bytes, their SHA-256 digest, signer
+identity, and terminal `finalized` state together. `finalized` means durable terminal evidence, not
+an installed filesystem copy. Recovery before that commit signs only frozen facts. A signing failure
+leaves the observation unchanged, and commit acknowledgement loss is resolved by reading durable
+state rather than dispatching or observing again.
+
+Journal format 4 is the current format. Fresh journals and existing format 4 journals are accepted.
+Older versions are explicitly rejected before action processing. There is no migration or
+reinterpretation of older terminal rows. Receipt v2/v3, grant v1/v2, trust, exact approval, and
+observation-only recovery semantics remain unchanged.
+
+Filesystem export is separate from execution. CLI and MCP adapters export committed bytes to their
+configured directory for their existing filename response. Export failure cannot reopen the
+finalized action or prevent later application/service retrieval. The service does not require an
+installed receipt copy. Supplementary observations, if separately implemented, must bind the
+operation identity and original receipt SHA-256 without modifying the original receipt or result.
+
+Receipt retrieval depends on database availability. Consistent operator-owned backups must preserve
+receipt bytes and action history together. Exported copies may survive database loss, but execution
+does not guarantee creating them. No automatic backup or replication protocol is provided. SQLite
+rollback-journal/FULL settings, private storage, and allocation bounds remain. Process-exit tests do
+not prove power-loss behavior or the filesystem and hardware assumptions of
+[SQLite atomic commit](https://sqlite.org/atomiccommit.html).
+
+Status: current source contract; unreleased.
 
 This contract owns one operation's authorization, durable lifecycle, receiver observation, result
 meaning, receipt bytes, and demonstration. It does not define a generic agent runtime, MCP or
@@ -28,15 +55,15 @@ complete capture, or a claim that a signature proves the Kubernetes state was tr
 
 ## One capability
 
-The experiment accepts only `kubernetes.set_deployment_image` with:
+Kapsel accepts only `kubernetes.set_deployment_image` with:
 
 - Kubernetes namespace;
 - deployment name;
 - container name; and
 - immutable OCI image digest.
 
-Authorization binds all four values and one stable local operation identity. The experiment uses
-this deliberately narrow input grammar:
+Authorization binds all four values and one stable local operation identity. The current
+implementation uses this deliberately narrow input grammar:
 
 - operation and authorization identities are 1–128 ASCII bytes containing only letters, digits, `.`,
   `_`, `:`, or `-`;
@@ -47,21 +74,21 @@ this deliberately narrow input grammar:
 - the image is at most 512 ASCII bytes and has the exact form
   `<named-image>@sha256:<64-lowercase-hex>`. The named image is slash-separated lowercase components
   that begin and end with an ASCII letter or digit and contain only letters, digits, `.`, `_`, or
-  `-`. This prototype subset excludes tags, registry ports, tag-plus-digest forms, digest-only
+  `-`. This bounded grammar excludes tags, registry ports, tag-plus-digest forms, digest-only
   values, empty components, and uppercase spelling even where a wider ecosystem grammar may allow
   them.
 
 No wildcard namespace, deployment, container, tag, shell command, manifest, arbitrary patch, or
-second Kubernetes operation is in scope. The prototype journal accepts at most 10,000 distinct
-operation identities; an existing identical identity remains readable and idempotent at the limit.
-The owner-signed grant carries one bounded authorization identity and an exact copy of the operation
+second Kubernetes operation is in scope. The journal accepts at most 10,000 distinct operation
+identities; an existing identical identity remains readable and idempotent at the limit. The
+owner-signed grant carries one bounded authorization identity and an exact copy of the operation
 identity, namespace, deployment, container, and image. It has no wildcards, policy rules, ambient
 lookup, or expiry semantics. The application-configured grant trust contains one exact signing-key
 identity and Ed25519 verifying key. The gateway accepts only the fixed effect-gateway grant purpose,
 persists the signer identity and SHA-256 digest of the exact signed grant bytes, and does not accept
 trust from the request or grant.
 
-The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
+The release-owned demonstration uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
 
 ## Exact-snapshot approval in unpublished HEAD
@@ -126,11 +153,11 @@ statement bounds do not change. Trust v2 remains the trust encoding but must exp
 v3 purpose for snapshot receipts. Old receipt v2 remains inspectable under its original purpose,
 with null approval, never invented snapshot evidence. Legacy actions still emit v2. Frozen bytes are
 never re-signed or upgraded. The sections below describe the unchanged legacy v1 grant/v2 receipt
-wire where not explicitly extended here. None of this adds a published v0.2.0 promise.
+wire where not explicitly extended here. This source revision is unreleased.
 
 ## Operation lifecycle
 
-The experiment journal has explicit local states:
+The journal has explicit local states:
 
 ```text
 requested
@@ -138,8 +165,6 @@ requested
        -> not_attempted
        -> apply_started
             -> receiver_observed
-            -> receipt_prepared
-            -> receipt_written
             -> finalized
 ```
 
@@ -166,10 +191,9 @@ requested
 - `receiver_observed` records every bounded classifier input and the resulting classification,
   including target and receiver identity, observed image and operation marker, current, requested,
   and observed generations, replica counts, and rollout condition, or explicit missing facts.
-- `receipt_prepared` atomically freezes the exact signed receipt bytes, SHA-256 digest, path,
-  signing key identity, and already-stored write strategy before external publication.
-- `receipt_written` means those exact frozen bytes were installed at the frozen path.
-- `finalized` is terminal and read-only.
+- `finalized` atomically commits the exact signed receipt bytes, SHA-256 digest, signing key
+  identity, and terminal state in SQLite. It is terminal and read-only. Filesystem export happens
+  separately from this transition.
 
 After `apply_started`, recovery uses the stored Deployment UID, operation annotation, and requested
 image digest to observe and classify the operation. It does not replay even the frozen conditional
@@ -193,9 +217,7 @@ from request success or a timeout.
 | `not_attempted`     | One bounded permanent target-rejection reason and an explicit zero-attempt disposition.                                                                             | Read-only; do not observe Kubernetes, classify a receiver result, or prepare an effect receipt.    |
 | `apply_started`     | Target UID and resource version, write-strategy identity, and attempt marker, atomically committed.                                                                 | Do not blindly patch again. Observe the deployment and classify from receiver facts or `UNKNOWN`.  |
 | `receiver_observed` | Target and receiver UID, observed image and operation marker, current/requested/observed generations, resource versions, replica counts, rollout condition, result. | Prepare the receipt from frozen facts only. Do not call Kubernetes to improve the result.          |
-| `receipt_prepared`  | Exact signed receipt bytes, SHA-256 digest, path, receipt signing-key identity, and stored write strategy.                                                          | Publish only the frozen bytes to the frozen path; never re-sign from process configuration.        |
-| `receipt_written`   | Confirmation that the frozen bytes were collision-safely installed at the frozen path.                                                                              | Verify or restore the frozen bytes at the frozen path; then finalize.                              |
-| `finalized`         | Terminal state and receipt reference.                                                                                                                               | Read-only.                                                                                         |
+| `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                   |
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
 both settings whenever it opens the journal. The main journal and exact offline backup are each at
@@ -221,7 +243,7 @@ For operations that reached `apply_started`, the receiver result is exactly one 
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | `SUCCEEDED` | The observed deployment reached the requested generation and reports an available rollout for the requested image digest.                                                | Causation, workload correctness, complete cluster health, or universal capture. |
 | `FAILED`    | The same deployment UID and requested image are observed at the requested generation, and Kubernetes reports `Progressing=False` with reason `ProgressDeadlineExceeded`. | Permanence, why Kubernetes failed, or whether another actor later changed it.   |
-| `UNKNOWN`   | The experiment could not establish either defined observed outcome within its bounded reconciliation procedure.                                                          | That the request failed, was not received, or was later harmless.               |
+| `UNKNOWN`   | Kapsel could not establish either defined observed outcome within its bounded reconciliation procedure.                                                                  | That the request failed, was not received, or was later harmless.               |
 
 `not_attempted` is a local pre-attempt disposition, not a receiver result. An accepted Kubernetes
 request is not a rollout result. A healthy rollout does not prove that no other change occurred. A
@@ -247,13 +269,12 @@ classifies `UNKNOWN`; timeout never classifies `FAILED`.
 
 ## Authorization and secrets
 
-The experiment accepts only a canonical signed grant for the exact operation parameters. The owner
-signs it for the fixed purpose `kapsel.kap0038.kubernetes-set-deployment-image-grant.v1`; the
-gateway verifies it against one application-configured key identity and Ed25519 verifying key. The
-evaluator application loads this trust out of band and does not let agent input choose it. Grant
-parsing is bounded and canonical. Wrong purpose, key identity, signature, tuple, or grammar fails
-before request persistence or Kubernetes calls. The grant has these prototype-specific magic
-prefixes:
+Kapsel accepts only a canonical signed grant for the exact operation parameters. The owner signs it
+for the fixed purpose `kapsel.kap0038.kubernetes-set-deployment-image-grant.v1`; the gateway
+verifies it against one application-configured key identity and Ed25519 verifying key. The evaluator
+application loads this trust out of band and does not let agent input choose it. Grant parsing is
+bounded and canonical. Wrong purpose, key identity, signature, tuple, or grammar fails before
+request persistence or Kubernetes calls. The grant has these implementation-specific magic prefixes:
 
 | Document        | Magic                                     |
 | --------------- | ----------------------------------------- |
@@ -280,19 +301,19 @@ reject unsafe paths and must not print secrets or unbounded provider response bo
 
 ## Receipt and inspection
 
-The experiment writes one signed, portable receipt and supports offline inspection under separately
-provided trust, explicit evaluation time, and explicit resource limits. Its bytes, report language,
-and trust inputs remain capability-specific beta surfaces. v0.2 continues offline inspection of
-canonical receipt and trust v2 bytes emitted by `v0.1.1`, emits the same receipt v2 wire, and
-preserves that wire across v0.2.x. This bounded compatibility never re-signs frozen bytes, appoints
-receipt-carried trust, creates a generic receipt format, or promises compatibility beyond the v0.2.x
-beta line. A later format must use a new identifier and explicit migration/inspection policy rather
-than reuse or rename these bytes. The canonical `v0.1.1` receipt, statement, and trust known answers
-remain [`vectors/effect-gateway-receipt.hex`](../vectors/effect-gateway-receipt.hex),
+Kapsel writes one signed, portable receipt and supports offline inspection under separately provided
+trust, explicit evaluation time, and explicit resource limits. Its bytes, report language, and trust
+inputs remain capability-specific beta surfaces. v0.2 continues offline inspection of canonical
+receipt and trust v2 bytes emitted by `v0.1.1`, emits the same receipt v2 wire, and preserves that
+wire across v0.2.x. This bounded compatibility never re-signs frozen bytes, appoints receipt-carried
+trust, creates a generic receipt format, or promises compatibility beyond the v0.2.x beta line. A
+later format must use a new identifier and explicit migration/inspection policy rather than reuse or
+rename these bytes. The canonical `v0.1.1` receipt, statement, and trust known answers remain
+[`vectors/effect-gateway-receipt.hex`](../vectors/effect-gateway-receipt.hex),
 [`vectors/effect-gateway-statement.hex`](../vectors/effect-gateway-statement.hex), and
 [`vectors/effect-gateway-trust.hex`](../vectors/effect-gateway-trust.hex).
 
-The prototype bytes are fixed-order length-delimited records with these magic prefixes:
+The receipt bytes are fixed-order length-delimited records with these magic prefixes:
 
 | Document  | Magic                               |
 | --------- | ----------------------------------- |
@@ -347,9 +368,10 @@ that Kubernetes reported truthful facts.
 
 The non-claims field is the exact ASCII token list
 `no-exactly-once;no-causation;no-kubernetes-truth;no-complete-capture;no-witnessing;not-production`.
-It is a signed statement field so report consumers see the experiment's limits even when the report
-is separated from the owner document. The statement has no timestamps, no Kubernetes response body,
-no secret, no policy, no package identifier, no verifier profile, and no generic capability field.
+It is a signed statement field so report consumers see the implementation's limits even when the
+report is separated from the owner document. The statement has no timestamps, no Kubernetes response
+body, no secret, no policy, no package identifier, no verifier profile, and no generic capability
+field.
 
 A receipt contains exactly:
 
@@ -400,9 +422,9 @@ Offline inspection reports an aggregate status using only this vocabulary:
 
 Inspected and authenticated-but-untrusted reports disclose the signed fixed non-claims with the
 parsed statement. Inspection must never report `VERIFIED`. `INSPECTED` means only that the disclosed
-bytes were signed by a supplied trusted key for this prototype purpose at the explicit evaluation
-time. It does not mean the Kubernetes facts were true, causal, complete, witnessed,
-policy-authorized, or safe.
+bytes were signed by a supplied trusted key for this purpose at the explicit evaluation time. It
+does not mean the Kubernetes facts were true, causal, complete, witnessed, policy-authorized, or
+safe.
 
 Receipt filenames are derived by the application from the operation identity and the SHA-256 digest
 of the final receipt bytes: `kap0038-<operation-id>-<64-lowercase-hex-receipt-sha256>.receipt`. The
@@ -484,6 +506,6 @@ Do not add:
 - a claim of exactly-once Kubernetes mutation, complete audit capture, compliance, or production
   readiness.
 
-One adapter remains a hypothesis, not a reusable seam. Keep the experiment deep around its one
+One adapter remains a hypothesis, not a reusable seam. Keep the implementation deep around its one
 operation: the caller crosses one narrow experiment interface while the implementation owns
 journaling, Kubernetes interaction, recovery, observation, receipt construction, and inspection.

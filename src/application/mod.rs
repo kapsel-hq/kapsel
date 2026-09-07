@@ -35,8 +35,8 @@ pub type AgentRequest = SetDeploymentImageRequest;
 pub struct OperatorConfiguration {
     /// Journal location owned by the operator.
     pub journal_path: PathBuf,
-    /// Pre-existing owner-private receipt output directory.
-    pub receipt_output_directory: PathBuf,
+    /// Optional owner-private destination used only by explicit receipt export.
+    pub receipt_output_directory: Option<PathBuf>,
     /// Out-of-band trust for the exact authorization-grant signer.
     pub authorization_trust: AuthorizationTrust,
     /// One owner-signed exact grant used for request submission.
@@ -57,7 +57,7 @@ struct OperatorDocument {
     authorization_public_key: PathBuf,
     kubeconfig: PathBuf,
     journal: PathBuf,
-    receipt_directory: PathBuf,
+    receipt_directory: Option<PathBuf>,
     receipt_signing_seed: PathBuf,
     receipt_signing_key_id: String,
 }
@@ -82,10 +82,10 @@ pub async fn open_application_from_operator_document(
 
 /// Opens the application only when the operator document uses the supplied fixed state paths.
 ///
-/// The access paths must resolve through retained handles for the same journal and receipt roots.
+/// The journal access path must resolve through a retained handle for the same state root.
 /// The supplied reader owns file-opening policy and must return bytes from the validated opened
 /// inode. Kapsel service startup uses this form to retain the existing grammar without allowing
-/// another journal or receipt root.
+/// another journal root. The unused receipt export setting may be absent.
 ///
 /// # Errors
 ///
@@ -95,17 +95,13 @@ pub async fn open_application_from_operator_document(
 pub async fn open_application_from_fixed_operator_document(
     document: &[u8],
     fixed_journal_path: &Path,
-    fixed_receipt_directory: &Path,
     journal_access_path: &Path,
-    receipt_access_directory: &Path,
     read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
 ) -> Result<Application, ApplicationError> {
     let operator = parse_operator_document(document)?;
     let fixed_paths = FixedStatePaths {
         journal: fixed_journal_path,
-        receipt_directory: fixed_receipt_directory,
         journal_access: journal_access_path,
-        receipt_access: receipt_access_directory,
     };
     open_operator_document(operator, Some(fixed_paths), read_file).await
 }
@@ -113,9 +109,7 @@ pub async fn open_application_from_fixed_operator_document(
 #[derive(Clone, Copy)]
 struct FixedStatePaths<'a> {
     journal: &'a Path,
-    receipt_directory: &'a Path,
     journal_access: &'a Path,
-    receipt_access: &'a Path,
 }
 
 fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, ApplicationError> {
@@ -132,7 +126,6 @@ async fn open_operator_document(
         &operator.authorization_public_key,
         &operator.kubeconfig,
         &operator.journal,
-        &operator.receipt_directory,
         &operator.receipt_signing_seed,
     ] {
         if !path.is_absolute() {
@@ -140,22 +133,15 @@ async fn open_operator_document(
         }
     }
     if let Some(paths) = fixed_state_paths {
-        if operator.journal != paths.journal
-            || operator.receipt_directory != paths.receipt_directory
-        {
+        if operator.journal != paths.journal {
             return Err(ApplicationError::InvalidOperatorConfiguration);
         }
     }
-    let persisted_receipt_directory =
-        fixed_state_paths.map(|paths| paths.receipt_directory.to_owned());
-    let receipt_access_directory = fixed_state_paths.map(|paths| paths.receipt_access.to_owned());
     let journal_path = fixed_state_paths.map_or_else(
         || operator.journal.clone(),
         |paths| paths.journal_access.to_owned(),
     );
-    let receipt_output_directory = receipt_access_directory
-        .clone()
-        .unwrap_or_else(|| operator.receipt_directory.clone());
+    let receipt_output_directory = operator.receipt_directory.clone();
     let signed_authorization_grant = read_operator_file(
         &mut read_file,
         &operator.signed_authorization_grant,
@@ -181,7 +167,7 @@ async fn open_operator_document(
     let kubeconfig = read_operator_file(&mut read_file, &operator.kubeconfig, 16 * 1024)?;
     let kubernetes_client = load_operator_kubernetes_client(&kubeconfig).await?;
 
-    let mut application = Application::open(OperatorConfiguration {
+    let application = Application::open(OperatorConfiguration {
         journal_path,
         receipt_output_directory,
         authorization_trust: AuthorizationTrust {
@@ -193,11 +179,6 @@ async fn open_operator_document(
         receipt_signing_seed,
         receipt_signing_key_id: operator.receipt_signing_key_id,
     })?;
-    if let Some(persisted_directory) = persisted_receipt_directory {
-        application.persisted_receipt_directory = Some(persisted_directory.clone());
-        application.receipt_output_directory = persisted_directory;
-        application.receipt_access_directory = receipt_access_directory;
-    }
     Ok(application)
 }
 
@@ -453,15 +434,13 @@ pub struct Application {
     authorized_request: AgentRequest,
     receipt_signing_key: SigningKey,
     receipt_signing_key_id: String,
-    receipt_output_directory: PathBuf,
-    receipt_access_directory: Option<PathBuf>,
-    persisted_receipt_directory: Option<PathBuf>,
+    receipt_output_directory: Option<PathBuf>,
 }
 
 impl Application {
     /// Validates operator configuration before opening or creating the journal.
     ///
-    /// Grant trust, canonical grant bytes, receipt key identity, and output-directory safety are
+    /// Grant trust, canonical grant bytes, receipt key identity, and journal safety are
     /// checked before durable state is opened. Constructing the Kubernetes client and protecting
     /// its credentials remain operator responsibilities.
     ///
@@ -478,11 +457,6 @@ impl Application {
         .map_err(|_| ApplicationError::InvalidAuthorizationConfiguration)?;
         validate_key_id(&configuration.receipt_signing_key_id)
             .map_err(|_| ApplicationError::InvalidReceiptConfiguration)?;
-        if !configuration.receipt_output_directory.is_absolute() {
-            return Err(ApplicationError::InvalidReceiptOutputDirectory);
-        }
-        validate_private_directory(&configuration.receipt_output_directory)
-            .map_err(|_| ApplicationError::InvalidReceiptOutputDirectory)?;
         validate_journal_path(&configuration.journal_path)?;
 
         let authorized_request = AgentRequest {
@@ -505,8 +479,6 @@ impl Application {
             receipt_signing_key: SigningKey::from_bytes(&configuration.receipt_signing_seed),
             receipt_signing_key_id: configuration.receipt_signing_key_id,
             receipt_output_directory: configuration.receipt_output_directory,
-            receipt_access_directory: None,
-            persisted_receipt_directory: None,
         })
     }
 
@@ -560,9 +532,7 @@ impl Application {
             OperationState::Requested
             | OperationState::Authorized
             | OperationState::ApplyStarted
-            | OperationState::ReceiverObserved
-            | OperationState::ReceiptPrepared
-            | OperationState::ReceiptWritten => Ok(SetDeploymentImageStatus::InProgress),
+            | OperationState::ReceiverObserved => Ok(SetDeploymentImageStatus::InProgress),
             OperationState::NotAttempted => report
                 .target_rejection
                 .map(SetDeploymentImageStatus::NotAttempted)
@@ -601,21 +571,11 @@ impl Application {
         else {
             return Ok(SetDeploymentImageReceipt::NotFound);
         };
-        if snapshot
-            .frozen_receipt_path()
-            .is_some_and(|path| !self.persisted_receipt_path_is_allowed(path))
-        {
-            return Err(ApplicationError::OperationFailure);
-        }
         if snapshot.state() != OperationState::Finalized {
             return Ok(SetDeploymentImageReceipt::NotReady);
         }
-        let (bytes, sha256) = Gateway::read_loaded_receipt(
-            snapshot,
-            &self.receipt_output_directory,
-            self.receipt_access_directory.as_deref(),
-        )
-        .map_err(|_| ApplicationError::OperationFailure)?;
+        let (bytes, sha256) = Gateway::read_loaded_receipt(snapshot)
+            .map_err(|_| ApplicationError::OperationFailure)?;
         Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
     }
 
@@ -637,7 +597,7 @@ impl Application {
     /// # Errors
     ///
     /// Returns a submission or reconciliation error, including bounded Kubernetes ambiguity,
-    /// durable-state failure, or receipt-publication failure.
+    /// durable-state failure, or receipt-commit failure.
     ///
     /// # Cancellation safety
     ///
@@ -660,7 +620,7 @@ impl Application {
     /// # Errors
     ///
     /// Returns [`ApplicationError::OperationFailure`] when recovery cannot read or advance durable
-    /// state, perform bounded Kubernetes interaction, or publish the frozen receipt.
+    /// state, perform bounded Kubernetes interaction, or commit the frozen receipt.
     ///
     /// # Cancellation safety
     ///
@@ -694,20 +654,16 @@ impl Application {
                         return self.report();
                     }
                 },
-                OperationState::ReceiverObserved
-                | OperationState::ReceiptPrepared
-                | OperationState::ReceiptWritten => {
+                OperationState::ReceiverObserved => {
                     let receipt_settings = ReceiptSettings {
                         signing_seed: self.receipt_signing_key.as_bytes(),
                         key_id: &self.receipt_signing_key_id,
-                        output_directory: &self.receipt_output_directory,
                     };
                     let receipt_state_after_finalization = self
                         .gateway
                         .finalize_operation_receipt_once(
                             &self.authorized_request.operation_id,
                             &receipt_settings,
-                            self.receipt_access_directory.as_deref(),
                         )
                         .map_err(|_| ApplicationError::OperationFailure)?;
                     if receipt_state_after_finalization.is_none() {
@@ -731,12 +687,6 @@ impl Application {
         else {
             return Ok(None);
         };
-        if snapshot
-            .frozen_receipt_path()
-            .is_some_and(|path| !self.persisted_receipt_path_is_allowed(path))
-        {
-            return Err(ApplicationError::OperationFailure);
-        }
         Ok(Some(OperationReport {
             operation_id: operation_id.clone(),
             state: snapshot.state(),
@@ -747,15 +697,30 @@ impl Application {
         }))
     }
 
-    fn persisted_receipt_path_is_allowed(&self, path: &Path) -> bool {
-        self.persisted_receipt_directory
-            .as_deref()
-            .is_none_or(|directory| receipt_path_is_beneath(directory, path))
+    /// Exports committed receipt bytes for the legacy CLI/MCP filename response.
+    ///
+    /// This does not advance execution or change the terminal result. The destination comes only
+    /// from operator configuration. Repeated export accepts identical bytes and rejects collisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operation failure if retrieval or safe publication fails.
+    pub fn export_receipt(&self) -> Result<(), ApplicationError> {
+        if let SetDeploymentImageReceipt::Ready { bytes, sha256 } =
+            self.read_set_deployment_image_receipt(&self.authorized_request.operation_id)?
+        {
+            let name =
+                crate::gateway::receipt_filename(&self.authorized_request.operation_id, &sha256);
+            let output = self
+                .receipt_output_directory
+                .as_deref()
+                .filter(|output| output.is_absolute())
+                .ok_or(ApplicationError::InvalidReceiptOutputDirectory)?;
+            crate::gateway::publish_receipt(&output.join(name), &bytes)
+                .map_err(|_| ApplicationError::OperationFailure)?;
+        }
+        Ok(())
     }
-}
-
-fn receipt_path_is_beneath(directory: &Path, path: &Path) -> bool {
-    path.parent() == Some(directory) && path.file_name().is_some()
 }
 
 fn map_operation_error(error: &GatewayError) -> ApplicationError {
@@ -813,7 +778,7 @@ pub enum ApplicationError {
     InvalidReceiptOutputDirectory,
     /// Request intent was malformed or did not match the operator-configured exact grant.
     RequestRejected,
-    /// Durable state, provider interaction, or receipt publication could not complete.
+    /// Durable state, provider interaction, signing, or explicit export could not complete.
     OperationFailure,
 }
 
@@ -951,24 +916,6 @@ mod operator_tests {
             .is_ok();
         server.join().unwrap();
         result
-    }
-
-    #[test]
-    fn fixed_receipt_path_validation_rejects_every_escape() {
-        let directory = Path::new("/var/lib/kapsel/receipts");
-        assert!(receipt_path_is_beneath(
-            directory,
-            Path::new("/var/lib/kapsel/receipts/operation.receipt.json")
-        ));
-        for path in [
-            "/var/lib/kapsel/operation.receipt.json",
-            "/var/lib/kapsel/receipts/nested/operation.receipt.json",
-            "/var/lib/kapsel/receipts/../receipt.seed",
-            "/etc/kapsel/receipt.seed",
-            "/var/lib/kapsel/receipts",
-        ] {
-            assert!(!receipt_path_is_beneath(directory, Path::new(path)));
-        }
     }
 
     #[tokio::test]

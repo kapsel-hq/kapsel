@@ -1,7 +1,7 @@
     use std::{collections::BTreeMap, time::Instant};
 
     use http::{Request, Response};
-    use kube::{client::Body, Client};
+    use kube::{Client, client::Body};
     use serde_json::json;
     use tower_test::mock;
 
@@ -128,7 +128,6 @@
         let receipt_path = database_path("qualification-receipt-size");
         let receipt_directory = receipt_path.parent().unwrap().join("receipts");
         private_directory(&receipt_directory);
-        let receipt_directory = fs::canonicalize(receipt_directory).unwrap();
         let request = maximum_request();
         let authorization = maximum_authorization(&request);
         let mut gateway = Gateway::open_for_test(&receipt_path).unwrap();
@@ -148,19 +147,19 @@
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &[13_u8; 32],
                     key_id: "qualification-receipt-key",
-                    output_directory: &receipt_directory,
                 })
                 .unwrap(),
             Some(OperationState::Finalized)
         );
-        let receipt_bytes = fs::metadata(
+        let receipt_bytes = Gateway::read_loaded_receipt(
             gateway
-                .receipt_reference(&request.operation_id)
+                .journal
+                .operation(&request.operation_id)
                 .unwrap()
-                .unwrap()
-                .path,
+                .unwrap(),
         )
         .unwrap()
+        .0
         .len();
         let (persisted_value_bytes_max, sqlite_value_or_row_bytes_max, rollback_bytes_max) =
             journal::qualification_storage_limits();
@@ -254,7 +253,6 @@
             let receipt_path = database_path(&format!("qualification-receipt-{sample}"));
             let receipt_directory = receipt_path.parent().unwrap().join("receipts");
             private_directory(&receipt_directory);
-            let receipt_directory = fs::canonicalize(receipt_directory).unwrap();
             let mut gateway = Gateway::open_for_test(&receipt_path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization)
@@ -274,7 +272,6 @@
                     .finalize_receipt_once(&ReceiptSettings {
                         signing_seed: &[13_u8; 32],
                         key_id: "qualification-receipt-key",
-                        output_directory: &receipt_directory,
                     })
                     .unwrap(),
                 Some(OperationState::Finalized)

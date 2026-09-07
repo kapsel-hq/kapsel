@@ -9,7 +9,7 @@ mod schema;
 
 use std::{
     fs::{File, TryLockError},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -40,11 +40,6 @@ pub(crate) struct Journal {
 
 pub(crate) struct WorkerLock<'a> {
     file: &'a File,
-}
-
-#[cfg(test)]
-pub(crate) struct OperationStateProjection {
-    pub(crate) state: OperationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,19 +127,9 @@ pub(crate) struct ReceiverObservedOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReceiptPreparedOperation {
+pub(crate) struct FinalizedOperation {
     receiver_observed: ReceiverObservedOperation,
     receipt: FrozenReceipt,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReceiptWrittenOperation {
-    receipt_prepared: ReceiptPreparedOperation,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FinalizedOperation {
-    receipt_written: ReceiptWrittenOperation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,8 +139,6 @@ pub(crate) enum LoadedOperation {
     NotAttempted(NotAttemptedOperation),
     ApplyStarted(ApplyStartedOperation),
     ReceiverObserved(ReceiverObservedOperation),
-    ReceiptPrepared(ReceiptPreparedOperation),
-    ReceiptWritten(ReceiptWrittenOperation),
     Finalized(FinalizedOperation),
 }
 
@@ -211,21 +194,9 @@ impl ReceiverObservedOperation {
     }
 }
 
-impl ReceiptPreparedOperation {
-    pub(in crate::gateway) fn receipt(&self) -> &FrozenReceipt {
-        &self.receipt
-    }
-}
-
-impl ReceiptWrittenOperation {
-    pub(in crate::gateway) fn receipt(&self) -> &FrozenReceipt {
-        self.receipt_prepared.receipt()
-    }
-}
-
 impl FinalizedOperation {
     pub(in crate::gateway) fn receipt(&self) -> &FrozenReceipt {
-        self.receipt_written.receipt()
+        &self.receipt
     }
 }
 
@@ -237,8 +208,6 @@ impl LoadedOperation {
             Self::NotAttempted(_) => OperationState::NotAttempted,
             Self::ApplyStarted(_) => OperationState::ApplyStarted,
             Self::ReceiverObserved(_) => OperationState::ReceiverObserved,
-            Self::ReceiptPrepared(_) => OperationState::ReceiptPrepared,
-            Self::ReceiptWritten(_) => OperationState::ReceiptWritten,
             Self::Finalized(_) => OperationState::Finalized,
         }
     }
@@ -250,18 +219,7 @@ impl LoadedOperation {
             Self::NotAttempted(value) => value.authorized.request(),
             Self::ApplyStarted(value) => value.request(),
             Self::ReceiverObserved(value) => value.apply_started.request(),
-            Self::ReceiptPrepared(value) => value.receiver_observed.apply_started.request(),
-            Self::ReceiptWritten(value) => value
-                .receipt_prepared
-                .receiver_observed
-                .apply_started
-                .request(),
-            Self::Finalized(value) => value
-                .receipt_written
-                .receipt_prepared
-                .receiver_observed
-                .apply_started
-                .request(),
+            Self::Finalized(value) => value.receiver_observed.apply_started.request(),
         }
     }
 
@@ -272,22 +230,7 @@ impl LoadedOperation {
             Self::NotAttempted(v) => &v.authorized.request,
             Self::ApplyStarted(v) => &v.authorized.request,
             Self::ReceiverObserved(v) => &v.apply_started.authorized.request,
-            Self::ReceiptPrepared(v) => &v.receiver_observed.apply_started.authorized.request,
-            Self::ReceiptWritten(v) => {
-                &v.receipt_prepared
-                    .receiver_observed
-                    .apply_started
-                    .authorized
-                    .request
-            },
-            Self::Finalized(v) => {
-                &v.receipt_written
-                    .receipt_prepared
-                    .receiver_observed
-                    .apply_started
-                    .authorized
-                    .request
-            },
+            Self::Finalized(v) => &v.receiver_observed.apply_started.authorized.request,
         }
     }
 
@@ -296,29 +239,12 @@ impl LoadedOperation {
         let attempt = match self {
             Self::ApplyStarted(v) => Some(&v.attempt),
             Self::ReceiverObserved(v) => Some(&v.apply_started.attempt),
-            Self::ReceiptPrepared(v) => Some(&v.receiver_observed.apply_started.attempt),
-            Self::ReceiptWritten(v) => {
-                Some(&v.receipt_prepared.receiver_observed.apply_started.attempt)
-            },
-            Self::Finalized(v) => Some(
-                &v.receipt_written
-                    .receipt_prepared
-                    .receiver_observed
-                    .apply_started
-                    .attempt,
-            ),
+            Self::Finalized(v) => Some(&v.receiver_observed.apply_started.attempt),
             Self::Requested(_) | Self::Authorized(_) | Self::NotAttempted(_) => None,
         };
         let statement = match self {
             Self::ReceiverObserved(v) => Some(v.statement()),
-            Self::ReceiptPrepared(v) => Some(v.receiver_observed.statement()),
-            Self::ReceiptWritten(v) => Some(v.receipt_prepared.receiver_observed.statement()),
-            Self::Finalized(v) => Some(
-                v.receipt_written
-                    .receipt_prepared
-                    .receiver_observed
-                    .statement(),
-            ),
+            Self::Finalized(v) => Some(v.receiver_observed.statement()),
             _ => None,
         };
         super::OperationTargets {
@@ -350,24 +276,7 @@ impl LoadedOperation {
     pub(crate) fn result(&self) -> Option<OperationResult> {
         match self {
             Self::ReceiverObserved(value) => Some(value.receiver.statement.result),
-            Self::ReceiptPrepared(value) => Some(value.receiver_observed.receiver.statement.result),
-            Self::ReceiptWritten(value) => Some(
-                value
-                    .receipt_prepared
-                    .receiver_observed
-                    .receiver
-                    .statement
-                    .result,
-            ),
-            Self::Finalized(value) => Some(
-                value
-                    .receipt_written
-                    .receipt_prepared
-                    .receiver_observed
-                    .receiver
-                    .statement
-                    .result,
-            ),
+            Self::Finalized(value) => Some(value.receiver_observed.receiver.statement.result),
             Self::Requested(_)
             | Self::Authorized(_)
             | Self::NotAttempted(_)
@@ -382,23 +291,17 @@ impl LoadedOperation {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::gateway) fn frozen_receipt(&self) -> Option<&FrozenReceipt> {
         match self {
-            Self::ReceiptPrepared(value) => Some(value.receipt()),
-            Self::ReceiptWritten(value) => Some(value.receipt()),
             Self::Finalized(value) => Some(value.receipt()),
             _ => None,
         }
     }
 
-    pub(crate) fn frozen_receipt_path(&self) -> Option<&Path> {
-        self.frozen_receipt().map(|receipt| receipt.path.as_path())
-    }
-
     pub(crate) fn receipt_reference(&self) -> Option<ReceiptReference> {
         match self {
             Self::Finalized(value) => Some(ReceiptReference {
-                path: value.receipt().path.clone(),
                 digest: value.receipt().digest.clone(),
             }),
             _ => None,
@@ -430,7 +333,6 @@ struct SnapshotRow {
     requested_generation: Option<i64>,
     apply_resource_version: Option<String>,
     receiver_facts_present: bool,
-    receipt_path: Option<String>,
     receipt_digest: Option<String>,
     receipt_bytes: Option<Vec<u8>>,
     receipt_key_id: Option<String>,
@@ -522,7 +424,6 @@ impl SnapshotRow {
         }
         let receipt = snapshot_frozen_receipt(
             request.request.operation_id(),
-            self.receipt_path,
             self.receipt_digest,
             self.receipt_bytes,
             self.receipt_key_id,
@@ -616,7 +517,7 @@ impl SnapshotRow {
                     },
                 ))
             },
-            OperationState::ReceiptPrepared
+            OperationState::Finalized
                 if authorization.is_some()
                     && rejection.is_none()
                     && apply_attempted
@@ -625,7 +526,7 @@ impl SnapshotRow {
                     && receiver.is_some()
                     && receipt.is_some() =>
             {
-                Ok(LoadedOperation::ReceiptPrepared(ReceiptPreparedOperation {
+                Ok(LoadedOperation::Finalized(FinalizedOperation {
                     receiver_observed: ReceiverObservedOperation {
                         apply_started: ApplyStartedOperation {
                             authorized: AuthorizedOperation {
@@ -638,60 +539,6 @@ impl SnapshotRow {
                         receiver: receiver.ok_or(GatewayError::InvalidPersistedState)?,
                     },
                     receipt: receipt.ok_or(GatewayError::InvalidPersistedState)?,
-                }))
-            },
-            OperationState::ReceiptWritten
-                if authorization.is_some()
-                    && rejection.is_none()
-                    && apply_attempted
-                    && attempt.is_some()
-                    && result.is_some()
-                    && receiver.is_some()
-                    && receipt.is_some() =>
-            {
-                Ok(LoadedOperation::ReceiptWritten(ReceiptWrittenOperation {
-                    receipt_prepared: ReceiptPreparedOperation {
-                        receiver_observed: ReceiverObservedOperation {
-                            apply_started: ApplyStartedOperation {
-                                authorized: AuthorizedOperation {
-                                    request,
-                                    authorization: authorization
-                                        .ok_or(GatewayError::InvalidPersistedState)?,
-                                },
-                                attempt: attempt.ok_or(GatewayError::InvalidPersistedState)?,
-                            },
-                            receiver: receiver.ok_or(GatewayError::InvalidPersistedState)?,
-                        },
-                        receipt: receipt.ok_or(GatewayError::InvalidPersistedState)?,
-                    },
-                }))
-            },
-            OperationState::Finalized
-                if authorization.is_some()
-                    && rejection.is_none()
-                    && apply_attempted
-                    && attempt.is_some()
-                    && result.is_some()
-                    && receiver.is_some()
-                    && receipt.is_some() =>
-            {
-                Ok(LoadedOperation::Finalized(FinalizedOperation {
-                    receipt_written: ReceiptWrittenOperation {
-                        receipt_prepared: ReceiptPreparedOperation {
-                            receiver_observed: ReceiverObservedOperation {
-                                apply_started: ApplyStartedOperation {
-                                    authorized: AuthorizedOperation {
-                                        request,
-                                        authorization: authorization
-                                            .ok_or(GatewayError::InvalidPersistedState)?,
-                                    },
-                                    attempt: attempt.ok_or(GatewayError::InvalidPersistedState)?,
-                                },
-                                receiver: receiver.ok_or(GatewayError::InvalidPersistedState)?,
-                            },
-                            receipt: receipt.ok_or(GatewayError::InvalidPersistedState)?,
-                        },
-                    },
                 }))
             },
             _ => Err(GatewayError::InvalidPersistedState),
@@ -774,8 +621,6 @@ impl OperationState {
             Self::NotAttempted => "not_attempted",
             Self::ApplyStarted => "apply_started",
             Self::ReceiverObserved => "receiver_observed",
-            Self::ReceiptPrepared => "receipt_prepared",
-            Self::ReceiptWritten => "receipt_written",
             Self::Finalized => "finalized",
         }
     }
@@ -787,8 +632,6 @@ impl OperationState {
             "not_attempted" => Ok(Self::NotAttempted),
             "apply_started" => Ok(Self::ApplyStarted),
             "receiver_observed" => Ok(Self::ReceiverObserved),
-            "receipt_prepared" => Ok(Self::ReceiptPrepared),
-            "receipt_written" => Ok(Self::ReceiptWritten),
             "finalized" => Ok(Self::Finalized),
             _ => Err(GatewayError::InvalidPersistedState),
         }
@@ -1029,7 +872,7 @@ impl Journal {
         receipt_statement_on(&self.connection, operation_id)
     }
 
-    pub(in crate::gateway) fn prepare_receipt(
+    pub(in crate::gateway) fn commit_receipt(
         &self,
         operation: &ReceiverObservedOperation,
         candidate: &ReceiptToPrepare,
@@ -1038,75 +881,27 @@ impl Journal {
         if receipt.operation_id != operation.operation_id() {
             return Err(GatewayError::InvalidTransition);
         }
-        let path = receipt
-            .path
-            .to_str()
-            .ok_or(GatewayError::ReceiptPublication)?;
-        let changed = self
+        let transaction = self
             .connection
+            .unchecked_transaction()
+            .map_err(GatewayError::Database)?;
+        let changed = transaction
             .execute(
                 "UPDATE kubernetes_image_operations
-                 SET state = ?1, receipt_path = ?2, receipt_digest = ?3,
-                     receipt_bytes = ?4, receipt_key_id = ?5
-                 WHERE operation_id = ?6 AND state = ?7",
+             SET state = ?1, receipt_digest = ?2, receipt_bytes = ?3, receipt_key_id = ?4
+             WHERE operation_id = ?5 AND state = ?6",
                 params![
-                    OperationState::ReceiptPrepared.as_sql(),
-                    path,
+                    OperationState::Finalized.as_sql(),
                     receipt.digest,
                     receipt.bytes,
                     receipt.key_id,
                     receipt.operation_id,
-                    OperationState::ReceiverObserved.as_sql(),
+                    OperationState::ReceiverObserved.as_sql()
                 ],
             )
             .map_err(GatewayError::Database)?;
-        changed_one(changed)
-    }
-
-    pub(in crate::gateway) fn mark_receipt_written(
-        &self,
-        operation: &ReceiptPreparedOperation,
-    ) -> Result<(), GatewayError> {
-        let operation_id = operation.receipt().operation_id.as_str();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1
-                 WHERE operation_id = ?2 AND state = ?3
-                       AND receipt_path IS NOT NULL AND receipt_digest IS NOT NULL
-                       AND receipt_bytes IS NOT NULL AND receipt_key_id IS NOT NULL",
-                params![
-                    OperationState::ReceiptWritten.as_sql(),
-                    operation_id,
-                    OperationState::ReceiptPrepared.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
-    }
-
-    pub(in crate::gateway) fn mark_finalized(
-        &self,
-        operation: &ReceiptWrittenOperation,
-    ) -> Result<(), GatewayError> {
-        let operation_id = operation.receipt().operation_id.as_str();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1
-                 WHERE operation_id = ?2 AND state = ?3
-                       AND receipt_path IS NOT NULL AND receipt_digest IS NOT NULL
-                       AND receipt_bytes IS NOT NULL AND receipt_key_id IS NOT NULL",
-                params![
-                    OperationState::Finalized.as_sql(),
-                    operation_id,
-                    OperationState::ReceiptWritten.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        changed_one(changed)?;
+        transaction.commit().map_err(GatewayError::Database)
     }
 
     #[cfg(test)]
@@ -1114,26 +909,9 @@ impl Journal {
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptReference>, GatewayError> {
-        self.connection
-            .query_row(
-                "SELECT receipt_path, receipt_digest
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1 AND state IN (?2, ?3)
-                       AND receipt_path IS NOT NULL AND receipt_digest IS NOT NULL",
-                params![
-                    operation_id,
-                    OperationState::ReceiptWritten.as_sql(),
-                    OperationState::Finalized.as_sql(),
-                ],
-                |row| {
-                    Ok(ReceiptReference {
-                        path: PathBuf::from(row.get::<_, String>(0)?),
-                        digest: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(GatewayError::Database)
+        Ok(self
+            .operation(operation_id)?
+            .and_then(|op| op.receipt_reference()))
     }
 
     pub(in crate::gateway) fn next_executable_operation(
@@ -1149,9 +927,7 @@ impl Journal {
         &self,
     ) -> Result<Option<LoadedOperation>, GatewayError> {
         let receiver_observed = self.next_operation(OperationState::ReceiverObserved)?;
-        let receipt_prepared = self.next_operation(OperationState::ReceiptPrepared)?;
-        let receipt_written = self.next_operation(OperationState::ReceiptWritten)?;
-        Ok(receiver_observed.or(receipt_prepared).or(receipt_written))
+        Ok(receiver_observed)
     }
 
     fn next_operation(
@@ -1193,18 +969,6 @@ impl Journal {
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
         loaded_operation_on(&transaction, operation_id)
-    }
-
-    #[cfg(test)]
-    pub(in crate::gateway) fn operation_snapshot(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<OperationStateProjection>, GatewayError> {
-        self.operation(operation_id).map(|operation| {
-            operation.map(|operation| OperationStateProjection {
-                state: operation.state(),
-            })
-        })
     }
 
     pub(in crate::gateway) fn defer_target_retry(
@@ -1511,7 +1275,7 @@ fn snapshot_row_on(
                         OR rollout_condition_type IS NOT NULL
                         OR rollout_condition_status IS NOT NULL
                         OR rollout_condition_reason IS NOT NULL,
-                    receipt_path, receipt_digest, receipt_bytes, receipt_key_id,
+                    NULL, receipt_digest, receipt_bytes, receipt_key_id,
                     approved_uid, approved_resource_version,
                     preflight_uid, preflight_resource_version
              FROM kubernetes_image_operations
@@ -1542,7 +1306,6 @@ fn snapshot_row_on(
                     requested_generation: row.get(16)?,
                     apply_resource_version: row.get(17)?,
                     receiver_facts_present: row.get(18)?,
-                    receipt_path: row.get(19)?,
                     receipt_digest: row.get(20)?,
                     receipt_bytes: row.get(21)?,
                     receipt_key_id: row.get(22)?,
@@ -1569,12 +1332,10 @@ fn receipt_statement_on(
                     rollout_condition_type, rollout_condition_status,
                     rollout_condition_reason, result, approved_uid, approved_resource_version
              FROM kubernetes_image_operations
-             WHERE operation_id = ?1 AND state IN (?2, ?3, ?4, ?5)",
+             WHERE operation_id = ?1 AND state IN (?2, ?3)",
             params![
                 operation_id,
                 OperationState::ReceiverObserved.as_sql(),
-                OperationState::ReceiptPrepared.as_sql(),
-                OperationState::ReceiptWritten.as_sql(),
                 OperationState::Finalized.as_sql(),
             ],
             ReceiptRow::from_sql,
@@ -1648,18 +1409,16 @@ fn validate_snapshot_authorization(
 
 fn snapshot_frozen_receipt(
     operation_id: &str,
-    path: Option<String>,
     digest: Option<String>,
     bytes: Option<Vec<u8>>,
     key_id: Option<String>,
     statement: Option<&ReceiptStatement>,
 ) -> Result<Option<FrozenReceipt>, GatewayError> {
-    match (path, digest, bytes, key_id) {
-        (None, None, None, None) => Ok(None),
-        (Some(path), Some(digest), Some(bytes), Some(key_id)) => {
+    match (digest, bytes, key_id) {
+        (None, None, None) => Ok(None),
+        (Some(digest), Some(bytes), Some(key_id)) => {
             let receipt = validate_frozen_receipt(FrozenReceipt {
                 operation_id: operation_id.to_owned(),
-                path: PathBuf::from(path),
                 digest,
                 bytes,
                 key_id,
@@ -1684,18 +1443,6 @@ fn validate_frozen_receipt(receipt: FrozenReceipt) -> Result<FrozenReceipt, Gate
     }
     validate_identity(InputField::AuthorizationId, &receipt.key_id)
         .map_err(|_| GatewayError::InvalidPersistedState)?;
-    let expected_name = publication::receipt_filename(&receipt.operation_id, &receipt.digest);
-    if !receipt.path.is_absolute()
-        || receipt.path.file_name() != Some(expected_name.as_ref())
-        || receipt.path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
-        return Err(GatewayError::InvalidPersistedState);
-    }
     Ok(receipt)
 }
 
@@ -1907,10 +1654,6 @@ mod tests {
             super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
                 .unwrap();
         let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
-        let receipt_path = format!(
-            "/private/{}",
-            publication::receipt_filename("snapshot-op", &receipt_digest)
-        );
         journal
             .connection
             .execute(
@@ -1924,12 +1667,12 @@ mod tests {
                     observed_generation, receiver_resource_version, desired_replicas,
                     updated_replicas, available_replicas, unavailable_replicas,
                     rollout_condition_type, rollout_condition_status,
-                    rollout_condition_reason, receipt_path, receipt_digest,
+                    rollout_condition_reason, receipt_digest,
                     receipt_bytes, receipt_key_id
                  ) VALUES (?1, 'demo', 'agent-api', 'api', ?2, ?3, ?4, ?5,
                            ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                            ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
-                           ?27, ?28, ?29, ?30)",
+                           ?27, ?28, ?29)",
                 params![
                     "snapshot-op",
                     image,
@@ -1959,7 +1702,6 @@ mod tests {
                     observed.then_some("Available"),
                     observed.then_some("True"),
                     observed.then_some("MinimumReplicasAvailable"),
-                    receipt.then_some(receipt_path),
                     receipt.then_some(receipt_digest),
                     receipt.then_some(receipt_bytes),
                     receipt.then_some("snapshot-receipt-key"),
@@ -1976,8 +1718,6 @@ mod tests {
             ("not_attempted", None, Some("deployment_not_found"), false),
             ("apply_started", None, None, false),
             ("receiver_observed", Some("SUCCEEDED"), None, false),
-            ("receipt_prepared", Some("SUCCEEDED"), None, true),
-            ("receipt_written", Some("SUCCEEDED"), None, true),
             ("finalized", Some("SUCCEEDED"), None, true),
         ] {
             let (journal, root) = journal(&format!("legal-{state}"));
@@ -1990,8 +1730,6 @@ mod tests {
                     | ("not_attempted", LoadedOperation::NotAttempted(_))
                     | ("apply_started", LoadedOperation::ApplyStarted(_))
                     | ("receiver_observed", LoadedOperation::ReceiverObserved(_))
-                    | ("receipt_prepared", LoadedOperation::ReceiptPrepared(_))
-                    | ("receipt_written", LoadedOperation::ReceiptWritten(_))
                     | ("finalized", LoadedOperation::Finalized(_))
             );
             assert!(exact_variant, "{state}");
@@ -2050,7 +1788,7 @@ mod tests {
                 Some("SUCCEEDED"),
                 None,
                 true,
-                "receipt_path = NULL",
+                "receipt_bytes = NULL",
             ),
             (
                 "receipt-written-missing-receipt",
@@ -2190,7 +1928,7 @@ mod tests {
             .connection
             .execute(
                 "UPDATE kubernetes_image_operations
-                 SET operation_id = 'prepared-op', receipt_path = NULL
+                 SET operation_id = 'prepared-op', receipt_bytes = NULL
                  WHERE operation_id = 'snapshot-op'",
                 [],
             )
@@ -2203,7 +1941,11 @@ mod tests {
             false,
         );
 
-        assert!(journal.next_receipt_finalization_operation().is_err());
+        assert!(journal.operation("prepared-op").is_err());
+        assert!(journal
+            .next_receipt_finalization_operation()
+            .unwrap()
+            .is_some());
         drop(journal);
         fs::remove_dir_all(root).unwrap();
     }
@@ -2396,19 +2138,16 @@ mod tests {
     #[test]
     fn loaded_operation_requires_complete_valid_frozen_receipt_facts() {
         for (name, assignment) in [
-            ("missing-path", "receipt_path = NULL"),
             ("missing-digest", "receipt_digest = NULL"),
             ("missing-bytes", "receipt_bytes = NULL"),
             ("missing-key", "receipt_key_id = NULL"),
             (
                 "missing-tuple",
-                "receipt_path = NULL, receipt_digest = NULL, receipt_bytes = NULL, \
+                "receipt_digest = NULL, receipt_bytes = NULL, \
                  receipt_key_id = NULL",
             ),
             ("bad-key", "receipt_key_id = 'bad key'"),
             ("bad-digest", "receipt_digest = '00'"),
-            ("wrong-name", "receipt_path = '/private/wrong.receipt'"),
-            ("relative-path", "receipt_path = 'relative.receipt'"),
         ] {
             let (journal, root) = journal(name);
             insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
@@ -2468,17 +2207,13 @@ mod tests {
         insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
         let bytes = b"not-a-receipt";
         let digest = publication::receipt_digest_hex(bytes);
-        let path = format!(
-            "/private/{}",
-            publication::receipt_filename("snapshot-op", &digest)
-        );
         journal
             .connection
             .execute(
                 "UPDATE kubernetes_image_operations
-                 SET receipt_path = ?1, receipt_digest = ?2, receipt_bytes = ?3
-                 WHERE operation_id = ?4",
-                params![path, digest, bytes.as_slice(), "snapshot-op"],
+                 SET receipt_digest = ?1, receipt_bytes = ?2
+                 WHERE operation_id = ?3",
+                params![digest, bytes.as_slice(), "snapshot-op"],
             )
             .unwrap();
         assert!(journal.operation("snapshot-op").is_err());
@@ -2590,20 +2325,15 @@ mod tests {
             super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
                 .unwrap();
         let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
-        let receipt_path = format!(
-            "/private/{}",
-            publication::receipt_filename("snapshot-op", &receipt_digest)
-        );
         journal
             .connection
             .execute(
                 "UPDATE kubernetes_image_operations
-                 SET authorization_grant_digest = ?1, receipt_path = ?2,
-                     receipt_digest = ?3, receipt_bytes = ?4
-                 WHERE operation_id = ?5",
+                 SET authorization_grant_digest = ?1,
+                     receipt_digest = ?2, receipt_bytes = ?3
+                 WHERE operation_id = ?4",
                 params![
                     verified.grant_digest,
-                    receipt_path,
                     receipt_digest,
                     receipt_bytes,
                     "snapshot-op"

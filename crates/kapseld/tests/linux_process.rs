@@ -270,6 +270,19 @@ fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
     response
 }
 
+fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool) {
+    let target = serde_json::json!({"uid": "uid-1", "resource_version": "1"});
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap(),
+        serde_json::json!({
+            "status": status,
+            "approved_target": snapshot.then_some(&target),
+            "attempt_target": target,
+            "observed_target": {"uid": "uid-1", "resource_version": "3"}
+        })
+    );
+}
+
 fn lowercase_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -322,7 +335,10 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let grant = provision_exact_grant(&GrantProvisioning {
         authorization: &ExactAuthorization {
-            approved_target: None,
+            approved_target: Some(kapsel::ApprovedTarget {
+                uid: "uid-1".into(),
+                resource_version: "1".into(),
+            }),
             authorization_id: "service-auth".into(),
             operation_id: "process-op".into(),
             namespace: "demo".into(),
@@ -449,6 +465,7 @@ fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     Instant::now() < deadline,
@@ -462,13 +479,21 @@ fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
 }
 
 fn read_http_request(listener: &TcpListener) -> (TcpStream, String, String, Vec<u8>) {
-    let mut stream = accept_with_timeout(listener);
+    read_http_stream(accept_with_timeout(listener))
+}
+
+fn read_http_stream(mut stream: TcpStream) -> (TcpStream, String, String, Vec<u8>) {
+    stream.set_nonblocking(false).unwrap();
     stream.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     let mut bytes = Vec::new();
     let total = loop {
         let mut chunk = [0_u8; 4096];
-        let read = stream.read(&mut chunk).unwrap();
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => panic!("provider fixture read failed: {error}"),
+        };
         assert!(
             read > 0,
             "provider fixture request ended before framing completed"
@@ -570,9 +595,20 @@ fn write_http_response(stream: &mut TcpStream, body: &str) {
 struct SuccessServer {
     url: String,
     patch_count: Arc<AtomicUsize>,
+    request_count: Arc<AtomicUsize>,
+    stop: mpsc::Sender<()>,
     observation_started: mpsc::Receiver<()>,
     release_observation: mpsc::Sender<()>,
     thread: thread::JoinHandle<()>,
+}
+
+impl SuccessServer {
+    fn finish(self) {
+        let _ = self.stop.send(());
+        self.thread.join().unwrap();
+        assert_eq!(self.request_count.load(Ordering::Relaxed), 3);
+        assert_eq!(self.patch_count.load(Ordering::Relaxed), 1);
+    }
 }
 
 fn success_server() -> SuccessServer {
@@ -581,6 +617,9 @@ fn success_server() -> SuccessServer {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let patch_count = Arc::new(AtomicUsize::new(0));
     let server_patch_count = patch_count.clone();
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let server_request_count = request_count.clone();
+    let (stop, stopped) = mpsc::channel();
     let (observation_started_tx, observation_started) = mpsc::channel();
     let (release_observation, release_observation_rx) = mpsc::channel();
     let thread = thread::spawn(move || {
@@ -593,6 +632,10 @@ fn success_server() -> SuccessServer {
         .enumerate()
         {
             let (mut stream, method, path, request_body) = read_http_request(&listener);
+            server_request_count.fetch_add(1, Ordering::Relaxed);
+            if method == "PATCH" {
+                server_patch_count.fetch_add(1, Ordering::Relaxed);
+            }
             assert_provider_request(
                 &method,
                 &path,
@@ -600,9 +643,6 @@ fn success_server() -> SuccessServer {
                 expected_method,
                 expected_path,
             );
-            if expected_method == "PATCH" {
-                server_patch_count.fetch_add(1, Ordering::Relaxed);
-            }
             if index == 2 {
                 observation_started_tx.send(()).unwrap();
                 release_observation_rx
@@ -611,10 +651,35 @@ fn success_server() -> SuccessServer {
             }
             write_http_response(&mut stream, &response_body);
         }
+        // Remain a live receiver until every restarted process and client has exited.
+        // Drain queued connections before accepting shutdown, so late calls cannot hide.
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let (_, method, path, _) = read_http_stream(stream);
+                    server_request_count.fetch_add(1, Ordering::Relaxed);
+                    if method == "PATCH" {
+                        server_patch_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    panic!("unexpected provider request after completion: {method} {path}");
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    match stopped.try_recv() {
+                        Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                        Err(mpsc::TryRecvError::Empty) => {},
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                },
+                Err(error) => panic!("provider fixture late-request check failed: {error}"),
+            }
+        }
     });
     SuccessServer {
         url,
         patch_count,
+        request_count,
+        stop,
         observation_started,
         release_observation,
         thread,
@@ -657,6 +722,7 @@ fn unknown_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
         loop {
             match listener.accept() {
                 Ok(_) => panic!("provider fixture received more than 30 recovery reads"),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
                         break;
@@ -718,13 +784,12 @@ fn ordinary_restart_reconciles_before_replacing_stale_socket_without_second_patc
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    assert_terminal_status(&mut status, "SUCCEEDED", true);
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    server.thread.join().unwrap();
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    server.finish();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -890,14 +955,13 @@ fn restart_reconciles_before_bind_without_a_second_patch() {
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    assert_terminal_status(&mut status, "SUCCEEDED", false);
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert!(!socket.exists());
-    server.thread.join().unwrap();
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    server.finish();
     assert_eq!(
         fs::read_to_string(root.join("control/provider-apply-count")).unwrap(),
         "1"
@@ -906,55 +970,76 @@ fn restart_reconciles_before_bind_without_a_second_patch() {
 }
 
 #[test]
-fn restart_reuses_frozen_receipt_bytes_under_rotated_configuration() {
-    let root = application_root("receipt-recovery");
-    let socket = root.join("kapseld.sock");
+#[allow(
+    clippy::too_many_lines,
+    reason = "one process trace proves snapshot recovery and export without replay"
+)]
+fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration() {
     let server = success_server();
+    let root = installation_root_with_url("receipt-recovery", &server.url);
+    let socket = root.join("run/kapsel/kapseld.sock");
+    let journal = root.join("var/lib/kapsel/journal.sqlite3");
+    let receipts = root.join("var/lib/kapsel/receipts");
+    fs::remove_dir(&receipts).unwrap();
+    let document_path = root.join("etc/kapsel/operator.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+    document
+        .as_object_mut()
+        .unwrap()
+        .remove("receipt_directory");
+    private_file(&document_path, &serde_json::to_vec(&document).unwrap());
 
-    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
+    let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
     assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
-    fs::remove_file(&socket).unwrap();
+    assert!(socket.exists());
 
-    let mut publication = spawn_application(
-        &socket,
-        &root,
-        &server.url,
-        "A",
-        Some("after_receipt_publish"),
-        10,
-    );
+    let mut publication = spawn_installed_with_seam(&root, 10, "after_receipt_commit");
     server
         .observation_started
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
-    assert!(!socket.exists());
+    assert_eq!(
+        UnixStream::connect(&socket).unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionRefused
+    );
     server.release_observation.send(()).unwrap();
     wait_for_marker(
         &mut publication,
-        &root.join("control/after-receipt-publish.ready"),
+        &root.join("control/after-receipt-commit.ready"),
     );
-    assert!(!socket.exists());
-    server.thread.join().unwrap();
-    let receipt_path = fs::read_dir(root.join("receipts-a"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let frozen = fs::read(&receipt_path).unwrap();
+    assert_eq!(
+        UnixStream::connect(&socket).unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionRefused
+    );
+    let connection = rusqlite::Connection::open(&journal).unwrap();
+    let (state, frozen, signer): (String, Vec<u8>, String) = connection
+        .query_row(
+            "SELECT state, receipt_bytes, receipt_key_id FROM kubernetes_image_operations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "finalized");
+    assert_eq!(signer, "service-receipt-key");
+    drop(connection);
     kill(&mut publication);
 
-    let child = spawn_application(&socket, &root, &server.url, "B", None, 2);
+    private_file(&root.join("etc/kapsel/receipt.seed"), &[113_u8; 32]);
+    document["receipt_signing_key_id"] = "rotated-receipt-key".into();
+    document["receipt_directory"] = serde_json::json!(root.join("missing-rotated-receipts"));
+    private_file(&document_path, &serde_json::to_vec(&document).unwrap());
+    let child = spawn_installed(&root, 9);
     let mut status = connect(&socket);
     write_frame(
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    assert_terminal_status(&mut status, "SUCCEEDED", true);
     let mut receipt = UnixStream::connect(&socket).unwrap();
     write_frame(
         &mut receipt,
@@ -966,14 +1051,73 @@ fn restart_reuses_frozen_receipt_bytes_under_rotated_configuration() {
     assert_eq!(response["status"], "READY");
     assert_eq!(response["receipt_hex"], expected_hex);
     assert_eq!(response["receipt_sha256"], expected_digest);
+    let run_client = |destination: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_kapsel-service-client"))
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+            .args(["receipt", "process-op", destination.to_str().unwrap()])
+            .output()
+            .unwrap()
+    };
+    assert_eq!(
+        run_client(&root.join("unavailable/receipt")).status.code(),
+        Some(4)
+    );
+    let exported = root.join("exported.receipt");
+    assert!(run_client(&exported).status.success());
+    assert_eq!(run_client(&exported).status.code(), Some(4));
+    let repeated = root.join("repeated.receipt");
+    assert!(run_client(&repeated).status.success());
+    assert_eq!(fs::read(&exported).unwrap(), frozen);
+    assert_eq!(fs::read(&repeated).unwrap(), frozen);
+    let trust = kapsel::ReceiptTrust {
+        key_id: signer.clone(),
+        public_key: SigningKey::from_bytes(&[112_u8; 32])
+            .verifying_key()
+            .to_bytes(),
+        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
+        not_before_unix_s: 100,
+        not_after_unix_s: 200,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        kapsel::inspect_receipt(&frozen, &trust, 150, kapsel::InspectionLimits::default()).status(),
+        kapsel::InspectionStatus::Inspected
+    );
+    let mut replay = connect(&socket);
+    write_frame(&mut replay, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut replay), br#"{"status":"ACCEPTED"}"#);
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_terminal_status(&mut status, "SUCCEEDED", true);
+    let mut receipt = connect(&socket);
+    write_frame(
+        &mut receipt,
+        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut receipt)).unwrap(),
+        response
+    );
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    assert_eq!(fs::read(&receipt_path).unwrap(), frozen);
-    assert_eq!(fs::read_dir(root.join("receipts-a")).unwrap().count(), 1);
-    assert_eq!(fs::read_dir(root.join("receipts-b")).unwrap().count(), 0);
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    assert!(!receipts.exists());
+    assert!(!root.join("missing-rotated-receipts").exists());
+    let connection = rusqlite::Connection::open(&journal).unwrap();
+    let retained: (Vec<u8>, String) = connection
+        .query_row(
+            "SELECT receipt_bytes, receipt_key_id FROM kubernetes_image_operations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, (frozen, signer));
+    server.finish();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -996,7 +1140,7 @@ fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
         &root,
         &server.url,
         "A",
-        Some("after_receipt_publish"),
+        Some("after_receipt_commit"),
         10,
     );
     server
@@ -1007,17 +1151,17 @@ fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
     server.release_observation.send(()).unwrap();
     wait_for_marker(
         &mut publication,
-        &root.join("control/after-receipt-publish.ready"),
+        &root.join("control/after-receipt-commit.ready"),
     );
-    server.thread.join().unwrap();
-    let receipt_path = fs::read_dir(root.join("receipts-a"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
     kill(&mut publication);
-    fs::write(receipt_path, b"different frozen receipt bytes").unwrap();
+    let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+    connection
+        .execute(
+            "UPDATE kubernetes_image_operations SET receipt_bytes = ?1",
+            [b"different frozen receipt bytes".as_slice()],
+        )
+        .unwrap();
+    drop(connection);
 
     let child = spawn_application(&socket, &root, &server.url, "B", None, 1);
     let output = child.wait_with_output().unwrap();
@@ -1025,7 +1169,7 @@ fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert!(!socket.exists());
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    server.finish();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1049,7 +1193,7 @@ fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() 
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"UNKNOWN"}"#);
+    assert_terminal_status(&mut status, "UNKNOWN", false);
     let mut receipt = UnixStream::connect(&socket).unwrap();
     write_frame(
         &mut receipt,

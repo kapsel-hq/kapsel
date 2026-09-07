@@ -1,5 +1,13 @@
 # Upgrade, backup, rollback, and downgrade
 
+## Format 4 compatibility
+
+The current source uses journal format 4 and explicitly rejects all older journal versions before
+processing actions. There is no migration or reinterpretation of older terminal rows. Use the
+pre-format-4 binary and its backup procedure for existing older journals. Never change a journal
+version marker manually or treat a restored older database as permission to replay an action. The
+format-4 source is unreleased.
+
 Status: active v0.2 beta operator contract.
 
 Kind: guide and compatibility contract. Authority: the supported `v0.1.1` to v0.2 private-journal

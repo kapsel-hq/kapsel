@@ -41,8 +41,6 @@ struct CaseSchedule {
 #[derive(Clone, Copy)]
 struct SimulationPaths<'a> {
     journal: &'a Path,
-    output: &'a Path,
-    root: &'a Path,
 }
 
 struct SimulationAdapter {
@@ -132,14 +130,9 @@ async fn run_simulation(
     ));
     let _ = fs::remove_dir_all(&root);
     private_directory(&root)?;
-    let output_directory = root.join("receipts");
-    private_directory(&output_directory)?;
-    let output_directory = fs::canonicalize(output_directory)?;
     let journal_path = root.join("journal.sqlite3");
     let paths = SimulationPaths {
         journal: &journal_path,
-        output: &output_directory,
-        root: &root,
     };
     let mut generator = Generator(seed);
     let apply_faults = [
@@ -151,9 +144,8 @@ async fn run_simulation(
         FaultPoint::ReceiverObservedCommitted,
     ];
     let publication_faults = [
-        FaultPoint::ReceiptPreparedCommitted,
-        FaultPoint::ReceiptPublished,
-        FaultPoint::ReceiptWrittenCommitted,
+        FaultPoint::BeforeReceiptCommit,
+        FaultPoint::ReceiptCommitAcknowledgementLost,
         FaultPoint::FinalizedCommitted,
     ];
 
@@ -280,7 +272,6 @@ fn recover_receipt(
     let settings = ReceiptSettings {
         signing_seed: &[13_u8; 32],
         key_id: "simulation-receipt-key",
-        output_directory: paths.output,
     };
     let result =
         gateway.finalize_receipt_once_with_fault(&settings, Some(schedule.publication_fault));
@@ -297,7 +288,6 @@ fn recover_receipt(
             gateway.finalize_receipt_once(&ReceiptSettings {
                 signing_seed: &[99_u8; 32],
                 key_id: "rotated-simulation-key",
-                output_directory: paths.root,
             })?,
             Some(OperationState::Finalized),
             "seed={seed} case={case} publication_fault={:?}",
@@ -312,12 +302,10 @@ fn recover_receipt(
     let receipt = gateway
         .receipt_reference(&request.operation_id)?
         .ok_or_else(|| io::Error::other("simulation receipt disappeared"))?;
-    assert_eq!(
-        receipt.path.parent(),
-        Some(paths.output),
-        "seed={seed} case={case}"
-    );
-    assert!(receipt.path.exists(), "seed={seed} case={case}");
+    let (bytes, digest) =
+        Gateway::read_loaded_receipt(gateway.loaded_for_test(&request.operation_id)?.unwrap())?;
+    assert_eq!(digest, receipt.digest, "seed={seed} case={case}");
+    assert!(!bytes.is_empty());
     Ok(())
 }
 

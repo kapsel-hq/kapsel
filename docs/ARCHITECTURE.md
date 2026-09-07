@@ -17,7 +17,8 @@ local operate command or fixed stdio MCP adapter
             -> SQLite journal
             -> concrete Kubernetes adapter
             -> receiver-fact classification
-            -> receipt preparation, signing, and publication
+            -> receipt signing and SQLite-owned terminal completion
+            -> optional filesystem export
 
 kapsel inspect
   -> offline receipt inspector
@@ -37,11 +38,13 @@ operation-failure classes instead of private gateway errors. Submission and snap
 private so callers cannot sequence durable states.
 
 The private `Gateway` owns validation, authorization, journaling, conditional mutation,
-observation-only recovery, receiver classification, and frozen receipt construction and publication.
-The crate-level offline inspector consumes receipt bytes directly without opening `Application`, the
-journal, or a Kubernetes client. The journal provides one interface for rows, snapshots, worker
-locking, capacity, and guarded transitions. Private `schema` and `opening` children own exact layout
-and migration, and safe SQLite entry and owner-private pathname identity, respectively.
+observation-only recovery, receiver classification, and frozen receipt construction. It commits the
+signed receipt and terminal state together in SQLite. Filesystem export is a separate adapter
+operation. The crate-level offline inspector consumes receipt bytes directly without opening
+`Application`, the journal, or a Kubernetes client. The journal provides one interface for rows,
+snapshots, worker locking, capacity, and guarded transitions. Private `schema` and `opening`
+children own exact layout and migration, and safe SQLite entry and owner-private pathname identity,
+respectively.
 
 ## Concrete Kubernetes boundary
 
@@ -68,10 +71,11 @@ The evaluator CLI and fixed-schema stdio MCP adapter both convert their inputs i
 operator configuration remains out of band. [Evaluator commands](COMMANDS.md) and [MCP](MCP.md) own
 their exact external contracts.
 
-## Receipt and publication composition
+## Receipt and export composition
 
 The receipt module owns canonical classifier-complete bytes, signatures, bounded parsing,
-recomputation, and explicit trust, time, and limit inputs. Inspection is offline. The publication
+recomputation, and explicit trust, time, and limit inputs. Inspection is offline. SQLite commits
+signed receipt bytes, their digest, signer identity, and terminal state atomically. The export
 module owns Unix descriptor-relative, owner-private, collision-safe installation of already frozen
 bytes. Neither module appoints ambient trust or establishes receiver truth, causation, or complete
 capture.
@@ -120,17 +124,17 @@ bounded local service client
 
 `kapseld` provides caller-independent process lifetime, startup reconciliation, read-only status,
 and exact frozen-receipt retrieval across a separate OS identity. It accepts fixed operator and
-socket arguments, validates fixed roots descriptor-relatively, then keeps journal, receipt, and
-socket I/O beneath the retained directory handles through verified Linux `/proc/self/fd` paths. It
-reconciles before binding and removes only an exact inactive service-owned stale socket. Unavailable
-or inconsistent procfs fails startup before durable or socket effects; SQLite's moved-database
-refusal fails later journal writes rather than reopening a replaced state root. Systemd owns process
+socket arguments, validates fixed roots descriptor-relatively, then keeps journal and socket I/O
+beneath the retained directory handles through verified Linux `/proc/self/fd` paths. It reconciles
+before binding and removes only an exact inactive service-owned stale socket. Unavailable or
+inconsistent procfs fails startup before durable or socket effects; SQLite's moved-database refusal
+fails later journal writes rather than reopening a replaced state root. Systemd owns process
 lifecycle, runtime-directory cleanup, health, and diagnostics. Static inputs define one service
 identity and namespaced Kubernetes RBAC.
 
 The service adapter composes `Application::execute`, `Application::reconcile`, non-mutating
 exact-grant matching, projected status, and frozen-receipt reads. It does not query SQLite directly,
-duplicate publication rules, sequence lifecycle states, add another store, or create a queue. The
+duplicate export rules, sequence lifecycle states, add another store, or create a queue. The
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.
 

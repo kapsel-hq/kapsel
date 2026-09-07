@@ -913,14 +913,11 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
         gateway.finalize_receipt_once(&ReceiptSettings {
             signing_seed: &receipt_seed,
             key_id: "kind-unknown-receipt-key",
-            output_directory: &receipt_directory,
         })?,
         Some(OperationState::Finalized)
     );
-    let reference = gateway
-        .receipt_reference(&request.operation_id)?
-        .ok_or("missing unknown receipt reference")?;
-    let receipt_bytes = fs::read(reference.path)?;
+    let (receipt_bytes, _) =
+        Gateway::read_loaded_receipt(gateway.loaded_for_test(&request.operation_id)?.unwrap())?;
     let trust = ReceiptTrust {
         key_id: "kind-unknown-receipt-key".into(),
         public_key: SigningKey::from_bytes(&receipt_seed)
@@ -1001,14 +998,11 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
         gateway.finalize_receipt_once(&ReceiptSettings {
             signing_seed: &receipt_seed,
             key_id: "kind-failed-receipt-key",
-            output_directory: &receipt_directory,
         })?,
         Some(OperationState::Finalized)
     );
-    let reference = gateway
-        .receipt_reference(&request.operation_id)?
-        .ok_or("missing failed-rollout receipt reference")?;
-    let receipt_bytes = fs::read(reference.path)?;
+    let (receipt_bytes, _) =
+        Gateway::read_loaded_receipt(gateway.loaded_for_test(&request.operation_id)?.unwrap())?;
     let trust = ReceiptTrust {
         key_id: "kind-failed-receipt-key".into(),
         public_key: SigningKey::from_bytes(&receipt_seed)

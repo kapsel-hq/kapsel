@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use super::{GatewayError, OPERATION_COUNT_MAX};
 use crate::gateway::receipt::RECEIPT_BYTES_MAX;
 
-pub(super) const JOURNAL_FORMAT_VERSION: u32 = 3;
+pub(super) const JOURNAL_FORMAT_VERSION: u32 = 4;
 
 pub(super) const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
 pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
@@ -48,78 +48,6 @@ const CURRENT_COLUMNS: &[&str] = &[
     "available_condition",
     "progress_deadline_exceeded",
     "result",
-    "receipt_path",
-    "receipt_digest",
-    "receipt_bytes",
-    "receipt_key_id",
-    "rollout_condition_type",
-    "rollout_condition_status",
-    "rollout_condition_reason",
-];
-
-const LEGACY_COLUMNS: &[&str] = &[
-    "operation_id",
-    "namespace",
-    "deployment",
-    "container",
-    "immutable_image_digest",
-    "authorization_id",
-    "state",
-    "write_strategy",
-    "apply_attempted",
-    "target_uid",
-    "target_resource_version",
-    "apply_accepted",
-    "requested_generation",
-    "apply_resource_version",
-    "receiver_uid",
-    "receiver_image",
-    "receiver_operation_marker",
-    "current_generation",
-    "observed_generation",
-    "receiver_resource_version",
-    "desired_replicas",
-    "updated_replicas",
-    "available_replicas",
-    "unavailable_replicas",
-    "available_condition",
-    "progress_deadline_exceeded",
-    "result",
-];
-
-const MIGRATED_LEGACY_COLUMNS: &[&str] = &[
-    "operation_id",
-    "namespace",
-    "deployment",
-    "container",
-    "immutable_image_digest",
-    "authorization_id",
-    "state",
-    "write_strategy",
-    "apply_attempted",
-    "target_uid",
-    "target_resource_version",
-    "apply_accepted",
-    "requested_generation",
-    "apply_resource_version",
-    "receiver_uid",
-    "receiver_image",
-    "receiver_operation_marker",
-    "current_generation",
-    "observed_generation",
-    "receiver_resource_version",
-    "desired_replicas",
-    "updated_replicas",
-    "available_replicas",
-    "unavailable_replicas",
-    "available_condition",
-    "progress_deadline_exceeded",
-    "result",
-    "authorization_signer_key_id",
-    "authorization_grant_digest",
-    "target_rejection",
-    "target_read_failures",
-    "receipt_path",
     "receipt_digest",
     "receipt_bytes",
     "receipt_key_id",
@@ -160,78 +88,6 @@ const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
     available_condition INTEGER,
     progress_deadline_exceeded INTEGER,
     result TEXT,
-    receipt_path TEXT,
-    receipt_digest TEXT,
-    receipt_bytes BLOB,
-    receipt_key_id TEXT,
-    rollout_condition_type TEXT,
-    rollout_condition_status TEXT,
-    rollout_condition_reason TEXT
-) STRICT;";
-
-const LEGACY_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
-    operation_id TEXT PRIMARY KEY NOT NULL,
-    namespace TEXT NOT NULL,
-    deployment TEXT NOT NULL,
-    container TEXT NOT NULL,
-    immutable_image_digest TEXT NOT NULL,
-    authorization_id TEXT,
-    state TEXT NOT NULL,
-    write_strategy TEXT,
-    apply_attempted INTEGER NOT NULL DEFAULT 0,
-    target_uid TEXT,
-    target_resource_version TEXT,
-    apply_accepted INTEGER,
-    requested_generation INTEGER,
-    apply_resource_version TEXT,
-    receiver_uid TEXT,
-    receiver_image TEXT,
-    receiver_operation_marker TEXT,
-    current_generation INTEGER,
-    observed_generation INTEGER,
-    receiver_resource_version TEXT,
-    desired_replicas INTEGER,
-    updated_replicas INTEGER,
-    available_replicas INTEGER,
-    unavailable_replicas INTEGER,
-    available_condition INTEGER,
-    progress_deadline_exceeded INTEGER,
-    result TEXT
-) STRICT;";
-
-const MIGRATED_LEGACY_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
-    operation_id TEXT PRIMARY KEY NOT NULL,
-    namespace TEXT NOT NULL,
-    deployment TEXT NOT NULL,
-    container TEXT NOT NULL,
-    immutable_image_digest TEXT NOT NULL,
-    authorization_id TEXT,
-    state TEXT NOT NULL,
-    write_strategy TEXT,
-    apply_attempted INTEGER NOT NULL DEFAULT 0,
-    target_uid TEXT,
-    target_resource_version TEXT,
-    apply_accepted INTEGER,
-    requested_generation INTEGER,
-    apply_resource_version TEXT,
-    receiver_uid TEXT,
-    receiver_image TEXT,
-    receiver_operation_marker TEXT,
-    current_generation INTEGER,
-    observed_generation INTEGER,
-    receiver_resource_version TEXT,
-    desired_replicas INTEGER,
-    updated_replicas INTEGER,
-    available_replicas INTEGER,
-    unavailable_replicas INTEGER,
-    available_condition INTEGER,
-    progress_deadline_exceeded INTEGER,
-    result TEXT,
-    authorization_signer_key_id TEXT,
-    authorization_grant_digest TEXT,
-    target_rejection TEXT,
-    target_read_failures INTEGER NOT NULL DEFAULT 0,
-    receipt_path TEXT,
     receipt_digest TEXT,
     receipt_bytes BLOB,
     receipt_key_id TEXT,
@@ -248,12 +104,8 @@ pub(super) fn initialize_schema(
         transaction
             .execute_batch(CREATE_OPERATION_TABLE)
             .map_err(GatewayError::Database)?;
-    } else if recognized_schema(transaction, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)? {
-        // Exact v0.1.1 operation rows need no transformation.
-    } else if recognized_schema(transaction, LEGACY_COLUMNS, LEGACY_OPERATION_TABLE)? {
-        migrate_receipt_schema(transaction)?;
     } else {
-        return Err(GatewayError::InvalidPersistedState);
+        return Err(GatewayError::UnsupportedJournalVersion);
     }
     add_snapshot_columns(transaction)?;
     require_persisted_bounds(transaction)
@@ -294,42 +146,16 @@ fn add_snapshot_columns(connection: &Connection) -> Result<(), GatewayError> {
     Ok(())
 }
 
-pub(super) fn upgrade_v2(connection: &mut Connection) -> Result<(), GatewayError> {
-    let transaction = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)
-        .map_err(GatewayError::Database)?;
-    if !recognized_schema(&transaction, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)?
-        && !recognized_schema(
-            &transaction,
-            MIGRATED_LEGACY_COLUMNS,
-            MIGRATED_LEGACY_OPERATION_TABLE,
-        )?
-    {
-        return Err(GatewayError::InvalidPersistedState);
-    }
-    require_integrity(&transaction)?;
-    add_snapshot_columns(&transaction)?;
-    require_persisted_bounds(&transaction)?;
-    transaction
-        .pragma_update(None, "user_version", JOURNAL_FORMAT_VERSION)
-        .map_err(GatewayError::Database)?;
-    transaction.commit().map_err(GatewayError::Database)
-}
-
 pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<bool, GatewayError> {
-    for (columns, sql) in [
-        (CURRENT_COLUMNS, CREATE_OPERATION_TABLE),
-        (MIGRATED_LEGACY_COLUMNS, MIGRATED_LEGACY_OPERATION_TABLE),
-    ] {
-        let columns = [columns, SNAPSHOT_COLUMNS].concat();
-        let additions = format!(", {} TEXT", SNAPSHOT_COLUMNS.join(" TEXT, "));
-        let sql = sql.replace("\n) STRICT;", &format!("{additions}\n) STRICT;"));
-        if recognized_schema(connection, &columns, &sql)? {
-            require_persisted_bounds(connection)?;
-            return Ok(true);
-        }
+    let columns = [CURRENT_COLUMNS, SNAPSHOT_COLUMNS].concat();
+    let additions = format!(", {} TEXT", SNAPSHOT_COLUMNS.join(" TEXT, "));
+    let sql = CREATE_OPERATION_TABLE.replace("\n) STRICT;", &format!("{additions}\n) STRICT;"));
+    if recognized_schema(connection, &columns, &sql)? {
+        require_persisted_bounds(connection)?;
+        Ok(true)
+    } else {
+        Ok(false)
     }
-    Ok(false)
 }
 
 fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
@@ -557,86 +383,4 @@ fn expected_column_not_null(name: &str) -> bool {
 
 fn expected_column_default(name: &str) -> Option<&'static str> {
     matches!(name, "target_read_failures" | "apply_attempted").then_some("0")
-}
-
-fn migrate_receipt_schema(transaction: &Transaction<'_>) -> Result<(), GatewayError> {
-    let columns = {
-        let mut statement = transaction
-            .prepare("PRAGMA table_info(kubernetes_image_operations)")
-            .map_err(GatewayError::Database)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(GatewayError::Database)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(GatewayError::Database)?
-    };
-    for (name, declaration) in [
-        (
-            "authorization_signer_key_id",
-            "authorization_signer_key_id TEXT",
-        ),
-        (
-            "authorization_grant_digest",
-            "authorization_grant_digest TEXT",
-        ),
-        ("target_rejection", "target_rejection TEXT"),
-        (
-            "target_read_failures",
-            "target_read_failures INTEGER NOT NULL DEFAULT 0",
-        ),
-        ("receipt_path", "receipt_path TEXT"),
-        ("receipt_digest", "receipt_digest TEXT"),
-        ("receipt_bytes", "receipt_bytes BLOB"),
-        ("receipt_key_id", "receipt_key_id TEXT"),
-        ("rollout_condition_type", "rollout_condition_type TEXT"),
-        ("rollout_condition_status", "rollout_condition_status TEXT"),
-        ("rollout_condition_reason", "rollout_condition_reason TEXT"),
-    ] {
-        if !columns.iter().any(|column| column == name) {
-            transaction
-                .execute(
-                    &format!("ALTER TABLE kubernetes_image_operations ADD COLUMN {declaration}"),
-                    [],
-                )
-                .map_err(GatewayError::Database)?;
-        }
-    }
-    transaction
-        .execute(
-            "UPDATE kubernetes_image_operations
-             SET requested_generation = current_generation
-             WHERE requested_generation IS NULL
-                   AND result IN ('SUCCEEDED', 'FAILED')
-                   AND target_uid IS NOT NULL
-                   AND receiver_uid = target_uid
-                   AND receiver_image = immutable_image_digest
-                   AND receiver_operation_marker = operation_id
-                   AND current_generation IS NOT NULL
-                   AND observed_generation >= current_generation",
-            [],
-        )
-        .map_err(GatewayError::Database)?;
-    transaction
-        .execute(
-            "UPDATE kubernetes_image_operations
-             SET rollout_condition_type = CASE
-                    WHEN progress_deadline_exceeded = 1 THEN 'Progressing'
-                    WHEN available_condition = 1 THEN 'Available'
-                    ELSE NULL
-                 END,
-                 rollout_condition_status = CASE
-                    WHEN progress_deadline_exceeded = 1 THEN 'False'
-                    WHEN available_condition = 1 THEN 'True'
-                    ELSE NULL
-                 END,
-                 rollout_condition_reason = CASE
-                    WHEN progress_deadline_exceeded = 1 THEN 'ProgressDeadlineExceeded'
-                    ELSE NULL
-                 END
-             WHERE rollout_condition_type IS NULL
-                   AND (progress_deadline_exceeded = 1 OR available_condition = 1)",
-            [],
-        )
-        .map_err(GatewayError::Database)?;
-    Ok(())
 }

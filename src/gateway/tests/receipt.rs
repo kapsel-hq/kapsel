@@ -167,433 +167,16 @@
             inspect_receipt(&receipt, &trust, 250, InspectionLimits::default()).status(),
             InspectionStatus::UntrustedSigner
         );
-        assert!(!format!(
-            "{:?}{:?}{:?}{:?}",
-            InspectionStatus::StructureRejected,
-            InspectionStatus::SignatureRejected,
-            InspectionStatus::UntrustedSigner,
-            InspectionStatus::Inspected
-        )
-        .contains("Verified"));
-    }
-
-    #[tokio::test]
-    async fn receipt_written_reopens_and_finalizes_without_kubernetes() {
-        let path = database_path("receipt-finalize-recovery");
-        let output_directory = path.parent().unwrap().join("receipts");
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        let seed = [11_u8; 32];
-        let request = request();
-        {
-            let mut gateway = Gateway::open_for_test(&path).unwrap();
-            gateway
-                .submit_exact_for_test(&request, &authorization(&request))
-                .unwrap();
-            let mut adapter = failed_adapter(&path, &request);
-            gateway
-                .run_once_with_adapter(&mut adapter, None)
-                .await
-                .unwrap();
-            let result = gateway.finalize_operation_receipt_once_with_fault(
-                &request.operation_id,
-                &ReceiptSettings {
-                    signing_seed: &seed,
-                    key_id: "effect-gateway-test-key",
-                    output_directory: &output_directory,
-                },
-                Some(FaultPoint::ReceiptWrittenCommitted),
-            );
-            assert!(
-                matches!(result, Err(GatewayError::InjectedFault)),
-                "{result:?}"
-            );
-            assert_eq!(
-                gateway.get(&request.operation_id).unwrap(),
-                Some(OperationState::ReceiptWritten)
-            );
-        }
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &seed,
-                    key_id: "effect-gateway-test-key",
-                    output_directory: &output_directory,
-                })
-                .unwrap(),
-            Some(OperationState::Finalized)
-        );
-        let reference = gateway
-            .receipt_reference(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert!(reference.path.exists());
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::Finalized)
-        );
-        assert_eq!(
-            gateway
-                .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
-                .await
-                .unwrap(),
-            None
-        );
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn receipt_access_directory_keeps_stable_reference_out_of_replacement() {
-        let path = database_path("receipt-access-directory");
-        let stable_directory = path.parent().unwrap().join("receipts");
-        let access_directory = path.parent().unwrap().join("receipts-retained");
-        private_directory(&stable_directory);
-        private_directory(&access_directory);
-        let stable_directory = fs::canonicalize(stable_directory).unwrap();
-        let access_directory = fs::canonicalize(access_directory).unwrap();
-        let request = request();
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-        gateway
-            .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            gateway
-                .finalize_operation_receipt_once(
-                    &request.operation_id,
-                    &ReceiptSettings {
-                        signing_seed: &[11_u8; 32],
-                        key_id: "effect-gateway-test-key",
-                        output_directory: &stable_directory,
-                    },
-                    Some(&access_directory),
-                )
-                .unwrap(),
-            Some(OperationState::Finalized)
-        );
-
-        let reference = gateway
-            .receipt_reference(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reference.path.parent(), Some(stable_directory.as_path()));
-        assert!(!reference.path.exists());
-        let access_path = access_directory.join(reference.path.file_name().unwrap());
-        assert!(access_path.is_file());
-        assert_eq!(fs::read_dir(&stable_directory).unwrap().count(), 0);
-        let signed_grant = sign_authorization_grant(
-            &authorization(&request),
-            &[7_u8; 32],
-            "effect-gateway-authorization-test-key",
-        )
-        .unwrap();
-        let loaded = gateway
-            .authorized_operation(&request, &signed_grant)
-            .unwrap()
-            .unwrap();
-        let (bytes, digest) = Gateway::read_loaded_receipt(
-            loaded,
-            &stable_directory,
-            Some(&access_directory),
-        )
-        .unwrap();
-        assert_eq!(publication::receipt_digest_hex(&bytes), digest);
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn receipt_preparation_is_durable_before_external_publication() {
-        let path = database_path("receipt-prepared-recovery");
-        let output_directory = path.parent().unwrap().join("receipts");
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        let request = request();
-        {
-            let mut gateway = Gateway::open_for_test(&path).unwrap();
-            gateway
-                .submit_exact_for_test(&request, &authorization(&request))
-                .unwrap();
-            gateway
-                .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
-                .await
-                .unwrap();
-            assert!(matches!(
-                gateway.finalize_operation_receipt_once_with_fault(
-                    &request.operation_id,
-                    &ReceiptSettings {
-                        signing_seed: &[13_u8; 32],
-                        key_id: "effect-gateway-test-key",
-                        output_directory: &output_directory,
-                    },
-                    Some(FaultPoint::ReceiptPreparedCommitted)
-                ),
-                Err(GatewayError::InjectedFault)
-            ));
-            assert_eq!(
-                gateway.get(&request.operation_id).unwrap(),
-                Some(OperationState::ReceiptPrepared)
-            );
-            assert_eq!(fs::read_dir(&output_directory).unwrap().count(), 0);
-        }
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &[99_u8; 32],
-                    key_id: "rotated-key",
-                    output_directory: path.parent().unwrap(),
-                })
-                .unwrap(),
-            Some(OperationState::Finalized)
-        );
-        let reference = gateway
-            .receipt_reference(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reference.path.parent(), Some(output_directory.as_path()));
-        assert!(reference.path.exists());
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn process_kill_after_receipt_publication_recovers_frozen_bytes_under_rotation() {
-        let path = database_path("process-kill-receipt");
-        let output_directory = path.parent().unwrap().join("receipts");
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        let request = request();
-        {
-            let mut gateway = Gateway::open_for_test(&path).unwrap();
-            gateway
-                .submit_exact_for_test(&request, &authorization(&request))
-                .unwrap();
-            gateway
-                .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
-                .await
-                .unwrap();
-        }
-        let ready = path.parent().unwrap().join("receipt-ready");
-        let mut child =
-            spawn_process_child("receipt", &path, &ready, None, Some(&output_directory));
-        wait_for_child_seam(&mut child, &ready);
-        let published_path = fs::read_dir(&output_directory)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let published_bytes = fs::read(&published_path).unwrap();
-        kill_child(&mut child);
-
-        let rotated_directory = path.parent().unwrap().join("rotated-receipts");
-        private_directory(&rotated_directory);
-        let rotated_directory = fs::canonicalize(rotated_directory).unwrap();
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::ReceiptPrepared)
-        );
-        assert_eq!(
-            gateway
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &[99_u8; 32],
-                    key_id: "rotated-key",
-                    output_directory: &rotated_directory,
-                })
-                .unwrap(),
-            Some(OperationState::Finalized)
-        );
-        let reference = gateway
-            .receipt_reference(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reference.path, published_path);
-        assert_eq!(fs::read(&reference.path).unwrap(), published_bytes);
-        assert_eq!(
-            publication::receipt_digest_hex(&published_bytes),
-            reference.digest
-        );
-        assert_eq!(fs::read_dir(&output_directory).unwrap().count(), 1);
-        assert_eq!(fs::read_dir(&rotated_directory).unwrap().count(), 0);
-        let frozen_key_id = gateway
-            .journal
-            .connection
-            .query_row(
-                "SELECT receipt_key_id FROM kubernetes_image_operations WHERE operation_id = ?1",
-                [&request.operation_id],
-                |row| row.get::<_, String>(0),
+        assert!(
+            !format!(
+                "{:?}{:?}{:?}{:?}",
+                InspectionStatus::StructureRejected,
+                InspectionStatus::SignatureRejected,
+                InspectionStatus::UntrustedSigner,
+                InspectionStatus::Inspected
             )
-            .unwrap();
-        assert_eq!(frozen_key_id, "process-receipt-key");
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn receipt_publish_fault_recovers_with_existing_identical_bytes() {
-        let path = database_path("receipt-published-recovery");
-        let output_directory = path.parent().unwrap().join("receipts");
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        let seed = [13_u8; 32];
-        let request = request();
-        {
-            let mut gateway = Gateway::open_for_test(&path).unwrap();
-            gateway
-                .submit_exact_for_test(&request, &authorization(&request))
-                .unwrap();
-            let mut adapter = failed_adapter(&path, &request);
-            gateway
-                .run_once_with_adapter(&mut adapter, None)
-                .await
-                .unwrap();
-            assert!(matches!(
-                gateway.finalize_operation_receipt_once_with_fault(
-                    &request.operation_id,
-                    &ReceiptSettings {
-                        signing_seed: &seed,
-                        key_id: "effect-gateway-test-key",
-                        output_directory: &output_directory,
-                    },
-                    Some(FaultPoint::ReceiptPublished)
-                ),
-                Err(GatewayError::InjectedFault)
-            ));
-            assert_eq!(
-                gateway.get(&request.operation_id).unwrap(),
-                Some(OperationState::ReceiptPrepared)
-            );
-        }
-        let rotated_directory = path.parent().unwrap().join("rotated-receipts");
-        private_directory(&rotated_directory);
-        let rotated_directory = fs::canonicalize(rotated_directory).unwrap();
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &[99_u8; 32],
-                    key_id: "rotated-key",
-                    output_directory: &rotated_directory,
-                })
-                .unwrap(),
-            Some(OperationState::Finalized)
+            .contains("Verified")
         );
-        let reference = gateway
-            .receipt_reference(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(reference.path.parent(), Some(output_directory.as_path()));
-        assert_eq!(fs::read_dir(&output_directory).unwrap().count(), 1);
-        assert_eq!(fs::read_dir(&rotated_directory).unwrap().count(), 0);
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn finalized_commit_is_terminal_after_reopen() {
-        let path = database_path("receipt-finalized-terminal");
-        let output_directory = path.parent().unwrap().join("receipts");
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        let seed = [14_u8; 32];
-        let request = request();
-        {
-            let mut gateway = Gateway::open_for_test(&path).unwrap();
-            gateway
-                .submit_exact_for_test(&request, &authorization(&request))
-                .unwrap();
-            let mut adapter = failed_adapter(&path, &request);
-            gateway
-                .run_once_with_adapter(&mut adapter, None)
-                .await
-                .unwrap();
-            assert!(matches!(
-                gateway.finalize_operation_receipt_once_with_fault(
-                    &request.operation_id,
-                    &ReceiptSettings {
-                        signing_seed: &seed,
-                        key_id: "effect-gateway-test-key",
-                        output_directory: &output_directory,
-                    },
-                    Some(FaultPoint::FinalizedCommitted)
-                ),
-                Err(GatewayError::InjectedFault)
-            ));
-        }
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::Finalized)
-        );
-        assert_eq!(
-            gateway
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &seed,
-                    key_id: "effect-gateway-test-key",
-                    output_directory: &output_directory,
-                })
-                .unwrap(),
-            None
-        );
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn receipt_publication_collision_does_not_finalize() {
-        let path = database_path("receipt-collision");
-        let output_directory = path.parent().unwrap().join("receipts");
-        let seed = [12_u8; 32];
-        let request = request();
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-        let mut adapter = failed_adapter(&path, &request);
-        gateway
-            .run_once_with_adapter(&mut adapter, None)
-            .await
-            .unwrap();
-        let statement = gateway
-            .journal
-            .receipt_statement(&request.operation_id)
-            .unwrap()
-            .unwrap();
-        let receipt = sign_statement(&statement, &seed, "effect-gateway-test-key").unwrap();
-        let digest = publication::receipt_digest_hex(&receipt);
-        private_directory(&output_directory);
-        let output_directory = fs::canonicalize(output_directory).unwrap();
-        fs::write(
-            output_directory.join(publication::receipt_filename(
-                &request.operation_id,
-                &digest,
-            )),
-            b"different",
-        )
-        .unwrap();
-
-        assert!(matches!(
-            gateway.finalize_receipt_once(&ReceiptSettings {
-                signing_seed: &seed,
-                key_id: "effect-gateway-test-key",
-                output_directory: &output_directory,
-            }),
-            Err(GatewayError::ReceiptPublication)
-        ));
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::ReceiptPrepared)
-        );
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
@@ -620,7 +203,6 @@
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
                     key_id: "effect-gateway-test-key",
-                    output_directory: &output_directory,
                 })
                 .unwrap(),
             None
@@ -637,7 +219,6 @@
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
                     key_id: "effect-gateway-test-key",
-                    output_directory: &output_directory,
                 })
                 .unwrap(),
             Some(OperationState::Finalized)
@@ -645,4 +226,215 @@
         drop(contender);
         drop(first);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines, reason = "one trace compares stored and retrieved evidence")]
+    async fn receipt_commit_freezes_bytes_and_signer_under_acknowledgement_loss() {
+        for fault in [
+            FaultPoint::BeforeReceiptCommit,
+            FaultPoint::FinalizedCommitted,
+            FaultPoint::ReceiptCommitAcknowledgementLost,
+        ] {
+            let path = database_path(&format!("receipt-commit-{fault:?}"));
+            let request = request();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
+            gateway
+                .submit_exact_for_test(&request, &authorization(&request))
+                .unwrap();
+            let mut adapter = failed_adapter(&path, &request);
+            gateway
+                .run_once_with_adapter(&mut adapter, None)
+                .await
+                .unwrap();
+            assert_eq!(adapter.apply_calls, 1);
+            let statement = gateway
+                .journal
+                .receipt_statement(&request.operation_id)
+                .unwrap()
+                .unwrap();
+            // Bad signing identity simulates a signer failure before the final transaction.
+            assert!(
+                gateway
+                    .finalize_receipt_once(&ReceiptSettings {
+                        signing_seed: &[61; 32],
+                        key_id: "invalid key",
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                gateway.get(&request.operation_id).unwrap(),
+                Some(OperationState::ReceiverObserved)
+            );
+            assert_eq!(
+                gateway
+                    .journal
+                    .receipt_statement(&request.operation_id)
+                    .unwrap()
+                    .unwrap(),
+                statement
+            );
+            assert!(matches!(
+                gateway.finalize_receipt_once_with_fault(
+                    &ReceiptSettings {
+                        signing_seed: &[61; 32],
+                        key_id: "original-key",
+                    },
+                    Some(fault)
+                ),
+                Err(GatewayError::InjectedFault)
+            ));
+            // The returned error models acknowledgement loss, not an actual SQLite I/O failure.
+            let committed = fault != FaultPoint::BeforeReceiptCommit;
+            let before: (String, Option<Vec<u8>>, Option<String>, Option<String>) = gateway
+                .journal
+                .connection
+                .query_row(
+                    "SELECT state, receipt_bytes, receipt_digest, receipt_key_id
+                    FROM kubernetes_image_operations WHERE operation_id = ?1",
+                    [&request.operation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                before.0,
+                if committed {
+                    "finalized"
+                } else {
+                    "receiver_observed"
+                }
+            );
+            assert_eq!(before.1.is_some(), committed);
+            assert_eq!(before.2.is_some(), committed);
+            assert_eq!(before.3.is_some(), committed);
+            drop(gateway);
+            let mut reopened = Gateway::open_for_test(&path).unwrap();
+            assert_eq!(
+                reopened
+                    .run_once_with_adapter(&mut adapter, None)
+                    .await
+                    .unwrap(),
+                None
+            );
+            let result = reopened
+                .finalize_receipt_once(&ReceiptSettings {
+                    signing_seed: &[62; 32],
+                    key_id: "rotated-key",
+                })
+                .unwrap();
+            assert_eq!(
+                result,
+                if committed {
+                    None
+                } else {
+                    Some(OperationState::Finalized)
+                }
+            );
+            let (bytes, digest) = Gateway::read_loaded_receipt(
+                reopened
+                    .journal
+                    .operation(&request.operation_id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(publication::receipt_digest_hex(&bytes), digest);
+            let (key, signed_statement) =
+                super::super::receipt::decode_frozen_receipt(&bytes).unwrap();
+            assert_eq!(
+                key,
+                if committed {
+                    "original-key"
+                } else {
+                    "rotated-key"
+                }
+            );
+            assert_eq!(signed_statement, statement);
+            if committed {
+                assert_eq!(Some(bytes.clone()), before.1);
+            }
+            for _ in 0..2 {
+                assert_eq!(
+                    Gateway::read_loaded_receipt(
+                        reopened
+                            .journal
+                            .operation(&request.operation_id)
+                            .unwrap()
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    (bytes.clone(), digest.clone())
+                );
+            }
+            assert_eq!(adapter.apply_calls, 1);
+            assert_eq!(adapter.observe_calls, 1);
+            drop(reopened);
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn process_exit_before_and_after_receipt_commit_preserves_frozen_observation() {
+        for scenario in ["before_receipt_commit", "receipt"] {
+            let path = database_path(scenario);
+            let request = request();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
+            gateway
+                .submit_exact_for_test(&request, &authorization(&request))
+                .unwrap();
+            let mut adapter = failed_adapter(&path, &request);
+            gateway
+                .run_once_with_adapter(&mut adapter, None)
+                .await
+                .unwrap();
+            let statement = gateway
+                .journal
+                .receipt_statement(&request.operation_id)
+                .unwrap();
+            drop(gateway);
+            let ready = path.parent().unwrap().join("ready");
+            let mut child = spawn_process_child(scenario, &path, &ready, None, None);
+            wait_for_child_seam(&mut child, &ready);
+            kill_child(&mut child);
+            let gateway = Gateway::open_for_test(&path).unwrap();
+            let old = gateway
+                .journal
+                .operation(&request.operation_id)
+                .unwrap()
+                .unwrap();
+            let old_bytes = if scenario == "receipt" {
+                Some(Gateway::read_loaded_receipt(old).unwrap().0)
+            } else {
+                assert_eq!(old.state(), OperationState::ReceiverObserved);
+                None
+            };
+            gateway
+                .finalize_receipt_once(&ReceiptSettings {
+                    signing_seed: &[63; 32],
+                    key_id: "after-restart",
+                })
+                .unwrap();
+            let (bytes, _) = Gateway::read_loaded_receipt(
+                gateway
+                    .journal
+                    .operation(&request.operation_id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            if let Some(old) = old_bytes {
+                assert_eq!(bytes, old);
+            }
+            assert_eq!(
+                gateway
+                    .journal
+                    .receipt_statement(&request.operation_id)
+                    .unwrap(),
+                statement
+            );
+            assert_eq!(adapter.apply_calls, 1);
+            assert_eq!(adapter.observe_calls, 1);
+            drop(gateway);
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
     }

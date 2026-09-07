@@ -409,14 +409,20 @@ kill_at_seam after_apply "$workspace/control/after-apply.ready" \
   "$workspace/failed-operator.json" "$workspace/after-apply.log" 20
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
 
-phase 6 'restarting, observing failed rollout, and killing after receipt publication'
-kill_at_seam after_receipt_publish "$workspace/control/after-receipt-publish.ready" \
+phase 6 'restarting, observing failed rollout, and killing after receipt commitment'
+kill_at_seam after_receipt_commit "$workspace/control/after-receipt-commit.ready" \
   "$workspace/failed-operator.json" "$workspace/after-publication.log" 60
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
-receipt_count=$(find "$workspace/failed-receipts" -maxdepth 1 -type f -name '*.receipt' | wc -l)
-[[ $receipt_count -eq 1 ]]
-frozen_receipt=$(find "$workspace/failed-receipts" -maxdepth 1 -type f -name '*.receipt' -print)
-frozen_digest=$(sha256_file "$frozen_receipt")
+[[ $(find "$workspace/failed-receipts" -mindepth 1 -maxdepth 1 | wc -l) -eq 0 ]]
+frozen_digest=$(python3 - "$workspace/failed-journal.sqlite3" <<'PYSQL'
+import sqlite3
+import sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    print(connection.execute(
+        "SELECT receipt_digest FROM kubernetes_image_operations WHERE state = 'finalized'"
+    ).fetchone()[0])
+PYSQL
+)
 
 phase 7 'restarting under rotated receipt settings'
 "$demo_executable" operate \
@@ -424,7 +430,8 @@ phase 7 'restarting under rotated receipt settings'
   --operator-config "$workspace/rotated-operator.json" >"$workspace/rotated.log" 2>&1
 grep -Fq '"state":"FINALIZED"' "$workspace/rotated.log"
 grep -Fq '"result":"FAILED"' "$workspace/rotated.log"
-[[ $(find "$workspace/rotated-receipts" -mindepth 1 -maxdepth 1 | wc -l) -eq 0 ]]
+[[ $(find "$workspace/rotated-receipts" -maxdepth 1 -type f -name '*.receipt' | wc -l) -eq 1 ]]
+frozen_receipt=$(find "$workspace/rotated-receipts" -maxdepth 1 -type f -name '*.receipt' -print)
 [[ $(sha256_file "$frozen_receipt") == "$frozen_digest" ]]
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
 
@@ -454,7 +461,7 @@ printf '  durable attempt: apply_started recorded before provider mutation\n'
 printf '  process termination: after the returned mutation\n'
 printf '  restart behavior: reconciled without a blind second mutation\n'
 printf '  provider apply count: 1\n'
-printf '  process termination: after frozen receipt publication\n'
+printf '  process termination: after frozen receipt commitment\n'
 printf '  frozen receipt: finalized unchanged under rotated receipt settings\n'
 printf '  frozen receipt sha256: %s\n' "$frozen_digest"
 printf '  receiver outcome: FAILED from ProgressDeadlineExceeded\n'

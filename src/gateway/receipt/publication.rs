@@ -60,10 +60,12 @@ pub(crate) fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), Publica
     directory.sync_all().map_err(PublicationError::Io)
 }
 
+#[cfg(test)]
 pub(crate) fn read_receipt(path: &Path) -> Result<Vec<u8>, PublicationError> {
     read_receipt_before_read(path, || {})
 }
 
+#[cfg(test)]
 fn read_receipt_before_read(
     path: &Path,
     before_read: impl FnOnce(),
@@ -235,6 +237,7 @@ fn require_private_file(file: &File) -> Result<(), PublicationError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn require_single_link(file: &File) -> Result<(), PublicationError> {
     if file.metadata().map_err(PublicationError::Io)?.nlink() != 1 {
         return Err(PublicationError::UnsafePath);
@@ -316,6 +319,7 @@ pub(crate) enum PublicationError {
     Collision,
     LimitExceeded,
     UnsafePath,
+    #[cfg(test)]
     MissingDestination,
 }
 
@@ -326,6 +330,7 @@ impl fmt::Display for PublicationError {
             Self::Collision => "collision",
             Self::LimitExceeded => "limit_exceeded",
             Self::UnsafePath => "unsafe_path",
+            #[cfg(test)]
             Self::MissingDestination => "missing_destination",
         };
         write!(
@@ -339,9 +344,9 @@ impl Error for PublicationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::Collision | Self::LimitExceeded | Self::UnsafePath | Self::MissingDestination => {
-                None
-            },
+            #[cfg(test)]
+            Self::MissingDestination => None,
+            Self::Collision | Self::LimitExceeded | Self::UnsafePath => None,
         }
     }
 }

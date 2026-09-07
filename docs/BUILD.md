@@ -179,7 +179,16 @@ five minutes for the 45-minute CI job's setup and cleanup.
 
 ## Upgrade and rollback fixture gate
 
-Run the source fixture matrix without Kubernetes or network access:
+The current journal format is 4 and older versions are rejected rather than migrated. Run the
+rejection proof:
+
+```sh
+cargo test --locked -p kapsel --lib \
+  gateway::tests::v011_upgrade::older_journal_versions_are_rejected_without_touching_rows -- --exact
+```
+
+The historical upgrade-fixture generator applies only to the pre-format-4 published baseline. Run
+the source fixture matrix there without Kubernetes or network access:
 
 ```sh
 python3 scripts/test-v011-upgrade-fixtures.py

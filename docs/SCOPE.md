@@ -4,7 +4,8 @@
 > cluster credentials, then returns the strongest honest result supported by bounded receiver
 > observations: `SUCCEEDED`, `FAILED`, or `UNKNOWN`.
 
-Status: active experiment. The published release is the v0.2.0 developer beta.
+Status: active development. The published release is the v0.2.0 developer beta; current source also
+contains unreleased service and receipt-storage changes.
 
 This page owns Kapsel's current product boundary, maturity, and technical non-goals. The
 [effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, recovery, result,

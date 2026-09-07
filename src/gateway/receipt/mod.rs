@@ -1,7 +1,7 @@
-//! Prototype-scoped effect-gateway receipt bytes and deterministic offline inspection.
+//! Effect-gateway receipt bytes and deterministic offline inspection.
 //!
-//! This module owns only the prototype-scoped receipt format. It does not define stable
-//! cross-version bytes, a package format, generic trust, or a verifier profile.
+//! This module owns the bounded receipt format used by the current source. It does not define a
+//! package format, generic trust, or a verifier profile.
 
 #![allow(clippy::struct_field_names)]
 
@@ -484,14 +484,14 @@ impl ReceiptStatement {
     }
 }
 
-/// Separately supplied trust input for the prototype receipt inspector.
+/// Separately supplied trust input for the receipt inspector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptTrust {
     /// Trusted signing key identity.
     pub key_id: String,
     /// Trusted Ed25519 verifying key bytes.
     pub public_key: [u8; 32],
-    /// Accepted prototype signing purpose.
+    /// Accepted signing purpose.
     pub accepted_purpose: String,
     /// Inclusive trust interval start in Unix seconds.
     pub not_before_unix_s: i64,

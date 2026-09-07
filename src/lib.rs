@@ -3,7 +3,7 @@
 //! The [`Application`] composition root separates request-only [`AgentRequest`] from operator-owned
 //! authorization, Kubernetes authority, signing material, and paths. The private deep gateway owns
 //! the effect-gateway request, exact authorization, durable lifecycle, Kubernetes interaction,
-//! recovery, and prototype receipt. This crate exposes no generic capability or provider contract.
+//! recovery, and bounded receipt. This crate exposes no generic capability or provider contract.
 //!
 //! The current `v0.1.1` artifact and adopted v0.2 beta expose no supported external Rust API. They
 //! make no production-readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or

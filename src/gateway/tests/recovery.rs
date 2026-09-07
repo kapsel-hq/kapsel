@@ -24,8 +24,10 @@
                 .unwrap();
             unreachable!("the parent must kill the child while apply is pending");
         }
-        assert_eq!(scenario, "receipt");
-        let output = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_OUTPUT").unwrap());
+        assert!(matches!(
+            scenario.as_str(),
+            "receipt" | "before_receipt_commit"
+        ));
         let gateway = Gateway::open_for_test(&database).unwrap();
         assert!(matches!(
             gateway.finalize_operation_receipt_once_with_fault(
@@ -33,13 +35,16 @@
                 &ReceiptSettings {
                     signing_seed: &[31_u8; 32],
                     key_id: "process-receipt-key",
-                    output_directory: &output,
                 },
-                Some(FaultPoint::ReceiptPublished),
+                Some(if scenario == "receipt" {
+                    FaultPoint::FinalizedCommitted
+                } else {
+                    FaultPoint::BeforeReceiptCommit
+                }),
             ),
             Err(GatewayError::InjectedFault)
         ));
-        fs::write(ready, b"receipt-published").unwrap();
+        fs::write(ready, b"receipt-commit-seam").unwrap();
         loop {
             std::thread::park();
         }

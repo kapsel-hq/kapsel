@@ -208,14 +208,18 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
         let mut application = transport_support::open_application(&operator_path)
             .await
             .map_err(|class| map_failure("operate", class))?;
-        application.execute(&request).await.map_err(|error| {
+        let report = application.execute(&request).await.map_err(|error| {
             map_failure(
                 "operate",
                 transport_support::classify_application_operation(&error),
             )
-        })
+        })?;
+        application
+            .export_receipt()
+            .map_err(|_| map_failure("operate", FailureClass::OperationFailure))?;
+        Ok(report)
     })?;
-    render_operation(&report)
+    Ok(render_operation(&report))
 }
 
 fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
@@ -427,17 +431,16 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn render_operation(report: &OperationReport) -> CommandResult {
-    let projection = transport_support::project_operation(report)
-        .map_err(|class| map_failure("operate", class))?;
+fn render_operation(report: &OperationReport) -> String {
+    let projection = transport_support::project_operation(report);
     let operation_id_json = json_string(projection.operation_id);
     let result_json = optional_json(projection.result);
     let target_rejection_json = optional_json(projection.target_rejection);
-    let receipt_file_json = optional_json(projection.receipt_file);
+    let receipt_file_json = optional_json(projection.receipt_file.as_deref());
     let receipt_digest_json = optional_json(projection.receipt_sha256);
     let fields = transport_support::target_fields(&report.targets);
     let target_fields = &fields[1..fields.len() - 1];
-    Ok(format!(
+    format!(
         concat!(
             "{{\"command\":\"operate\",\"operation_id\":{operation_id_json},",
             "\"state\":\"{state}\",\"result\":{result_json},",
@@ -452,7 +455,7 @@ fn render_operation(report: &OperationReport) -> CommandResult {
         receipt_file_json = receipt_file_json,
         target_fields = target_fields,
         receipt_digest_json = receipt_digest_json
-    ))
+    )
 }
 
 fn structure_rejected_output() -> String {

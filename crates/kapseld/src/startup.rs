@@ -23,7 +23,6 @@ const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
 pub(crate) struct InstallationInputs {
     _configuration_root: File,
     _state_root: File,
-    _receipt_root: File,
     runtime_root: File,
     configuration_path: PathBuf,
     document: Vec<u8>,
@@ -32,9 +31,7 @@ pub(crate) struct InstallationInputs {
     kubeconfig: Vec<u8>,
     receipt_seed: Vec<u8>,
     journal_path: PathBuf,
-    receipt_path: PathBuf,
     journal_access_path: PathBuf,
-    receipt_access_path: PathBuf,
     socket_access_path: PathBuf,
 }
 
@@ -49,8 +46,6 @@ impl InstallationInputs {
         let lib = open_directory(&var, "lib")?;
         let state = open_directory(&lib, "kapsel")?;
         require_owned_directory(&state, 0o700)?;
-        let receipts = open_directory(&state, "receipts")?;
-        require_owned_directory(&receipts, 0o700)?;
         let run = open_directory(&root, "run")?;
         let runtime = open_directory(&run, "kapsel")?;
         require_owned_directory(&runtime, 0o750)?;
@@ -65,12 +60,10 @@ impl InstallationInputs {
         let receipt_seed = read_private_file(&configuration, "receipt.seed", KEY_BYTES)?;
         let configuration_path = installation_root.join("etc/kapsel");
         let state_access_path = descriptor_directory_path(&state)?;
-        let receipt_access_path = descriptor_directory_path(&receipts)?;
         let runtime_access_path = descriptor_directory_path(&runtime)?;
         Ok(Self {
             _configuration_root: configuration,
             _state_root: state,
-            _receipt_root: receipts,
             runtime_root: runtime,
             configuration_path,
             document,
@@ -79,9 +72,7 @@ impl InstallationInputs {
             kubeconfig,
             receipt_seed,
             journal_path: installation_root.join("var/lib/kapsel/journal.sqlite3"),
-            receipt_path: installation_root.join("var/lib/kapsel/receipts"),
             journal_access_path: state_access_path.join("journal.sqlite3"),
-            receipt_access_path,
             socket_access_path: runtime_access_path.join("kapseld.sock"),
         })
     }
@@ -109,9 +100,7 @@ impl InstallationInputs {
         open_application_from_fixed_operator_document(
             &self.document,
             &self.journal_path,
-            &self.receipt_path,
             &self.journal_access_path,
-            &self.receipt_access_path,
             |path, maximum| {
                 let bytes = if path == self.configuration_path.join("grant.bin") {
                     &self.grant
@@ -607,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_root_rename_and_replacement_publish_only_on_validated_directory() {
+    fn receipt_root_absence_and_replacement_do_not_affect_completion() {
         for replacement in [false, true] {
             let (server, provider) = success_server();
             let root = valid_root_with_server(
@@ -618,13 +607,21 @@ mod tests {
                 },
                 &server,
             );
-            let inputs = InstallationInputs::open_at(&root).unwrap();
             let receipts = root.join("var/lib/kapsel/receipts");
             let retained = root.join("var/lib/kapsel/receipts.retained");
             fs::rename(&receipts, &retained).unwrap();
             if replacement {
-                directory(&receipts, 0o700);
+                std::os::unix::fs::symlink("/unavailable/receipt-root", &receipts).unwrap();
             }
+            let document_path = root.join("etc/kapsel/operator.json");
+            let mut document: serde_json::Value =
+                serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+            document
+                .as_object_mut()
+                .unwrap()
+                .remove("receipt_directory");
+            fs::write(document_path, serde_json::to_vec(&document).unwrap()).unwrap();
+            let inputs = InstallationInputs::open_at(&root).unwrap();
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -635,16 +632,18 @@ mod tests {
 
             assert_eq!(report.result, Some(OperationResult::Succeeded));
             assert!(report.receipt.is_some());
-            assert_eq!(fs::read_dir(&retained).unwrap().count(), 1);
-            assert!(fs::read_dir(&retained)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .path()
-                .is_file());
+            assert!(matches!(
+                application
+                    .read_set_deployment_image_receipt(&request().operation_id)
+                    .unwrap(),
+                kapsel::SetDeploymentImageReceipt::Ready { .. }
+            ));
+            assert_eq!(fs::read_dir(&retained).unwrap().count(), 0);
             if replacement {
-                assert_eq!(fs::read_dir(&receipts).unwrap().count(), 0);
+                assert!(fs::symlink_metadata(&receipts)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
             } else {
                 assert!(!receipts.exists());
             }

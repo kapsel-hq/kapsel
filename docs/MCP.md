@@ -1,5 +1,12 @@
 # MCP adapter
 
+## Receipt completion
+
+Execution commits terminal receipt evidence in SQLite before the adapter exports receipt bytes for
+its existing filename response. Export failure is an adapter error, not a change to the action
+result, and cannot reopen execution. The [effect-gateway contract](EFFECT_GATEWAY.md) owns the exact
+behavior. This source revision is unreleased.
+
 Status: v0.2 beta MCP contract implemented by package version `0.2.0`.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response

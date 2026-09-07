@@ -23,6 +23,7 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }
 http.workspace = true
 tower-test.workspace = true
 

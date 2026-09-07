@@ -10,12 +10,7 @@ mod journal;
 mod kubernetes;
 mod receipt;
 
-use std::{
-    error::Error,
-    fmt,
-    future::Future,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, fmt, future::Future, path::Path};
 
 use authorization::VerifiedAuthorization;
 pub(crate) use authorization::{
@@ -194,10 +189,6 @@ pub enum OperationState {
     ApplyStarted,
     /// Bounded receiver facts and result are frozen.
     ReceiverObserved,
-    /// Exact signed receipt bytes and publication identity are durable.
-    ReceiptPrepared,
-    /// The frozen receipt bytes are installed at the frozen path.
-    ReceiptWritten,
     /// The operation is terminal and read-only.
     Finalized,
 }
@@ -274,11 +265,9 @@ pub(crate) enum FaultPoint {
     ReceiverRead,
     ReceiverObservedCommitted,
     #[cfg(test)]
-    ReceiptPreparedCommitted,
+    BeforeReceiptCommit,
     #[cfg(test)]
-    ReceiptPublished,
-    #[cfg(test)]
-    ReceiptWrittenCommitted,
+    ReceiptCommitAcknowledgementLost,
     #[cfg(test)]
     FinalizedCommitted,
 }
@@ -289,15 +278,11 @@ pub(crate) struct ReceiptSettings<'a> {
     pub(crate) signing_seed: &'a [u8; 32],
     /// External trust key identifier for the signing key.
     pub(crate) key_id: &'a str,
-    /// Owner-controlled output directory for immutable receipt bytes.
-    pub(crate) output_directory: &'a Path,
 }
 
 /// Immutable receipt reference stored after finalization.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptReference {
-    /// Path where exact receipt bytes were installed.
-    pub path: PathBuf,
     /// SHA-256 digest of exact receipt bytes.
     pub digest: String,
 }
@@ -307,7 +292,6 @@ pub(in crate::gateway) struct FrozenReceipt {
     operation_id: String,
     bytes: Vec<u8>,
     digest: String,
-    path: PathBuf,
     key_id: String,
 }
 
@@ -437,6 +421,14 @@ impl Gateway {
         self.journal.state(operation_id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn loaded_for_test(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
+        self.journal.operation(operation_id)
+    }
+
     pub(crate) fn authorized_operation(
         &self,
         request: &SetDeploymentImageRequest,
@@ -479,12 +471,11 @@ impl Gateway {
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
-        access_directory: Option<&Path>,
     ) -> Result<Option<OperationState>, GatewayError> {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(operation_id, settings, access_directory, None)
+        self.finalize_locked_operation_receipt_once(operation_id, settings, None)
     }
 
     #[cfg(test)]
@@ -497,7 +488,7 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(operation_id, settings, None, fault)
+        self.finalize_locked_operation_receipt_once(operation_id, settings, fault)
     }
 
     // Queue-oriented tests select only an exact identity while holding worker exclusion, then cross
@@ -518,7 +509,6 @@ impl Gateway {
         self.finalize_locked_operation_receipt_once(
             operation.request().operation_id(),
             settings,
-            None,
             fault,
         )
     }
@@ -527,69 +517,35 @@ impl Gateway {
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
-        access_directory: Option<&Path>,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
-        loop {
-            let Some(operation) = self.journal.operation(operation_id)? else {
-                return Ok(None);
-            };
-            match operation {
-                journal::LoadedOperation::ReceiverObserved(operation) => {
-                    let receipt = Self::build_receipt(&operation, settings)?;
-                    publication::validate_private_directory(
-                        access_directory.unwrap_or(settings.output_directory),
-                    )
-                    .map_err(publication_error)?;
-                    self.journal.prepare_receipt(&operation, &receipt)?;
-                    #[cfg(test)]
-                    if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
-                        return Err(GatewayError::InjectedFault);
-                    }
-                },
-                journal::LoadedOperation::ReceiptPrepared(operation) => {
-                    let receipt = operation.receipt();
-                    let access_path =
-                        receipt_access_path(receipt, settings.output_directory, access_directory)?;
-                    publication::publish_receipt(&access_path, &receipt.bytes)
-                        .map_err(publication_error)?;
-                    #[cfg(feature = "demo-harness")]
-                    demo_control::checkpoint_after_receipt_publish()
-                        .map_err(|()| GatewayError::ReceiptPublication)?;
-                    #[cfg(test)]
-                    if fault == Some(FaultPoint::ReceiptPublished) {
-                        return Err(GatewayError::InjectedFault);
-                    }
-                    self.journal.mark_receipt_written(&operation)?;
-                },
-                journal::LoadedOperation::ReceiptWritten(operation) => {
-                    #[cfg(test)]
-                    if fault == Some(FaultPoint::ReceiptWrittenCommitted) {
-                        return Err(GatewayError::InjectedFault);
-                    }
-                    let receipt = operation.receipt();
-                    let access_path =
-                        receipt_access_path(receipt, settings.output_directory, access_directory)?;
-                    if !stored_receipt_matches(&access_path, &receipt.bytes)? {
-                        publication::publish_receipt(&access_path, &receipt.bytes)
-                            .map_err(publication_error)?;
-                    }
-                    self.journal.mark_finalized(&operation)?;
-                    #[cfg(test)]
-                    if fault == Some(FaultPoint::FinalizedCommitted) {
-                        return Err(GatewayError::InjectedFault);
-                    }
-                    return Ok(Some(OperationState::Finalized));
-                },
-                journal::LoadedOperation::Requested(_)
-                | journal::LoadedOperation::Authorized(_)
-                | journal::LoadedOperation::NotAttempted(_)
-                | journal::LoadedOperation::ApplyStarted(_)
-                | journal::LoadedOperation::Finalized(_) => return Ok(None),
-            }
+        let Some(journal::LoadedOperation::ReceiverObserved(operation)) =
+            self.journal.operation(operation_id)?
+        else {
+            return Ok(None);
+        };
+        let receipt = Self::build_receipt(&operation, settings)?;
+        #[cfg(feature = "demo-harness")]
+        demo_control::checkpoint_before_receipt_commit()
+            .map_err(|()| GatewayError::InjectedFault)?;
+        #[cfg(test)]
+        if fault == Some(FaultPoint::BeforeReceiptCommit) {
+            return Err(GatewayError::InjectedFault);
         }
+        self.journal.commit_receipt(&operation, &receipt)?;
+        #[cfg(feature = "demo-harness")]
+        demo_control::checkpoint_after_receipt_commit()
+            .map_err(|()| GatewayError::InjectedFault)?;
+        #[cfg(test)]
+        if matches!(
+            fault,
+            Some(FaultPoint::FinalizedCommitted | FaultPoint::ReceiptCommitAcknowledgementLost)
+        ) {
+            return Err(GatewayError::InjectedFault);
+        }
+        Ok(Some(OperationState::Finalized))
     }
 
     fn build_receipt(
@@ -604,18 +560,11 @@ impl Gateway {
         )
         .map_err(GatewayError::Receipt)?;
         let digest = publication::receipt_digest_hex(&bytes);
-        let path = settings
-            .output_directory
-            .join(publication::receipt_filename(operation_id, &digest));
-        if path.to_str().is_none() {
-            return Err(GatewayError::ReceiptPublication);
-        }
         Ok(ReceiptToPrepare {
             receipt: FrozenReceipt {
                 operation_id: operation_id.to_owned(),
                 bytes,
                 digest,
-                path,
                 key_id: settings.key_id.to_owned(),
             },
         })
@@ -623,19 +572,12 @@ impl Gateway {
 
     pub(crate) fn read_loaded_receipt(
         operation: journal::LoadedOperation,
-        output_directory: &Path,
-        access_directory: Option<&Path>,
     ) -> Result<(Vec<u8>, String), GatewayError> {
         let journal::LoadedOperation::Finalized(operation) = operation else {
             return Err(GatewayError::InvalidPersistedState);
         };
         let receipt = operation.receipt();
-        let access_path = receipt_access_path(receipt, output_directory, access_directory)?;
-        let bytes = publication::read_receipt(&access_path).map_err(publication_error)?;
-        if bytes != receipt.bytes || publication::receipt_digest_hex(&bytes) != receipt.digest {
-            return Err(GatewayError::ReceiptDigestMismatch);
-        }
-        Ok((bytes, receipt.digest.clone()))
+        Ok((receipt.bytes.clone(), receipt.digest.clone()))
     }
 
     /// Reads the terminal receipt reference for a finalized operation.
@@ -779,8 +721,6 @@ impl Gateway {
             journal::LoadedOperation::Requested(_)
             | journal::LoadedOperation::NotAttempted(_)
             | journal::LoadedOperation::ReceiverObserved(_)
-            | journal::LoadedOperation::ReceiptPrepared(_)
-            | journal::LoadedOperation::ReceiptWritten(_)
             | journal::LoadedOperation::Finalized(_) => Ok(None),
         }
     }
@@ -804,37 +744,6 @@ impl Gateway {
             fault,
         )
         .await
-    }
-}
-
-fn publication_error(_: publication::PublicationError) -> GatewayError {
-    GatewayError::ReceiptPublication
-}
-
-fn receipt_access_path(
-    receipt: &FrozenReceipt,
-    output_directory: &Path,
-    access_directory: Option<&Path>,
-) -> Result<PathBuf, GatewayError> {
-    let Some(access_directory) = access_directory else {
-        return Ok(receipt.path.clone());
-    };
-    if receipt.path.parent() != Some(output_directory) {
-        return Err(GatewayError::InvalidPersistedState);
-    }
-    let name = receipt
-        .path
-        .file_name()
-        .ok_or(GatewayError::InvalidPersistedState)?;
-    Ok(access_directory.join(name))
-}
-
-fn stored_receipt_matches(path: &Path, expected: &[u8]) -> Result<bool, GatewayError> {
-    match publication::read_receipt(path) {
-        Ok(existing) if existing == expected => Ok(true),
-        Ok(_) => Err(GatewayError::ReceiptDigestMismatch),
-        Err(publication::PublicationError::MissingDestination) => Ok(false),
-        Err(error) => Err(publication_error(error)),
     }
 }
 
@@ -894,12 +803,10 @@ pub(crate) enum GatewayError {
     InvalidKubernetesFact,
     /// Deterministic test fault stopped execution at a named crash window.
     InjectedFault,
-    /// The bounded prototype journal contains its maximum distinct operations.
+    /// The bounded journal contains its maximum distinct operations.
     JournalFull,
-    /// Prototype receipt bytes could not be built or inspected.
+    /// Receipt bytes could not be built or inspected.
     Receipt(receipt::ReceiptError),
-    /// Immutable receipt publication failed.
-    ReceiptPublication,
     /// Published receipt bytes differ from the durable digest.
     ReceiptDigestMismatch,
 }
@@ -927,7 +834,6 @@ impl fmt::Display for GatewayError {
             Self::InjectedFault => "injected_fault",
             Self::JournalFull => "journal_full",
             Self::Receipt(_) => "receipt",
-            Self::ReceiptPublication => "receipt_publication",
             Self::ReceiptDigestMismatch => "receipt_digest_mismatch",
         };
         write!(formatter, "Kubernetes effect-gateway failure: {class}")
@@ -957,7 +863,6 @@ impl Error for GatewayError {
             | Self::InvalidKubernetesFact
             | Self::InjectedFault
             | Self::JournalFull
-            | Self::ReceiptPublication
             | Self::ReceiptDigestMismatch => None,
         }
     }
@@ -1005,3 +910,5 @@ fn authorization_matches(authorization: &ExactAuthorization, request: &Validated
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use receipt::publication::{publish_receipt, receipt_filename};
