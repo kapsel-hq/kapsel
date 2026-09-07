@@ -51,6 +51,7 @@ part of v0.2.0 or a supported installation path.
 - [Kapsel service contract](KAPSEL_SERVICE.md)
 - [Planned service operator journey](KAPSEL_SERVICE_OPERATOR.md)
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
+- [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)
 
 ## Authority order
 

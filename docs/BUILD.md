@@ -72,6 +72,17 @@ and link-checker regressions. It does not start Docker.
 | Release artifact                 | `python3 scripts/assemble-release-artifact.py --output-directory dist`                     |
 | Finite beta qualification        | `python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json` |
 
+## Independent client experiment
+
+Run the separate [kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md) with Python 3.11+ and the
+pinned kubectl v1.33.9 build. It uses a loopback fixture, not a cluster or Kapsel runtime:
+
+```sh
+python3 scripts/test-independent-kubectl.py
+```
+
+This experiment is not part of the default deterministic gate.
+
 ## Kapsel service candidate
 
 The service in repository HEAD is unpublished. Run its package, lint, and private-harness gates:
