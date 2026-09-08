@@ -13,7 +13,10 @@ use kube::{
 use serde_json::{json, Value};
 
 use super::{
-    super::{DeploymentImageAdapter, SetDeploymentImageRequest, TargetReadError, TargetRejection},
+    super::{
+        DeploymentImageAdapter, DispatchPermission, SetDeploymentImageRequest, TargetReadError,
+        TargetRejection,
+    },
     facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
 };
 
@@ -159,17 +162,14 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
         Ok(target)
     }
 
-    async fn apply(
-        &mut self,
-        request: &SetDeploymentImageRequest,
-        target: &TargetIdentity,
-    ) -> Result<ApplyOutcome, ()> {
+    async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
+        let (request, target) = permission.into_payload();
         let deployment = tokio::time::timeout(
             self.provider_request_timeout,
             self.deployments(&request.namespace).patch(
                 &request.deployment,
                 &PatchParams::default(),
-                &Patch::Strategic(deployment_patch_document(request, target)),
+                &Patch::Strategic(deployment_patch_document(&request, &target)),
             ),
         )
         .await
@@ -595,7 +595,15 @@ mod tests {
             let (_request, _send) = apply_handle.next_request().await.unwrap();
             pending::<()>().await;
         });
-        assert_eq!(apply_adapter.apply(&request(), &target()).await, Err(()));
+        assert_eq!(
+            apply_adapter
+                .apply(crate::gateway::dispatch_permission_for_test(
+                    &request(),
+                    &target()
+                ))
+                .await,
+            Err(())
+        );
         apply_responder.abort();
     }
 
@@ -639,7 +647,10 @@ mod tests {
         });
 
         let outcome = adapter
-            .apply(&expected_request, &expected_target)
+            .apply(crate::gateway::dispatch_permission_for_test(
+                &expected_request,
+                &expected_target,
+            ))
             .await
             .unwrap();
 
@@ -676,7 +687,12 @@ mod tests {
             });
 
             assert_eq!(
-                adapter.apply(&request(), &target()).await,
+                adapter
+                    .apply(crate::gateway::dispatch_permission_for_test(
+                        &request(),
+                        &target()
+                    ))
+                    .await,
                 Err(()),
                 "{case}"
             );

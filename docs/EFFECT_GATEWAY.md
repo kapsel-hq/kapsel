@@ -2,6 +2,7 @@
 
 ## SQLite-owned receipt completion
 
+Receipt completion commits the original signed evidence in SQLite, independently of export.
 `receiver_observed` durably freezes the historical receiver statement before signing. One
 conditional SQLite transaction commits the exact signed receipt bytes, their SHA-256 digest, signer
 identity, and terminal `finalized` state together. `finalized` means durable terminal evidence, not
@@ -195,10 +196,11 @@ requested
   identity, and terminal state in SQLite. It is terminal and read-only. Filesystem export happens
   separately from this transition.
 
-After `apply_started`, recovery uses the stored Deployment UID, operation annotation, and requested
-image digest to observe and classify the operation. It does not replay even the frozen conditional
-patch: Kubernetes UID and resource-version preconditions bound persisted updates, but do not prevent
-a stale replay from invoking mutating admission and its allowed out-of-band effects again. Decision
+Observation-only recovery determines what can be concluded without sending the mutation again. After
+`apply_started`, it uses the stored Deployment UID, operation annotation, and requested image digest
+to observe and classify the operation. It does not replay even the frozen conditional patch:
+Kubernetes UID and resource-version preconditions bound persisted updates, but do not prevent a
+stale replay from invoking mutating admission and its allowed out-of-band effects again. Decision
 [0011](decisions/0011-retain-observation-only-recovery.md) owns the comparison and evidence.
 
 When the patch response was lost, an exact matching UID, operation annotation, and image binds the
@@ -234,6 +236,37 @@ The implementation holds one crash-released exclusive worker lock around provide
 so two processes cannot advance the same journal concurrently. A contender performs no provider or
 receiver call and changes no public fact. The implementation may add other internal lease or
 scheduling fields, but those fields are not public facts and must not change result meaning.
+
+### Fresh dispatch permission
+
+A durable attempt records that dispatch may have happened. It does not establish that a request was
+sent, and recovery cannot derive permission from it. In current unreleased source, dispatch
+permission is a private, one-use value issued after a successful fresh attempt commit and consumed
+by the adapter. The transaction checks the complete authorized snapshot against its durable row,
+including request, approval, and authorization provenance. A snapshot from another journal cannot
+substitute different facts under the same operation identity.
+
+The permission binds the frozen request and attempted target. It is neither `Clone` nor `Copy`, and
+the Kubernetes adapter consumes it instead of accepting separately supplied request and target
+arguments. Loading attempted history, losing the conditional transition, or an ambiguous commit
+acknowledgement cannot produce permission. Cancellation or loss after commitment may discard an
+unsent permission. The action remains attempted, and recovery observes without resending or
+inventing `NOT_ATTEMPTED`, success, or failure.
+
+The gateway still holds the crash-released worker lock through provider and receiver I/O. Permission
+is not lifetime-bound to that lock and does not replace process exclusion, conditional database
+writes, or the driver's obligation to keep the lock. This is an internal sequential boundary, not a
+public API or a shared approval/recovery kernel. The
+[design decision](decisions/0011-retain-observation-only-recovery.md#sequential-boundary-comparison)
+records its adoption and finite evidence.
+
+One consumed permission must not become multiple mutation requests through client retries. The
+shared application client disables kube-client's automatic server-response retries, including PATCH
+retries on 429, 503, and 504. Explicit bounded target-read deferral and receiver observation remain.
+Operator-supplied custom clients must uphold the same no-mutation-retry obligation. A local HTTP
+fixture verifies request counts across response loss, cancellation, and restart. It does not prove
+arbitrary proxy or HTTP/2 behavior, prevent admission reinvocation within one Kubernetes request, or
+establish power-loss durability or exactly-once effects.
 
 ## Result meaning
 

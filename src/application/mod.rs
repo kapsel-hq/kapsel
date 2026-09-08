@@ -42,6 +42,9 @@ pub struct OperatorConfiguration {
     /// One owner-signed exact grant used for request submission.
     pub signed_authorization_grant: Vec<u8>,
     /// Kubernetes authority constructed outside agent input.
+    ///
+    /// Custom clients must not retry mutation requests after transmission. The operator-document
+    /// constructor disables kube-client's server-response retry layer for this reason.
     pub kubernetes_client: kube::Client,
     /// Receipt-signing seed controlled by the operator.
     pub receipt_signing_seed: [u8; 32],
@@ -218,6 +221,9 @@ async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, A
     if proxy_placeholder_was_added {
         client_config.proxy_url = None;
     }
+    // kube-client retries PATCH on 429/503/504 by default. One gateway dispatch must remain one
+    // mutation request, even when an error response follows a receiver-side effect.
+    client_config.default_retry = false;
     let response_limit =
         MapResponseBodyLayer::new(|body| Limited::new(body, KUBERNETES_RESPONSE_BYTES_MAX));
     Ok(kube::client::ClientBuilder::try_from(client_config)

@@ -3,6 +3,8 @@
 //! This module owns orchestration and its private test seams. The crate root remains a compact map
 //! of the caller-visible interface and concrete internal owners.
 
+#[cfg(test)]
+mod approval_kernel_prototype;
 mod authorization;
 #[cfg(feature = "demo-harness")]
 mod demo_control;
@@ -17,6 +19,7 @@ pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
+pub(crate) use journal::DispatchPermission;
 use journal::Journal;
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
@@ -242,8 +245,7 @@ pub(crate) trait DeploymentImageAdapter {
 
     fn apply(
         &mut self,
-        request: &SetDeploymentImageRequest,
-        target: &TargetIdentity,
+        permission: DispatchPermission,
     ) -> impl Future<Output = Result<ApplyOutcome, ()>> + Send;
 
     fn observe(
@@ -259,6 +261,8 @@ pub(crate) enum FaultPoint {
     AuthorizedCommitted,
     TargetRejectedCommitted,
     ApplyStartedCommitted,
+    #[cfg(test)]
+    AttemptCommitAcknowledgementLost,
     TargetObserved,
     ApplyReturned,
     ApplyOutcomeCommitted,
@@ -659,7 +663,8 @@ impl Gateway {
                 }
                 let target = ValidatedTargetIdentity::try_from(target)
                     .map_err(|_| GatewayError::InvalidKubernetesFact)?;
-                let Some(target) = self.journal.begin_attempt(&operation, target)? else {
+                let Some(permission) = self.journal.begin_attempt(&operation, target, fault)?
+                else {
                     return Ok(Some(OperationState::NotAttempted));
                 };
                 if fault == Some(FaultPoint::ApplyStartedCommitted) {
@@ -670,9 +675,8 @@ impl Gateway {
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
-                let adapter_target = target.to_adapter_target();
                 let outcome = adapter
-                    .apply(&adapter_request, &adapter_target)
+                    .apply(permission)
                     .await
                     .map_err(|()| GatewayError::KubernetesApply)?;
                 #[cfg(feature = "demo-harness")]
@@ -704,7 +708,8 @@ impl Gateway {
                 }
                 Ok(Some(OperationState::ReceiverObserved))
             },
-            // Loaded ApplyStarted is recovery-only here. It has no path to adapter.apply.
+            // Observation-only recovery determines what can be concluded without resending.
+            // The durable attempt records that dispatch may have happened, not permission to send.
             journal::LoadedOperation::ApplyStarted(operation) => {
                 let adapter_request = operation.request().to_adapter_request();
                 let outcome = operation.classification_outcome();
@@ -910,5 +915,6 @@ fn authorization_matches(authorization: &ExactAuthorization, request: &Validated
 
 #[cfg(test)]
 mod tests;
-
 pub(crate) use receipt::publication::{publish_receipt, receipt_filename};
+#[cfg(test)]
+pub(crate) use tests::dispatch_permission_for_test;

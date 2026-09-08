@@ -42,6 +42,29 @@ pub(crate) struct WorkerLock<'a> {
     file: &'a File,
 }
 
+// Dispatch permission is private and one-use, issued after a successful fresh attempt commit.
+// Durable attempt history records that dispatch may have happened, not permission to dispatch.
+pub(crate) struct DispatchPermission {
+    request: ValidatedRequest,
+    target: ValidatedTargetIdentity,
+}
+
+impl DispatchPermission {
+    #[cfg(test)]
+    pub(crate) fn request_for_test(&self) -> SetDeploymentImageRequest {
+        self.request.to_adapter_request()
+    }
+
+    // Consuming extraction belongs at the adapter's request boundary. The I/O implementation still
+    // owes one mutation request, including no hidden transport retries.
+    pub(crate) fn into_payload(self) -> (SetDeploymentImageRequest, TargetIdentity) {
+        (
+            self.request.to_adapter_request(),
+            self.target.to_adapter_target(),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::gateway) struct RequestFacts {
     approved_target: Option<super::ApprovedTarget>,
@@ -872,6 +895,7 @@ impl Journal {
         receipt_statement_on(&self.connection, operation_id)
     }
 
+    // Receipt completion commits the original signed evidence in SQLite, independently of export.
     pub(in crate::gateway) fn commit_receipt(
         &self,
         operation: &ReceiverObservedOperation,
@@ -1016,12 +1040,26 @@ impl Journal {
         &self,
         operation: &AuthorizedOperation,
         observed: ValidatedTargetIdentity,
-    ) -> Result<Option<ValidatedTargetIdentity>, GatewayError> {
+        fault: Option<super::FaultPoint>,
+    ) -> Result<Option<DispatchPermission>, GatewayError> {
+        #[cfg(not(test))]
+        let _ = fault;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(GatewayError::Database)?;
+        // A phase-typed snapshot may come from another journal. Bind the whole frozen action,
+        // not just the same operation ID, while excluding concurrent changes through commit.
+        if loaded_operation_on(&transaction, operation.request().operation_id())?
+            != Some(LoadedOperation::Authorized(operation.clone()))
+        {
+            return Err(GatewayError::InvalidTransition);
+        }
         let target = if let Some(approved) = operation.approved_target() {
             if observed.deployment_uid() != approved.uid
                 || observed.resource_version() != approved.resource_version
             {
                 self.mark_stale_approval(operation, &observed)?;
+                transaction.commit().map_err(GatewayError::Database)?;
                 return Ok(None);
             }
             ValidatedTargetIdentity::try_from(TargetIdentity {
@@ -1033,7 +1071,15 @@ impl Journal {
             observed
         };
         self.mark_apply_started(operation, &target)?;
-        Ok(Some(target))
+        transaction.commit().map_err(GatewayError::Database)?;
+        #[cfg(test)]
+        if fault == Some(super::FaultPoint::AttemptCommitAcknowledgementLost) {
+            return Err(GatewayError::InjectedFault);
+        }
+        Ok(Some(DispatchPermission {
+            request: operation.request().clone(),
+            target,
+        }))
     }
 
     pub(in crate::gateway) fn mark_stale_approval(

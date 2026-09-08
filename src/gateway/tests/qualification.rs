@@ -80,7 +80,7 @@
             send.send_response(Response::new(Body::from(patch_response)));
         });
         let started = Instant::now();
-        let outcome = adapter.apply(request, &target).await.unwrap();
+        let outcome = adapter.apply(dispatch_permission_for_test(request, &target)).await.unwrap();
         measurements
             .entry("conditional_patch")
             .or_default()

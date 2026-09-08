@@ -126,8 +126,127 @@ resumes the same operation by observation only. It must not issue a new operatio
 authority or preconditions, or resend through caller or workflow retry. `UNKNOWN` stops dependent
 automation and hands the frozen evidence to a human.
 
+## Current sequential design
+
+The adopted implementation keeps durable attempt, dispatch permission, observation-only recovery,
+and receipt completion distinct. A durable attempt records that dispatch may have happened, so
+recovery cannot derive permission from it. Dispatch permission is a private, one-use value issued
+after a successful fresh attempt commit and consumed by the adapter. Observation-only recovery
+determines what can be concluded without sending the mutation again. Receipt completion commits the
+original signed evidence in SQLite, independently of export. The
+[effect-gateway contract](../EFFECT_GATEWAY.md#fresh-dispatch-permission) owns the exact rules.
+
+The sequential comparison below showed that the adapter interface can enforce part of the dispatch
+discipline without an event machine. Binding the complete authorized snapshot inside the attempt
+transaction prevents substitution of different facts under the same operation ID. Consuming the
+permission removes ordinary repeat-dispatch and history-dispatch call sites. The inherited
+client-retry correction prevents automatic server-response retries from expanding one permitted
+dispatch into repeated PATCH requests.
+
+Worker exclusion, conditional database writes, the driver's no-retry obligation, and honest UNKNOWN
+remain necessary. The new deterministic and loopback HTTP evidence does not extend the pinned live
+Kubernetes or durability claims below.
+
+### Sequential boundary comparison
+
+The original flow already enforced fresh dispatch through journal phases, conditional writes, worker
+exclusion, and lexical control flow. Its adapter still accepted independently selected, clonable
+request and target values. Correct callers did not resend, but the interface would accept an
+accidental second call or arguments reconstructed from attempted history.
+
+| Candidate                                      | Benefit                                                                         | Cost or reason not selected                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Existing sequential flow plus retry correction | Correct existing ordering and observation-only recovery                         | Reusable apply arguments leave dispatch discipline to callers                                    |
+| Private consumed dispatch permission, adopted  | Prevents ordinary repeat/history dispatch and binds the exact committed payload | One private type, one bounded row load, and a short transaction                                  |
+| Extract only pure snapshot decisions           | Could move the existing comparison into a function                              | No second production comparison to delete. Does not establish commitment or prevent repeat apply |
+
+Before, `begin_attempt` returned a clonable target and the gateway called
+`adapter.apply(&request, &target).await`. Now it returns a `DispatchPermission` and the same
+sequential call site uses `adapter.apply(permission).await`. The old adapter interface is removed,
+not retained behind a wrapper. The journal's private constructor runs only after successful commit
+acknowledgement. The concrete adapter consumes the permission into its bound request and target
+before building the same strategic merge PATCH.
+
+The complete authorized snapshot is checked in one immediate transaction before the conditional
+attempt write. That prevents a phase-typed snapshot from another journal supplying different
+request, approval, or authorization provenance under the same operation ID. A losing transition or
+commit error returns no permission. No transaction spans a network call or await.
+
+Snapshot comparison remains in `Journal::begin_attempt`. Classification, grant verification,
+observation bounds, receipt bytes and format-4 completion retain their existing owners. The existing
+seeded harness executes these same journal/gateway decisions. This is shared execution, not a new
+pure approval/recovery kernel. The larger event machine remains rejected rather than becoming a
+second production policy owner.
+
+### Sequential boundary evidence
+
+The comparison began at `21f0a2534e9555130025a4082e935194886a6cb2`, which preserves the rejected
+event-machine prototype and separate retry correction atop the adopted, unreleased format-4 baseline
+`b27d8e0a6c3dea91d2d4333ea111d32629a04f26`. The application retry correction is retained, not
+attributed to dispatch permission. Grant v1 late binding, grant v2 exact approval, receipt v2/v3,
+receiver classification and compatibility policy are unchanged.
+
+| Trace                                                | Observed result                                                                                |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Two real connections race fresh commitment           | Exactly one permission with the frozen request and target                                      |
+| Same ID, different action from another journal       | No permission or durable change                                                                |
+| Commit succeeds, acknowledgement is lost             | No permission returned. Recovery only observes and freezes UNKNOWN for an unsent action        |
+| Unused permission is dropped                         | Zero applies, no NOT_ATTEMPTED, honest UNKNOWN and preserved receipt bytes across reopen       |
+| Stale Authorized snapshot is reused after commitment | No permission reminted                                                                         |
+| Continuation is cancelled during target read         | Remains Authorized. A later fresh run may commit and dispatch once                             |
+| Continuation is cancelled after dispatch             | Remains ApplyStarted. Recovery does not send again                                             |
+| Process is killed while apply is pending             | Existing subprocess regression crosses the new interface and recovers without another mutation |
+
+`tests/application_retry.rs` uses the ordinary operator-document client construction and a real
+loopback HTTP receiver. Healthy execution, 429/503/504 responses, complete-request connection loss,
+and cancellation after receipt of PATCH each count exactly one complete PATCH through restart,
+reconciliation and repeat execution. The receiver remains available for the complete trace. Each
+case checks two GETs and preserved receipt retrieval. The ambiguity matrix checks approved UID,
+opaque resourceVersion and image in captured PATCH bodies. Success comes from separate receiver
+observation, not the error response or request count.
+
+Temporary internal API probes compiled against the actual private types reject permission reuse
+(E0382), Clone (E0599), Copy (E0277), dispatch from `ApplyStartedOperation` (E0308), and
+construction outside the journal's private fields (E0451). These were not external-crate privacy
+failures. They can be reproduced in a temporary `#[cfg(test)]` child of `gateway` using `super::*`
+and the invalid calls. Run the field-construction probe separately because earlier type errors can
+prevent privacy checking. No compile-test dependency or source-rewriting harness is retained.
+
+The focused dispatch group passed 4 tests, the gateway group 51 with 3 ignored, and the HTTP
+group 3. The release-mode seeded lane passed 256 cases at seed `21182435914953528` with one shard,
+alternating legacy and matching snapshot grants and including attempt-commit acknowledgement loss.
+The full deterministic gate passed, with 114 root library tests passed and 9 ignored. A bounded
+independent review found no concrete fix-worthy findings. Ignored live or extended lanes are not
+counted as proved.
+
+Find the local adoption revision and reproduce the evidence with:
+
+```sh
+git log -1 --format='%H %T %s' --grep='^gateway: adopt sequential dispatch permission$'
+cargo test --locked -p kapsel --lib gateway::tests::dispatch -- --nocapture
+cargo test --locked -p kapsel --test application_retry
+KAPSEL_SIMULATION_SEED=21182435914953528 KAPSEL_SIMULATION_CASES=256 \
+  KAPSEL_SIMULATION_SHARDS=1 ./scripts/test-simulation.sh
+./scripts/ci-local.sh
+```
+
+Another checkout must obtain the identified commit from a repository containing it. Local
+preservation does not imply a push, merge, published artifact or released behavior.
+
 ## Consequences and limits
 
+- Dispatch permission is not lifetime-bound to `WorkerLock`. The driver must retain worker exclusion
+  through I/O. The type does not constrain hostile code already holding raw credentials, or an
+  adapter deliberately resending its extracted payload.
+- The shared application client disables hidden server-response retries. Custom clients, proxies,
+  HTTP/2 behavior and admission reinvocation remain separate obligations.
+- Attempt-commit acknowledgement loss is injected after real commitment. This does not prove actual
+  SQLite I/O failures, torn writes, power-loss or hardware durability, or unbounded schedules. The
+  new cancellation tests drop futures. Existing process-kill tests provide separate finite evidence,
+  not a new before-send or commit-acknowledgement process-kill proof.
+- The seeded receiver fixture may report an independent failed rollout even for an unsent action.
+  That tests classifier consistency, not causation. The dedicated unsent tests supply no receiver
+  facts and require UNKNOWN.
 - Kapsel prevents recovery-induced duplicate admission effects. It cannot prevent admission
   reinvocation internal to one API request or duplicates from independent pre-attempt callers.
 - Frozen UID/resource-version replay does prevent overwriting an intervening writer or replacement

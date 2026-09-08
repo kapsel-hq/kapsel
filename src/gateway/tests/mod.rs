@@ -12,6 +12,16 @@ mod lifecycle {
     include!("lifecycle.rs");
 }
 
+#[allow(
+    clippy::panic,
+    reason = "invalid bounded test evidence must fail the test"
+)]
+mod dispatch {
+    use super::*;
+
+    include!("dispatch.rs");
+}
+
 mod recovery {
     use super::*;
 

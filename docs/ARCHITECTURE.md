@@ -52,6 +52,12 @@ The Kubernetes adapter performs safe target reads, one conditional strategic mer
 bounded rollout observation for the sole operation. Receiver facts and classification are separate
 from transport and request-acceptance facts.
 
+`Journal::begin_attempt` produces a private one-use dispatch permission after the fresh transaction
+commits. The adapter consumes its bound request and target. Ordinary sequential control flow
+remains, and loaded attempted history stays observation-only. The
+[fresh dispatch contract](EFFECT_GATEWAY.md#fresh-dispatch-permission) owns the exact guarantees,
+client-retry obligations and limits.
+
 A private adapter seam supports deterministic provider-call and crash-recovery tests. One production
 adapter does not establish a reusable provider model, public provider interface, or generic
 Kubernetes abstraction.

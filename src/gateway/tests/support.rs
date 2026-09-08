@@ -23,6 +23,36 @@
         directory.join("journal.sqlite3")
     }
 
+    // Adapter-only tests still obtain permission from the real durable transition. There is no
+    // test constructor that can accidentally become a production permission-minting path.
+    #[allow(clippy::panic, reason = "invalid test setup cannot supply dispatch permission")]
+    pub(crate) fn dispatch_permission_for_test(
+        request: &SetDeploymentImageRequest,
+        target: &TargetIdentity,
+    ) -> DispatchPermission {
+        let path = database_path("adapter-permission");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        let mut approval = authorization(request);
+        approval.approved_target = Some(ApprovedTarget {
+            uid: target.deployment_uid.clone(),
+            resource_version: target.resource_version.clone(),
+        });
+        gateway.submit_exact_for_test(request, &approval).unwrap();
+        let Some(journal::LoadedOperation::Authorized(operation)) =
+            gateway.journal.operation(&request.operation_id).unwrap()
+        else {
+            panic!("fixture must be authorized");
+        };
+        let permission = gateway.journal.begin_attempt(
+            &operation,
+            ValidatedTargetIdentity::try_from(target.clone()).unwrap(),
+            None,
+        ).unwrap().unwrap();
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        permission
+    }
+
     fn private_directory(path: &Path) {
         fs::create_dir(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -129,11 +159,11 @@
 
         async fn apply(
             &mut self,
-            request: &SetDeploymentImageRequest,
-            target: &TargetIdentity,
+            permission: DispatchPermission,
         ) -> Result<ApplyOutcome, ()> {
+            let (request, target) = permission.into_payload();
             self.apply_calls += 1;
-            self.applied_target = Some(target.clone());
+            self.applied_target = Some(target);
             let connection = Connection::open(&self.database_path).map_err(|_| ())?;
             let persisted: (String, i64, String) = connection
                 .query_row(
@@ -224,10 +254,10 @@
 
         async fn apply(
             &mut self,
-            request: &SetDeploymentImageRequest,
-            _: &TargetIdentity,
+            permission: DispatchPermission,
         ) -> Result<ApplyOutcome, ()> {
-            self.apply_order.push(request.operation_id.clone());
+            let (request, _) = permission.into_payload();
+            self.apply_order.push(request.operation_id);
             Ok(ApplyOutcome {
                 accepted: true,
                 requested_generation: Some(2),
@@ -272,8 +302,7 @@
 
         async fn apply(
             &mut self,
-            _: &SetDeploymentImageRequest,
-            _: &TargetIdentity,
+            _: DispatchPermission,
         ) -> Result<ApplyOutcome, ()> {
             let count = fs::read_to_string(&self.patch_count_path)
                 .ok()

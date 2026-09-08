@@ -66,11 +66,10 @@ impl DeploymentImageAdapter for CountingAdapter {
 
     async fn apply(
         &mut self,
-        request: &SetDeploymentImageRequest,
-        target: &crate::TargetIdentity,
+        permission: crate::gateway::DispatchPermission,
     ) -> Result<crate::ApplyOutcome, ()> {
         self.apply_calls += 1;
-        self.inner.apply(request, target).await
+        self.inner.apply(permission).await
     }
 
     async fn observe(
@@ -108,9 +107,9 @@ impl DeploymentImageAdapter for PreconditionRaceAdapter {
 
     async fn apply(
         &mut self,
-        request: &SetDeploymentImageRequest,
-        target: &crate::TargetIdentity,
+        permission: crate::gateway::DispatchPermission,
     ) -> Result<crate::ApplyOutcome, ()> {
+        let request = permission.request_for_test();
         self.apply_calls += 1;
         Api::<Deployment>::namespaced(self.client.clone(), &request.namespace)
             .patch(
@@ -126,7 +125,7 @@ impl DeploymentImageAdapter for PreconditionRaceAdapter {
             )
             .await
             .map_err(|_| ())?;
-        self.inner.apply(request, target).await
+        self.inner.apply(permission).await
     }
 
     async fn observe(
@@ -587,7 +586,10 @@ async fn run_recovery_policy_proof(client: Client) -> Result<(), Box<dyn std::er
     let replica_sets_before = replica_sets.list(&selector).await?.items.len();
 
     let first = adapter
-        .apply(&request, &frozen_target)
+        .apply(crate::gateway::dispatch_permission_for_test(
+            &request,
+            &frozen_target,
+        ))
         .await
         .map_err(|()| "first frozen patch was rejected")?;
     assert_eq!(

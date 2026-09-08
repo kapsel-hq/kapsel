@@ -71,9 +71,16 @@ impl DeploymentImageAdapter for SimulationAdapter {
 
     async fn apply(
         &mut self,
-        _: &SetDeploymentImageRequest,
-        _: &TargetIdentity,
+        permission: crate::gateway::DispatchPermission,
     ) -> Result<ApplyOutcome, ()> {
+        let (request, target) = permission.into_payload();
+        assert_eq!(target.deployment_uid, "simulation-deployment-uid");
+        assert_eq!(target.resource_version, "simulation-resource-version-1");
+        assert_eq!(Some(request.immutable_image_digest), self.observation.image);
+        assert_eq!(
+            Some(request.operation_id),
+            self.observation.operation_marker
+        );
         self.apply_calls += 1;
         Ok(ApplyOutcome {
             accepted: true,
@@ -138,6 +145,7 @@ async fn run_simulation(
     let apply_faults = [
         FaultPoint::TargetObserved,
         FaultPoint::ApplyStartedCommitted,
+        FaultPoint::AttemptCommitAcknowledgementLost,
         FaultPoint::ApplyReturned,
         FaultPoint::ApplyOutcomeCommitted,
         FaultPoint::ReceiverRead,
@@ -220,8 +228,10 @@ async fn run_case(
         );
     }
 
-    let expected_apply_calls =
-        usize::from(schedule.apply_fault != FaultPoint::ApplyStartedCommitted);
+    let expected_apply_calls = usize::from(!matches!(
+        schedule.apply_fault,
+        FaultPoint::ApplyStartedCommitted | FaultPoint::AttemptCommitAcknowledgementLost
+    ));
     assert_eq!(
         adapter.apply_calls, expected_apply_calls,
         "seed={seed} case={case} apply_fault={:?}",
@@ -334,7 +344,10 @@ fn request(case: usize) -> SetDeploymentImageRequest {
 
 fn authorization(request: &SetDeploymentImageRequest, case: usize) -> ExactAuthorization {
     ExactAuthorization {
-        approved_target: None,
+        approved_target: case.is_multiple_of(2).then(|| crate::ApprovedTarget {
+            uid: "simulation-deployment-uid".into(),
+            resource_version: "simulation-resource-version-1".into(),
+        }),
         authorization_id: format!("simulation-auth-{case}"),
         operation_id: request.operation_id.clone(),
         namespace: request.namespace.clone(),
