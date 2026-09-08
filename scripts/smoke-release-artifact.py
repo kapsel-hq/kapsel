@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tarfile
@@ -784,16 +785,22 @@ def exercise_demo_binary(
             binary,
             paths,
             control,
-            "after_receipt_publish",
-            control / "after-receipt-publish.ready",
-            evaluation / "after-publication.log",
+            "after_receipt_commit",
+            control / "after-receipt-commit.ready",
+            evaluation / "after-commit.log",
         )
         if KubernetesFixture.requests != 3:
             raise RuntimeError("installed demo recovery repeated provider activity")
-        receipts = list(paths["receipts"].glob("*.receipt"))
-        if len(receipts) != 1:
-            raise RuntimeError("installed demo did not freeze one receipt")
-        frozen = receipts[0].read_bytes()
+        if any(paths["receipts"].iterdir()):
+            raise RuntimeError("installed demo exported a receipt before restart")
+        with sqlite3.connect(evaluation / "journal.sqlite3") as connection:
+            rows = connection.execute(
+                "SELECT receipt_bytes FROM kubernetes_image_operations "
+                "WHERE state = 'finalized'"
+            ).fetchall()
+        if len(rows) != 1 or not isinstance(rows[0][0], bytes):
+            raise RuntimeError("installed demo did not commit one frozen receipt")
+        frozen = rows[0][0]
 
         rotated_receipts = evaluation / "rotated-receipts"
         rotated_receipts.mkdir(mode=0o700)
@@ -823,8 +830,13 @@ def exercise_demo_binary(
             raise RuntimeError("installed demo did not finalize the receiver outcome after restart")
         if control.joinpath("provider-apply-count").read_text() != "1":
             raise RuntimeError("installed demo changed its provider apply count")
-        if receipts[0].read_bytes() != frozen or any(rotated_receipts.iterdir()):
-            raise RuntimeError("installed demo changed frozen receipt settings")
+        receipts = list(rotated_receipts.glob("*.receipt"))
+        if (
+            len(receipts) != 1
+            or receipts[0].read_bytes() != frozen
+            or any(paths["receipts"].iterdir())
+        ):
+            raise RuntimeError("installed demo changed the committed receipt during export")
         trust = evaluation / "receipt.trust"
         trust_hex = artifact_root.joinpath(
             "share", "kapsel", "kap0038-trust.hex"
