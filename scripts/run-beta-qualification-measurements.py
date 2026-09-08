@@ -7,14 +7,12 @@ import argparse
 import json
 import math
 import os
-from pathlib import Path
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Any
 
-IMAGE = (
-    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-)
+IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SAMPLES = 30
 WARMUPS = 5
 
@@ -127,7 +125,9 @@ def aggregate(raw: dict[str, Any]) -> dict[str, Any]:
     for name in process:
         cpu_limit = 2_000_000 if name in {"complete_success", "complete_recovery"} else 1_000_000
         require(measurements[name]["cpu_p95_us"] <= cpu_limit, f"{name} CPU budget failed")
-        require(measurements[name]["rss_max_bytes"] <= 128 * 1024 * 1024, f"{name} RSS budget failed")
+        require(
+            measurements[name]["rss_max_bytes"] <= 128 * 1024 * 1024, f"{name} RSS budget failed"
+        )
     require(
         measurements["bounded_unknown_observation"]["rss_max_bytes"] <= 128 * 1024 * 1024,
         "bounded unknown RSS budget failed",
@@ -174,7 +174,10 @@ def main() -> None:
     require(registry.is_dir(), "host Cargo registry is unavailable")
     require(
         subprocess.run(["git", "diff", "--quiet", "--exit-code"], cwd=repo).returncode == 0
-        and subprocess.run(["git", "diff", "--cached", "--quiet", "--exit-code"], cwd=repo).returncode == 0,
+        and subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--exit-code"], cwd=repo
+        ).returncode
+        == 0,
         "measurement requires a clean source tree",
     )
     with tempfile.TemporaryDirectory(prefix="beta-qualification-output-") as output_directory:

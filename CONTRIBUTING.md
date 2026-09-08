@@ -110,6 +110,22 @@ Use the narrowest owning gate first when the full deterministic gate is impracti
 Documentation-only changes still require formatting, local link and anchor checks, focused
 terminology checks, and `git diff --check`.
 
+### Python tooling
+
+Python scripts follow the engineering rules above. Rust owns product lifecycle and recovery
+semantics; Python owns external orchestration and independent checks. Prefer the standard library.
+Use annotations at meaningful boundaries and preserve exception causes when adding context. Bound
+subprocess output and execution time, and clean up only resources owned by the invocation.
+
+[`ruff.toml`](ruff.toml) owns Python style: Python 3.11-compatible syntax, four-space indentation,
+double quotes, LF endings, and a 100-column target. Unlike Rust's physical-line limit, the Python
+target allows exact fixture strings and indivisible URLs to remain intact. Lint checks basic errors,
+unused names, import ordering, and likely bugs, not general code quality or safety.
+
+Formatting does not apply lint fixes. Review fixes explicitly, avoid unsafe fixes, and use only
+narrow, explained suppressions. [Build and test](docs/BUILD.md#deterministic-gate-and-formatting)
+owns setup and commands.
+
 ## Commits and review
 
 Use a plain domain-oriented, imperative commit subject:

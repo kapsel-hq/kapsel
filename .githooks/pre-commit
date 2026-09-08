@@ -15,6 +15,7 @@ if ! git diff --quiet -- || test -n "$(git ls-files --others --exclude-standard)
 fi
 
 ./scripts/format.sh --check
+ruff check --no-cache --config ruff.toml .
 ./scripts/check-rust-width.sh
 cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --offline --locked -p kapsel-installer

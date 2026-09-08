@@ -26,6 +26,8 @@ jobs:
           python-version: "3.11"
       - name: Install Markdown formatter
         run: npm install --global prettier@3.6.2
+      - name: Install Python formatter and linter
+        run: python -m pip install ruff==0.16.6
       - uses: Swatinem/rust-cache@v2
       - name: Run static repository checks
         run: ./scripts/ci-local.sh static

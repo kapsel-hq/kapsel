@@ -1,0 +1,17 @@
+required-version = "==0.16.6"
+target-version = "py311"
+line-length = 100
+indent-width = 4
+include = ["*.py"]
+extend-exclude = ["target", "fuzz/target", "dist"]
+preview = false
+
+[lint]
+# Basic errors, unused names, import ordering, and likely bugs. Not a style encyclopedia.
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = false

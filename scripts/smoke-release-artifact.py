@@ -30,12 +30,8 @@ OLD_IMAGE = (
 )
 OPERATION = "artifact-op-1"
 TARGET = "x86_64-unknown-linux-gnu"
-BUILDER_IMAGE = (
-    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-)
-SMOKE_IMAGE = (
-    "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
-)
+BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
+SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 NON_CLAIMS = "developer-beta;not-production;no-public-rust-api;no-other-targets"
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
@@ -158,9 +154,7 @@ def validate_sbom(
     if len(archive_packages) != 1 or len(root_packages) != 1:
         raise RuntimeError("release SBOM root package identities changed")
     cargo_packages = [
-        package
-        for package in packages
-        if package.get("SPDXID") != "SPDXRef-Package-kapsel-archive"
+        package for package in packages if package.get("SPDXID") != "SPDXRef-Package-kapsel-archive"
     ]
     relationships = sbom.get("relationships")
     if not isinstance(relationships, list):
@@ -795,8 +789,7 @@ def exercise_demo_binary(
             raise RuntimeError("installed demo exported a receipt before restart")
         with sqlite3.connect(evaluation / "journal.sqlite3") as connection:
             rows = connection.execute(
-                "SELECT receipt_bytes FROM kubernetes_image_operations "
-                "WHERE state = 'finalized'"
+                "SELECT receipt_bytes FROM kubernetes_image_operations WHERE state = 'finalized'"
             ).fetchall()
         if len(rows) != 1 or not isinstance(rows[0][0], bytes):
             raise RuntimeError("installed demo did not commit one frozen receipt")
@@ -838,9 +831,9 @@ def exercise_demo_binary(
         ):
             raise RuntimeError("installed demo changed the committed receipt during export")
         trust = evaluation / "receipt.trust"
-        trust_hex = artifact_root.joinpath(
-            "share", "kapsel", "kap0038-trust.hex"
-        ).read_text().strip()
+        trust_hex = (
+            artifact_root.joinpath("share", "kapsel", "kap0038-trust.hex").read_text().strip()
+        )
         write_private(trust, bytes.fromhex(trust_hex))
         inspect_receipt(binary, receipts[0], trust)
     finally:

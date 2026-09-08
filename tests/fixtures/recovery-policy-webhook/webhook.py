@@ -88,9 +88,7 @@ class AdmissionHandler(Handler):
                 if state is not None:
                     state["effects"].append(request["uid"])
             if state is not None and state["hold"]:
-                released = CONDITION.wait_for(
-                    lambda: state["released"] >= ordinal, timeout=20
-                )
+                released = CONDITION.wait_for(lambda: state["released"] >= ordinal, timeout=20)
                 if not released:
                     response["allowed"] = False
                     response["status"] = {"message": "fixture barrier deadline exceeded"}
@@ -101,11 +99,13 @@ class AdmissionHandler(Handler):
                 patch = [{"op": "replace", "path": "/spec/replicas", "value": -1}]
                 response["patchType"] = "JSONPatch"
                 response["patch"] = base64.b64encode(json.dumps(patch).encode()).decode()
-        self.respond({
-            "apiVersion": "admission.k8s.io/v1",
-            "kind": "AdmissionReview",
-            "response": response,
-        })
+        self.respond(
+            {
+                "apiVersion": "admission.k8s.io/v1",
+                "kind": "AdmissionReview",
+                "response": response,
+            }
+        )
 
 
 if __name__ == "__main__":

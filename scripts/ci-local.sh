@@ -2,8 +2,14 @@
 set -eu
 
 run_static_checks() {
-  echo "==> Rust and Markdown format"
+  echo "==> Markdown, Rust, and Python format"
   ./scripts/format.sh --check
+
+  printf '%s\n' "==> Python lint"
+  ruff check --no-cache --config ruff.toml .
+
+  printf '%s\n' "==> Formatting pipeline regressions"
+  python3 scripts/test-format.py
 
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh

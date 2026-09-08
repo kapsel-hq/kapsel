@@ -13,7 +13,6 @@ import json
 import os
 import pathlib
 import re
-import stat
 import subprocess
 import sys
 import tarfile
@@ -24,12 +23,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ASSEMBLER = ROOT / "scripts" / "assemble-release-artifact.py"
 TARGET = "x86_64-unknown-linux-gnu"
-BUILDER_IMAGE = (
-    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-)
-SMOKE_IMAGE = (
-    "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
-)
+BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
+SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 RELEASE_ARCHIVE: pathlib.Path | None = None
 
 
@@ -161,8 +156,7 @@ def synthetic_archive(
                 information.mtime = 0
                 information.mode = (
                     0o755
-                    if is_directory
-                    or name.endswith(("/kapsel", "/kapsel-demo-harness", ".sh"))
+                    if is_directory or name.endswith(("/kapsel", "/kapsel-demo-harness", ".sh"))
                     else 0o644
                 )
                 if mutate == "unsafe-mode" and name.endswith("/CHANGELOG.md"):
@@ -290,9 +284,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             checksum_bytes = SMOKE.read_bounded_regular(checksum, 1024)
             sbom_bytes = SMOKE.read_bounded_regular(sbom, 2 * 1024 * 1024)
             manifest_bytes = SMOKE.read_bounded_regular(manifest, 1024)
-            self.assertEqual(
-                checksum_bytes.decode(), f"{sha256(archive)}  {archive.name}\n"
-            )
+            self.assertEqual(checksum_bytes.decode(), f"{sha256(archive)}  {archive.name}\n")
             expected_manifest = "".join(
                 f"{sha256(path)}  {path.name}\n"
                 for path in sorted([archive, checksum, sbom], key=lambda path: path.name)
@@ -461,12 +453,14 @@ class ReleaseArtifactTests(unittest.TestCase):
                 sbom_document["creationInfo"]["creators"],
                 ["Tool: kapsel-release-sbom/1"],
             )
-            self.assertIn("SPDXRef-Package-kapsel-archive", {
-                package["SPDXID"] for package in sbom_document["packages"]
-            })
-            self.assertIn("SPDXRef-Package-kapsel-source", {
-                package["SPDXID"] for package in sbom_document["packages"]
-            })
+            self.assertIn(
+                "SPDXRef-Package-kapsel-archive",
+                {package["SPDXID"] for package in sbom_document["packages"]},
+            )
+            self.assertIn(
+                "SPDXRef-Package-kapsel-source",
+                {package["SPDXID"] for package in sbom_document["packages"]},
+            )
 
             subprocess.run(
                 [

@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -28,48 +28,458 @@ BUDGET_FIELDS = (
     "failure_ceiling",
 )
 EXPECTED_BUDGETS = {
-    "bounded-unknown-wall": ("wall time", "bounded unknown observation", "maximum", 35000, "less_than_or_equal", "milliseconds", 0, 1, 0),
-    "complete-recovery-cpu": ("CPU time", "complete recovery", "p95", 2000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "complete-success-cpu": ("CPU time", "complete success", "p95", 2000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "conditional-patch-wall": ("wall time", "conditional patch", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "demo-executable-size": ("file size", "demonstration executable", "maximum", 33554432, "less_than_or_equal", "bytes", 0, 1, 0),
-    "grant-provision-cpu": ("CPU time", "grant provision", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "grant-provision-wall": ("wall time", "grant provision", "p95", 500000, "less_than_or_equal", "microseconds", 5, 30, 0),
+    "bounded-unknown-wall": (
+        "wall time",
+        "bounded unknown observation",
+        "maximum",
+        35000,
+        "less_than_or_equal",
+        "milliseconds",
+        0,
+        1,
+        0,
+    ),
+    "complete-recovery-cpu": (
+        "CPU time",
+        "complete recovery",
+        "p95",
+        2000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "complete-success-cpu": (
+        "CPU time",
+        "complete success",
+        "p95",
+        2000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "conditional-patch-wall": (
+        "wall time",
+        "conditional patch",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "demo-executable-size": (
+        "file size",
+        "demonstration executable",
+        "maximum",
+        33554432,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "grant-provision-cpu": (
+        "CPU time",
+        "grant provision",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "grant-provision-wall": (
+        "wall time",
+        "grant provision",
+        "p95",
+        500000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
     "grant-size": ("wire size", "grant", "maximum", 4096, "less_than_or_equal", "bytes", 0, 1, 0),
-    "immutable-image-size": ("input size", "immutable image", "maximum", 512, "less_than_or_equal", "bytes", 0, 1, 0),
-    "journal-average-growth": ("average growth", "journal operation", "maximum", 8192, "less_than_or_equal", "bytes", 0, 10000, 0),
-    "journal-fresh-open-cpu": ("CPU time", "fresh journal open", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "journal-fresh-open-wall": ("wall time", "fresh journal open", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "journal-marked-open-cpu": ("CPU time", "marked journal open", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "journal-marked-open-wall": ("wall time", "marked journal open", "p95", 500000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "journal-size": ("file size", "journal at capacity", "maximum", 67108864, "less_than_or_equal", "bytes", 0, 1, 0),
-    "kubernetes-identity-size": ("input size", "Kubernetes identity fact", "maximum", 128, "less_than_or_equal", "bytes", 0, 1, 0),
-    "kubernetes-response-size": ("input size", "Kubernetes response body", "maximum", 2097152, "less_than_or_equal", "bytes", 0, 3, 0),
-    "live-cleanup-wall": ("wall time", "live owned cleanup", "maximum", 15000, "less_than_or_equal", "milliseconds", 0, 1, 0),
-    "live-failed-wall": ("wall time", "live failed scenario", "maximum", 60000, "less_than_or_equal", "milliseconds", 0, 1, 0),
-    "live-healthy-wall": ("wall time", "live healthy scenario", "maximum", 60000, "less_than_or_equal", "milliseconds", 0, 1, 0),
-    "live-unknown-wall": ("wall time", "live unknown scenario", "maximum", 60000, "less_than_or_equal", "milliseconds", 0, 1, 0),
-    "machine-output-size": ("output size", "machine output", "maximum", 65536, "less_than_or_equal", "bytes", 0, 1, 0),
-    "mcp-frame-size": ("input size", "MCP frame", "maximum", 16384, "less_than_or_equal", "bytes", 0, 1, 0),
-    "mcp-response-size": ("output size", "MCP response", "maximum", 8192, "less_than_or_equal", "bytes", 0, 1, 0),
-    "offline-inspection-cpu": ("CPU time", "offline inspection", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "offline-inspection-wall": ("wall time", "offline inspection", "p95", 500000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "ordinary-executable-size": ("file size", "ordinary executable", "maximum", 33554432, "less_than_or_equal", "bytes", 0, 1, 0),
-    "persisted-value-size": ("value size", "persisted text or blob", "maximum", 16384, "less_than_or_equal", "bytes", 0, 1, 0),
-    "process-rss": ("peak RSS", "ordinary measured process", "maximum", 134217728, "less_than_or_equal", "bytes", 0, 211, 0),
-    "process-startup-cpu": ("CPU time", "process startup", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "process-startup-wall": ("wall time", "process startup", "maximum", 500000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "receipt-finalize-wall": ("wall time", "receipt finalization", "p95", 500000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "receipt-size": ("wire size", "receipt", "maximum", 16384, "less_than_or_equal", "bytes", 0, 1, 0),
-    "reconcile-apply-started-wall": ("wall time", "apply-started reconciliation", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "request-json-size": ("input size", "request JSON", "maximum", 16384, "less_than_or_equal", "bytes", 0, 1, 0),
-    "restart-recovery-wall": ("wall time", "restart recovery", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "rollback-journal-size": ("artifact size", "rollback journal", "maximum", 68157440, "less_than_or_equal", "bytes", 0, 1, 0),
-    "security-findings": ("finding count", "rejected security findings", "maximum", 0, "less_than_or_equal", "count", 0, 2, 0),
-    "sqlite-value-or-row-size": ("allocation limit", "SQLite value or row", "maximum", 65536, "less_than_or_equal", "bytes", 0, 1, 0),
-    "statement-size": ("wire size", "statement", "maximum", 8192, "less_than_or_equal", "bytes", 0, 1, 0),
-    "submit-authorized-wall": ("wall time", "authorized submission", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
-    "target-read-wall": ("wall time", "target read", "p95", 1000000, "less_than_or_equal", "microseconds", 5, 30, 0),
+    "immutable-image-size": (
+        "input size",
+        "immutable image",
+        "maximum",
+        512,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "journal-average-growth": (
+        "average growth",
+        "journal operation",
+        "maximum",
+        8192,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        10000,
+        0,
+    ),
+    "journal-fresh-open-cpu": (
+        "CPU time",
+        "fresh journal open",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "journal-fresh-open-wall": (
+        "wall time",
+        "fresh journal open",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "journal-marked-open-cpu": (
+        "CPU time",
+        "marked journal open",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "journal-marked-open-wall": (
+        "wall time",
+        "marked journal open",
+        "p95",
+        500000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "journal-size": (
+        "file size",
+        "journal at capacity",
+        "maximum",
+        67108864,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "kubernetes-identity-size": (
+        "input size",
+        "Kubernetes identity fact",
+        "maximum",
+        128,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "kubernetes-response-size": (
+        "input size",
+        "Kubernetes response body",
+        "maximum",
+        2097152,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        3,
+        0,
+    ),
+    "live-cleanup-wall": (
+        "wall time",
+        "live owned cleanup",
+        "maximum",
+        15000,
+        "less_than_or_equal",
+        "milliseconds",
+        0,
+        1,
+        0,
+    ),
+    "live-failed-wall": (
+        "wall time",
+        "live failed scenario",
+        "maximum",
+        60000,
+        "less_than_or_equal",
+        "milliseconds",
+        0,
+        1,
+        0,
+    ),
+    "live-healthy-wall": (
+        "wall time",
+        "live healthy scenario",
+        "maximum",
+        60000,
+        "less_than_or_equal",
+        "milliseconds",
+        0,
+        1,
+        0,
+    ),
+    "live-unknown-wall": (
+        "wall time",
+        "live unknown scenario",
+        "maximum",
+        60000,
+        "less_than_or_equal",
+        "milliseconds",
+        0,
+        1,
+        0,
+    ),
+    "machine-output-size": (
+        "output size",
+        "machine output",
+        "maximum",
+        65536,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "mcp-frame-size": (
+        "input size",
+        "MCP frame",
+        "maximum",
+        16384,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "mcp-response-size": (
+        "output size",
+        "MCP response",
+        "maximum",
+        8192,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "offline-inspection-cpu": (
+        "CPU time",
+        "offline inspection",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "offline-inspection-wall": (
+        "wall time",
+        "offline inspection",
+        "p95",
+        500000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "ordinary-executable-size": (
+        "file size",
+        "ordinary executable",
+        "maximum",
+        33554432,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "persisted-value-size": (
+        "value size",
+        "persisted text or blob",
+        "maximum",
+        16384,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "process-rss": (
+        "peak RSS",
+        "ordinary measured process",
+        "maximum",
+        134217728,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        211,
+        0,
+    ),
+    "process-startup-cpu": (
+        "CPU time",
+        "process startup",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "process-startup-wall": (
+        "wall time",
+        "process startup",
+        "maximum",
+        500000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "receipt-finalize-wall": (
+        "wall time",
+        "receipt finalization",
+        "p95",
+        500000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "receipt-size": (
+        "wire size",
+        "receipt",
+        "maximum",
+        16384,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "reconcile-apply-started-wall": (
+        "wall time",
+        "apply-started reconciliation",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "request-json-size": (
+        "input size",
+        "request JSON",
+        "maximum",
+        16384,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "restart-recovery-wall": (
+        "wall time",
+        "restart recovery",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "rollback-journal-size": (
+        "artifact size",
+        "rollback journal",
+        "maximum",
+        68157440,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "security-findings": (
+        "finding count",
+        "rejected security findings",
+        "maximum",
+        0,
+        "less_than_or_equal",
+        "count",
+        0,
+        2,
+        0,
+    ),
+    "sqlite-value-or-row-size": (
+        "allocation limit",
+        "SQLite value or row",
+        "maximum",
+        65536,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "statement-size": (
+        "wire size",
+        "statement",
+        "maximum",
+        8192,
+        "less_than_or_equal",
+        "bytes",
+        0,
+        1,
+        0,
+    ),
+    "submit-authorized-wall": (
+        "wall time",
+        "authorized submission",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
+    "target-read-wall": (
+        "wall time",
+        "target read",
+        "p95",
+        1000000,
+        "less_than_or_equal",
+        "microseconds",
+        5,
+        30,
+        0,
+    ),
     "trust-size": ("wire size", "trust", "maximum", 1024, "less_than_or_equal", "bytes", 0, 1, 0),
 }
 EXPECTED_LANES = {
@@ -230,7 +640,9 @@ PRIVACY_ROOT_PREFIXES = (
     "tests/",
     "vectors/",
 )
-NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
+NODE_IMAGE = (
+    "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
+)
 MEASUREMENT_HARNESS_PATHS = [
     "scripts/measure-beta-qualification.py",
     "scripts/run-beta-qualification-measurements.py",
@@ -277,7 +689,9 @@ def unique(items: list[dict[str, Any]], context: str) -> set[str]:
 
 def git_output(*arguments: str) -> bytes:
     try:
-        return subprocess.check_output(["git", *arguments], cwd=Path(__file__).resolve().parent.parent)
+        return subprocess.check_output(
+            ["git", *arguments], cwd=Path(__file__).resolve().parent.parent
+        )
     except subprocess.CalledProcessError as error:
         fail(f"baseline Git identity is unavailable: {error}")
 
@@ -304,11 +718,7 @@ def selected_baseline_source_paths(paths: list[str]) -> list[str]:
         "scripts/test-simulation.sh",
     }
     source_prefixes = ("crates/kapsel-authority/", "src/", "vectors/")
-    return [
-        path
-        for path in paths
-        if path in source_files or path.startswith(source_prefixes)
-    ]
+    return [path for path in paths if path in source_files or path.startswith(source_prefixes)]
 
 
 def baseline_source_paths(commit: str) -> list[str]:
@@ -578,9 +988,14 @@ def validate(path: Path) -> None:
                 fail("lane result sample count differs from the frozen contract")
             if result["failure_count"] != 0:
                 fail("lane result exceeded its failure ceiling")
-        if not isinstance(result["bounded_output_sha256"], str) or HEX64.fullmatch(result["bounded_output_sha256"]) is None:
+        if (
+            not isinstance(result["bounded_output_sha256"], str)
+            or HEX64.fullmatch(result["bounded_output_sha256"]) is None
+        ):
             fail("result output is not lowercase SHA-256")
-        if not isinstance(result["measurements"], list) or not isinstance(result["assertions"], list):
+        if not isinstance(result["measurements"], list) or not isinstance(
+            result["assertions"], list
+        ):
             fail("result measurements and assertions must be arrays")
         unique(result["measurements"], "measurements")
         for measurement in result["measurements"]:
@@ -612,19 +1027,33 @@ def validate(path: Path) -> None:
             text(assertion["detail"], "assertion.detail")
     if seen_budgets != budget_ids or seen_lanes != lane_ids:
         fail("manifest lacks exactly one result for every budget and lane")
-    result_by_subject = {
-        (result["kind"], result["subject_id"]): result for result in results
-    }
+    result_by_subject = {(result["kind"], result["subject_id"]): result for result in results}
 
     replay = document["replay"]
     exact(
         replay,
-        {"fuzz_seed", "fuzz_runs", "fuzz_corpus_sha256", "simulation_seed", "simulation_cases", "simulation_shards"},
+        {
+            "fuzz_seed",
+            "fuzz_runs",
+            "fuzz_corpus_sha256",
+            "simulation_seed",
+            "simulation_cases",
+            "simulation_shards",
+        },
         "replay",
     )
-    for field in ("fuzz_seed", "fuzz_runs", "simulation_seed", "simulation_cases", "simulation_shards"):
+    for field in (
+        "fuzz_seed",
+        "fuzz_runs",
+        "simulation_seed",
+        "simulation_cases",
+        "simulation_shards",
+    ):
         integer(replay[field], f"replay.{field}")
-    if not isinstance(replay["fuzz_corpus_sha256"], str) or HEX64.fullmatch(replay["fuzz_corpus_sha256"]) is None:
+    if (
+        not isinstance(replay["fuzz_corpus_sha256"], str)
+        or HEX64.fullmatch(replay["fuzz_corpus_sha256"]) is None
+    ):
         fail("replay corpus digest is invalid")
     for field, expected in EXPECTED_REPLAY.items():
         if replay[field] != expected:
@@ -656,7 +1085,9 @@ def validate(path: Path) -> None:
         fail("privacy result input set is incomplete")
     if privacy_result["input_sha256"]["checked-source"] != privacy_digest:
         fail("privacy reviewed-source digest does not match Git")
-    if privacy_result["input_sha256"]["privacy-check"] != canonical_git_digest(commit, PRIVACY_CHECK_PATHS):
+    if privacy_result["input_sha256"]["privacy-check"] != canonical_git_digest(
+        commit, PRIVACY_CHECK_PATHS
+    ):
         fail("privacy checker digest does not match Git")
     if privacy_result["input_sha256"]["source"] != baseline["source_sha256"]:
         fail("privacy release-source digest differs from the baseline")
@@ -730,15 +1161,29 @@ def validate(path: Path) -> None:
         fail("measurement input set is incomplete")
     if measurement_result["input_sha256"]["source"] != source_digest:
         fail("measurement source input differs from the baseline")
-    if measurement_result["input_sha256"]["measurement-harness"] != canonical_git_digest(commit, MEASUREMENT_HARNESS_PATHS):
+    if measurement_result["input_sha256"]["measurement-harness"] != canonical_git_digest(
+        commit, MEASUREMENT_HARNESS_PATHS
+    ):
         fail("measurement harness digest does not match Git")
-    if measurement_result["input_sha256"].get("ordinary-executable") != baseline["ordinary_executable_sha256"]:
+    if (
+        measurement_result["input_sha256"].get("ordinary-executable")
+        != baseline["ordinary_executable_sha256"]
+    ):
         fail("ordinary executable digest is disconnected from measurement evidence")
-    if measurement_result["input_sha256"].get("demo-executable") != baseline["demo_executable_sha256"]:
+    if (
+        measurement_result["input_sha256"].get("demo-executable")
+        != baseline["demo_executable_sha256"]
+    ):
         fail("demonstration executable digest is disconnected from measurement evidence")
-    if result_by_subject[("budget", "ordinary-executable-size")]["measurements"][0]["value"] != baseline["ordinary_executable_bytes"]:
+    if (
+        result_by_subject[("budget", "ordinary-executable-size")]["measurements"][0]["value"]
+        != baseline["ordinary_executable_bytes"]
+    ):
         fail("ordinary executable size differs from the baseline")
-    if result_by_subject[("budget", "demo-executable-size")]["measurements"][0]["value"] != baseline["demo_executable_bytes"]:
+    if (
+        result_by_subject[("budget", "demo-executable-size")]["measurements"][0]["value"]
+        != baseline["demo_executable_bytes"]
+    ):
         fail("demonstration executable size differs from the baseline")
 
     live_result = result_by_subject[("lane", "live-kind")]
@@ -755,7 +1200,9 @@ def validate(path: Path) -> None:
     if set(live_result["input_sha256"]) != {"kind-harness", "node-image", "source"}:
         fail("live input set is incomplete")
     harness_digest = live_result["input_sha256"]["kind-harness"]
-    expected_harness = hashlib.sha256(git_output("show", f"{commit}:scripts/test-kind-effect-gateway.sh")).hexdigest()
+    expected_harness = hashlib.sha256(
+        git_output("show", f"{commit}:scripts/test-kind-effect-gateway.sh")
+    ).hexdigest()
     if harness_digest != expected_harness or harness_digest == live_result["bounded_output_sha256"]:
         fail("live harness digest does not match Git")
     expected_node = hashlib.sha256(NODE_IMAGE.encode()).hexdigest()

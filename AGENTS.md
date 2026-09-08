@@ -12,7 +12,9 @@ technical claims.
    [Contributing](CONTRIBUTING.md), including its
    [complexity review](CONTRIBUTING.md#complexity-review).
 4. Read the direct contract, implementation, tests, and vectors for the surface you will change.
-5. Run `./scripts/format.sh`; it formats Rust and Markdown and expands Markdown tables.
+5. Run `./scripts/format.sh`; it formats Markdown, Rust, then Python and expands Markdown tables.
+   Python uses four-space indentation and the pinned rules in `ruff.toml`. Formatting does not fix
+   lint findings; follow [Python tooling](CONTRIBUTING.md#python-tooling).
 6. Choose the narrowest useful gate from [`docs/BUILD.md`](docs/BUILD.md).
 
 ## Find technical truth

@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import runpy
@@ -15,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,7 +22,9 @@ VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-basel
 EXPECTED_BUDGETS = VALIDATOR["EXPECTED_BUDGETS"]
 BUDGET_FIELDS = VALIDATOR["BUDGET_FIELDS"]
 BUILDER_IMAGE_DIGEST = "82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
+NODE_IMAGE = (
+    "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
+)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -62,9 +64,7 @@ SOURCE_PREFIXES = ("crates/kapsel-authority/", "src/", "vectors/")
 
 def selected_source_paths(paths: list[str]) -> list[str]:
     return sorted(
-        path
-        for path in paths
-        if path in SOURCE_FILES or path.startswith(SOURCE_PREFIXES)
+        path for path in paths if path in SOURCE_FILES or path.startswith(SOURCE_PREFIXES)
     )
 
 
@@ -130,8 +130,14 @@ def version(command: list[str], cwd: Path = ROOT) -> str:
 
 def rust_commit(command: list[str]) -> str:
     output = version(command)
-    commit = next(line.split(":", 1)[1].strip() for line in output.splitlines() if line.startswith("commit-hash:"))
-    release = next(line.split(":", 1)[1].strip() for line in output.splitlines() if line.startswith("release:"))
+    commit = next(
+        line.split(":", 1)[1].strip()
+        for line in output.splitlines()
+        if line.startswith("commit-hash:")
+    )
+    release = next(
+        line.split(":", 1)[1].strip() for line in output.splitlines() if line.startswith("release:")
+    )
     return f"rustc {release} commit {commit}"
 
 
@@ -143,7 +149,9 @@ def parse_kind_version(output: str) -> str:
 
 
 def tools(security: dict[str, Any]) -> list[dict[str, Any]]:
-    docker = version(["docker", "version", "--format", "client {{.Client.Version}} server {{.Server.Version}}"])
+    docker = version(
+        ["docker", "version", "--format", "client {{.Client.Version}} server {{.Server.Version}}"]
+    )
     kind = parse_kind_version(version(["kind", "version"]))
     kubectl_document = json.loads(version(["kubectl", "version", "--client", "-o", "json"]))
     kubectl = kubectl_document["clientVersion"]["gitVersion"].removeprefix("v")
@@ -156,19 +164,43 @@ def tools(security: dict[str, Any]) -> list[dict[str, Any]]:
         {"id": "docker", "environment_id": "host", "version": docker},
         {"id": "kind", "environment_id": "host", "version": kind},
         {"id": "kubectl", "environment_id": "host", "version": kubectl},
-        {"id": "cargo-fuzz", "environment_id": "host", "version": version(["cargo", "fuzz", "--version"], ROOT / "fuzz")},
-        {"id": "nightly-rust", "environment_id": "host", "version": rust_commit(["rustup", "run", "nightly-2026-07-03", "rustc", "-Vv"])},
-        {"id": "cargo-audit", "environment_id": "host", "version": audit_tool["version"].removeprefix("cargo-audit "), "database_utc": audit_tool["database_utc"]},
-        {"id": "trivy", "environment_id": "host", "version": f"{trivy_tool['version']} database version {trivy_tool['database_version']}", "database_utc": trivy_tool["database_utc"]},
-        {"id": "rust-container", "environment_id": "container", "version": "rustc and cargo 1.98.0"},
+        {
+            "id": "cargo-fuzz",
+            "environment_id": "host",
+            "version": version(["cargo", "fuzz", "--version"], ROOT / "fuzz"),
+        },
+        {
+            "id": "nightly-rust",
+            "environment_id": "host",
+            "version": rust_commit(["rustup", "run", "nightly-2026-07-03", "rustc", "-Vv"]),
+        },
+        {
+            "id": "cargo-audit",
+            "environment_id": "host",
+            "version": audit_tool["version"].removeprefix("cargo-audit "),
+            "database_utc": audit_tool["database_utc"],
+        },
+        {
+            "id": "trivy",
+            "environment_id": "host",
+            "version": f"{trivy_tool['version']} database version {trivy_tool['database_version']}",
+            "database_utc": trivy_tool["database_utc"],
+        },
+        {
+            "id": "rust-container",
+            "environment_id": "container",
+            "version": "rustc and cargo 1.98.0",
+        },
         {"id": "python-container", "environment_id": "container", "version": "Python 3.11.2"},
-        {"id": "builder-image", "environment_id": "container", "version": f"rust image digest {BUILDER_IMAGE_DIGEST}"},
+        {
+            "id": "builder-image",
+            "environment_id": "container",
+            "version": f"rust image digest {BUILDER_IMAGE_DIGEST}",
+        },
     ]
 
 
-def producer(
-    lane: dict[str, Any], environment_id: str, inputs: dict[str, str]
-) -> dict[str, Any]:
+def producer(lane: dict[str, Any], environment_id: str, inputs: dict[str, str]) -> dict[str, Any]:
     return {
         "command": lane["command"],
         "duration_ms": lane["duration_ms"],
@@ -201,7 +233,10 @@ def budget_result(
         "measurements": [measurement("budget-value", value, values["statistic"], values["unit"])],
         "assertions": [
             {"id": id_, "passed": True, "detail": detail}
-            for id_, detail in (assertions or [("within-budget", "measured value is within the frozen stopping rule")])
+            for id_, detail in (
+                assertions
+                or [("within-budget", "measured value is within the frozen stopping rule")]
+            )
         ],
     }
 
@@ -221,9 +256,7 @@ def lane_result(
         "sample_count": sample_count,
         "failure_count": 0,
         "measurements": [],
-        "assertions": [
-            {"id": id_, "passed": True, "detail": detail} for id_, detail in assertions
-        ],
+        "assertions": [{"id": id_, "passed": True, "detail": detail} for id_, detail in assertions],
     }
 
 
@@ -281,7 +314,12 @@ def main() -> None:
         measurement_path = evidence / "measurement.json"
         measurement_lane = run_lane(
             "x86-64 measurement",
-            ["python3", "scripts/run-beta-qualification-measurements.py", "--output", "BOUNDED_OUTPUT"],
+            [
+                "python3",
+                "scripts/run-beta-qualification-measurements.py",
+                "--output",
+                "BOUNDED_OUTPUT",
+            ],
             ROOT,
             1800,
             measurement_path,
@@ -289,7 +327,12 @@ def main() -> None:
         privacy_path = evidence / "privacy.json"
         privacy = run_lane(
             "privacy and overclaim review",
-            ["python3", "scripts/check-beta-qualification-privacy.py", "--output", "BOUNDED_OUTPUT"],
+            [
+                "python3",
+                "scripts/check-beta-qualification-privacy.py",
+                "--output",
+                "BOUNDED_OUTPUT",
+            ],
             ROOT,
             120,
             privacy_path,
@@ -326,9 +369,7 @@ def main() -> None:
     privacy_inputs = {
         **source_input,
         "checked-source": privacy_document["checked_source_sha256"],
-        "privacy-check": digest_paths(
-            [ROOT / "scripts/check-beta-qualification-privacy.py"]
-        ),
+        "privacy-check": digest_paths([ROOT / "scripts/check-beta-qualification-privacy.py"]),
     }
     security_inputs = {
         **source_input,
@@ -350,7 +391,9 @@ def main() -> None:
         "submit-authorized-wall": measured["measurements"]["submit_authorized"]["wall_p95_us"],
         "target-read-wall": measured["measurements"]["target_read"]["wall_p95_us"],
         "conditional-patch-wall": measured["measurements"]["conditional_patch"]["wall_p95_us"],
-        "reconcile-apply-started-wall": measured["measurements"]["reconcile_apply_started"]["wall_p95_us"],
+        "reconcile-apply-started-wall": measured["measurements"]["reconcile_apply_started"][
+            "wall_p95_us"
+        ],
         "receipt-finalize-wall": measured["measurements"]["receipt_finalize"]["wall_p95_us"],
         "restart-recovery-wall": measured["measurements"]["restart_recovery"]["wall_p95_us"],
         "process-startup-cpu": measured["measurements"]["process_startup"]["cpu_p95_us"],
@@ -365,7 +408,10 @@ def main() -> None:
             for item in measured["measurements"].values()
             if "rss_max_bytes" in item
         ),
-        "bounded-unknown-wall": (measured["measurements"]["bounded_unknown_observation"]["wall_max_us"] + 999) // 1000,
+        "bounded-unknown-wall": (
+            measured["measurements"]["bounded_unknown_observation"]["wall_max_us"] + 999
+        )
+        // 1000,
         "journal-size": measured["growth"]["final_bytes"],
         "journal-average-growth": measured["growth"]["average_growth_bytes"],
         "persisted-value-size": measured["growth"]["persisted_value_bytes_max"],
@@ -396,10 +442,21 @@ def main() -> None:
         }
     )
     measurement_subjects = {
-        subject for subject in values if subject not in {
-            "request-json-size", "mcp-frame-size", "mcp-response-size", "machine-output-size",
-            "kubernetes-identity-size", "immutable-image-size", "kubernetes-response-size",
-            "security-findings", "live-healthy-wall", "live-failed-wall", "live-unknown-wall",
+        subject
+        for subject in values
+        if subject
+        not in {
+            "request-json-size",
+            "mcp-frame-size",
+            "mcp-response-size",
+            "machine-output-size",
+            "kubernetes-identity-size",
+            "immutable-image-size",
+            "kubernetes-response-size",
+            "security-findings",
+            "live-healthy-wall",
+            "live-failed-wall",
+            "live-unknown-wall",
             "live-cleanup-wall",
         }
     }
@@ -409,13 +466,21 @@ def main() -> None:
         assertions = None
         if subject.startswith("live-"):
             source = live_source
-            assertions = [("one-patch-and-owned-cleanup", "live scenario retained one patch opportunity and owned cleanup")]
+            assertions = [
+                (
+                    "one-patch-and-owned-cleanup",
+                    "live scenario retained one patch opportunity and owned cleanup",
+                )
+            ]
         elif subject == "security-findings":
             source = security_source
             assertions = [("no-rejected-finding", "RustSec and Trivy reported no rejected finding")]
         elif subject == "bounded-unknown-wall":
             assertions = [
-                ("deterministic-404-fixture", "deterministic fixture returned 404 for every receiver read"),
+                (
+                    "deterministic-404-fixture",
+                    "deterministic fixture returned 404 for every receiver read",
+                ),
                 ("receiver-result-unknown", "bounded observation returned UNKNOWN"),
                 ("thirty-read-schedule", "production schedule exhausted exactly 30 reads"),
                 ("zero-recovery-patches", "restart observation issued zero patches"),
@@ -430,21 +495,102 @@ def main() -> None:
     fuzz_source = producer(
         fuzz,
         "host",
-        {**source_input, "corpus": "86dda67e958b96cd56452de77199c2ebfac36400d6c971e84966a4b9fb3e9e8d"},
+        {
+            **source_input,
+            "corpus": "86dda67e958b96cd56452de77199c2ebfac36400d6c971e84966a4b9fb3e9e8d",
+        },
     )
     results.extend(
         [
-            lane_result("default", default_source, 1, [("default-gate", "default repository gate passed")]),
-            lane_result("hostile-input", default_source, 1, [("denial-matrix", "hostile input matrices passed")]),
-            lane_result("simulation", simulation_source, 10000, [("replayable", "all seeded cases preserved lifecycle invariants")]),
-            lane_result("fuzz", fuzz_source, 10000, [("no-crash", "all seeded fuzz runs completed without finding")]),
-            lane_result("subprocess", producer(subprocess_lane, "host", source_input), 9, [("historical-compatibility", "all historical states and process seams passed")]),
-            lane_result("demo", producer(demo, "host", source_input), 1, [("one-apply", "real-process recovery retained one patch")]),
-            lane_result("live-kind", live_source, 3, [("three-scenarios", "healthy failed and unknown scenarios passed"), ("one-patch-each", "every live scenario retained one patch opportunity"), ("owned-cleanup", "the live harness removed only owned resources")]),
-            lane_result("measurement", measurement_source, 391, [("all-budgets", "all declared resource stopping rules passed"), ("explicit-target-build", "both executables used the explicit x86-64 GNU/Linux target")]),
-            lane_result("cargo-audit", security_source, 1, [("zero-rustsec", "cargo-audit reported zero vulnerabilities and warnings")]),
-            lane_result("trivy", security_source, 1, [("zero-trivy", "exact clean-tree scan reported zero rejected vulnerabilities and secrets")]),
-            lane_result("privacy", producer(privacy, "host", privacy_inputs), 1, [("no-private-material", "root release scope contained no private paths"), ("no-credentials", "root release scope contained no credential material"), ("no-raw-evidence", "root release scope contained no private evidence artifact"), ("no-sla-overclaim", "root release scope contained no unsupported production or SLA claim")]),
+            lane_result(
+                "default", default_source, 1, [("default-gate", "default repository gate passed")]
+            ),
+            lane_result(
+                "hostile-input",
+                default_source,
+                1,
+                [("denial-matrix", "hostile input matrices passed")],
+            ),
+            lane_result(
+                "simulation",
+                simulation_source,
+                10000,
+                [("replayable", "all seeded cases preserved lifecycle invariants")],
+            ),
+            lane_result(
+                "fuzz",
+                fuzz_source,
+                10000,
+                [("no-crash", "all seeded fuzz runs completed without finding")],
+            ),
+            lane_result(
+                "subprocess",
+                producer(subprocess_lane, "host", source_input),
+                9,
+                [("historical-compatibility", "all historical states and process seams passed")],
+            ),
+            lane_result(
+                "demo",
+                producer(demo, "host", source_input),
+                1,
+                [("one-apply", "real-process recovery retained one patch")],
+            ),
+            lane_result(
+                "live-kind",
+                live_source,
+                3,
+                [
+                    ("three-scenarios", "healthy failed and unknown scenarios passed"),
+                    ("one-patch-each", "every live scenario retained one patch opportunity"),
+                    ("owned-cleanup", "the live harness removed only owned resources"),
+                ],
+            ),
+            lane_result(
+                "measurement",
+                measurement_source,
+                391,
+                [
+                    ("all-budgets", "all declared resource stopping rules passed"),
+                    (
+                        "explicit-target-build",
+                        "both executables used the explicit x86-64 GNU/Linux target",
+                    ),
+                ],
+            ),
+            lane_result(
+                "cargo-audit",
+                security_source,
+                1,
+                [("zero-rustsec", "cargo-audit reported zero vulnerabilities and warnings")],
+            ),
+            lane_result(
+                "trivy",
+                security_source,
+                1,
+                [
+                    (
+                        "zero-trivy",
+                        "exact clean-tree scan reported zero rejected vulnerabilities and secrets",
+                    )
+                ],
+            ),
+            lane_result(
+                "privacy",
+                producer(privacy, "host", privacy_inputs),
+                1,
+                [
+                    ("no-private-material", "root release scope contained no private paths"),
+                    ("no-credentials", "root release scope contained no credential material"),
+                    (
+                        "no-raw-evidence",
+                        "root release scope contained no private evidence artifact",
+                    ),
+                    (
+                        "no-sla-overclaim",
+                        "root release scope contained no unsupported production or SLA claim",
+                    ),
+                ],
+            ),
         ]
     )
 
@@ -519,25 +665,77 @@ def main() -> None:
             "findings": retained_security_findings(security),
             "exceptions": [],
             "reviews": [
-                {"id": "dependency", "status": "passed", "disposition": "cargo-audit 0.22.2 reported no vulnerability or warning"},
-                {"id": "filesystem-and-trust", "status": "passed", "disposition": "exact modes no-follow identity size trust and replacement tests passed"},
-                {"id": "privacy-and-disclosure", "status": "passed", "disposition": "closed root privacy command reported no private material or overclaim"},
-                {"id": "trivy-clean-tree", "status": "passed", "disposition": "Trivy reported no rejected vulnerability or secret in the exact clean tree"},
-                {"id": "trivy-lower-severity", "status": "passed", "disposition": f"Trivy retained lower-severity counts: {json.dumps(security['trivy']['vulnerability_counts'], sort_keys=True)}"},
-                {"id": "no-sla", "status": "passed", "disposition": "budgets remain qualification stopping rules rather than production promises"},
+                {
+                    "id": "dependency",
+                    "status": "passed",
+                    "disposition": "cargo-audit 0.22.2 reported no vulnerability or warning",
+                },
+                {
+                    "id": "filesystem-and-trust",
+                    "status": "passed",
+                    "disposition": "exact modes no-follow identity size trust and replacement tests passed",
+                },
+                {
+                    "id": "privacy-and-disclosure",
+                    "status": "passed",
+                    "disposition": "closed root privacy command reported no private material or overclaim",
+                },
+                {
+                    "id": "trivy-clean-tree",
+                    "status": "passed",
+                    "disposition": "Trivy reported no rejected vulnerability or secret in the exact clean tree",
+                },
+                {
+                    "id": "trivy-lower-severity",
+                    "status": "passed",
+                    "disposition": f"Trivy retained lower-severity counts: {json.dumps(security['trivy']['vulnerability_counts'], sort_keys=True)}",
+                },
+                {
+                    "id": "no-sla",
+                    "status": "passed",
+                    "disposition": "budgets remain qualification stopping rules rather than production promises",
+                },
             ],
         },
         "residual_risks": [
-            {"id": "containerized-performance", "statement": "measurements from one native host in an isolated container do not establish uncontainerized or production performance"},
-            {"id": "single-live-environment", "statement": "one disposable kind cluster cannot establish behavior across production Kubernetes distributions or failures"},
-            {"id": "scanner-scope", "statement": "dependency scanners do not prove absence of malicious packages future advisories or unreachable lower-severity defects"},
-            {"id": "beta-storage", "statement": "prototype journal trust lifecycle and receipt semantics remain scoped to the finite beta"},
+            {
+                "id": "containerized-performance",
+                "statement": "measurements from one native host in an isolated container do not establish uncontainerized or production performance",
+            },
+            {
+                "id": "single-live-environment",
+                "statement": "one disposable kind cluster cannot establish behavior across production Kubernetes distributions or failures",
+            },
+            {
+                "id": "scanner-scope",
+                "statement": "dependency scanners do not prove absence of malicious packages future advisories or unreachable lower-severity defects",
+            },
+            {
+                "id": "beta-storage",
+                "statement": "prototype journal trust lifecycle and receipt semantics remain scoped to the finite beta",
+            },
         ],
         "invalidation_rules": [
-            {"id": "root-source-or-identity", "trigger": "any root source dependency lockfile toolchain feature compatibility command or executable identity change", "rerun_lanes": ["all"]},
-            {"id": "qualification-input", "trigger": "any qualification fixture vector corpus test harness scanner database environment or tool change", "rerun_lanes": ["all"]},
-            {"id": "distribution-only", "trigger": "nonexecutable distribution metadata or publication input change", "rerun_lanes": ["default", "privacy", "trivy"]},
-            {"id": "semantic-or-budget", "trigger": "any semantic security-policy or budget change", "rerun_lanes": ["all"]},
+            {
+                "id": "root-source-or-identity",
+                "trigger": "any root source dependency lockfile toolchain feature compatibility command or executable identity change",
+                "rerun_lanes": ["all"],
+            },
+            {
+                "id": "qualification-input",
+                "trigger": "any qualification fixture vector corpus test harness scanner database environment or tool change",
+                "rerun_lanes": ["all"],
+            },
+            {
+                "id": "distribution-only",
+                "trigger": "nonexecutable distribution metadata or publication input change",
+                "rerun_lanes": ["default", "privacy", "trivy"],
+            },
+            {
+                "id": "semantic-or-budget",
+                "trigger": "any semantic security-policy or budget change",
+                "rerun_lanes": ["all"],
+            },
         ],
     }
     arguments.output.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")

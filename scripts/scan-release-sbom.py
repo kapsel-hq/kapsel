@@ -154,9 +154,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
                 str(finding["package"]),
             )
         )
-        blocked = [
-            finding for finding in findings if finding["severity"] in {"HIGH", "CRITICAL"}
-        ]
+        blocked = [finding for finding in findings if finding["severity"] in {"HIGH", "CRITICAL"}]
         summary = {
             "schema": "kapsel.release-sbom-scan.v1",
             "sbom_sha256": hashlib.sha256(sbom_bytes).hexdigest(),

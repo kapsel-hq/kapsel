@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 
 ROOT_FILES = {
     "Cargo.lock",
@@ -58,8 +58,7 @@ def tracked_paths(root: Path) -> list[str]:
     selected = [
         path
         for path in paths
-        if (path in ROOT_FILES or path.startswith(ROOT_PREFIXES))
-        and (root / path).is_file()
+        if (path in ROOT_FILES or path.startswith(ROOT_PREFIXES)) and (root / path).is_file()
     ]
     return sorted(selected)
 

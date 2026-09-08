@@ -43,17 +43,13 @@ def repository_markdown() -> list[Path]:
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return sorted(
-            path
-            for path in ROOT.rglob("*.md")
-            if "target" not in path.relative_to(ROOT).parts
+            path for path in ROOT.rglob("*.md") if "target" not in path.relative_to(ROOT).parts
         )
     paths = [ROOT / line for line in output.splitlines() if line and (ROOT / line).is_file()]
     if paths:
         return paths
     return sorted(
-        path
-        for path in ROOT.rglob("*.md")
-        if "target" not in path.relative_to(ROOT).parts
+        path for path in ROOT.rglob("*.md") if "target" not in path.relative_to(ROOT).parts
     )
 
 
@@ -246,8 +242,7 @@ def link_targets(lines: list[str]) -> tuple[list[LinkTarget], list[tuple[int, st
         if line_number in definition_lines:
             continue
         targets.extend(
-            LinkTarget(destination, line_number)
-            for destination in inline_destinations(line)
+            LinkTarget(destination, line_number) for destination in inline_destinations(line)
         )
         for match in REFERENCE_LINK.finditer(line):
             label = match.group(2) or match.group(1)
@@ -305,9 +300,7 @@ def main() -> int:
         for link in targets:
             failure = check_target(source, link, anchor_cache)
             if failure is not None:
-                failures.append(
-                    f"{source.relative_to(ROOT)}:{link.line_number}: {failure}"
-                )
+                failures.append(f"{source.relative_to(ROOT)}:{link.line_number}: {failure}")
     if failures:
         print("broken local Markdown links:", file=sys.stderr)
         for failure in sorted(failures):

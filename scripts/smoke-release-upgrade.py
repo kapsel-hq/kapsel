@@ -51,7 +51,10 @@ def read_bounded_regular(path: pathlib.Path, maximum: int) -> bytes:
 
 def extract_old_archive(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     archive_bytes = read_bounded_regular(archive, ARCHIVE_BYTES_MAX)
-    if archive.name != f"{OLD_BASENAME}.tar.gz" or sha256_bytes(archive_bytes) != OLD_ARCHIVE_SHA256:
+    if (
+        archive.name != f"{OLD_BASENAME}.tar.gz"
+        or sha256_bytes(archive_bytes) != OLD_ARCHIVE_SHA256
+    ):
         raise RuntimeError("v0.1.1 archive identity disagrees with the accepted release")
     expected = {
         f"{OLD_BASENAME}/",
@@ -118,7 +121,13 @@ def mcp_open(binary: pathlib.Path, operator: pathlib.Path) -> None:
 def operate(binary: pathlib.Path, paths: dict[str, pathlib.Path]) -> bytes:
     result = SMOKE.run_binary(
         binary,
-        ["operate", "--request", str(paths["request"]), "--operator-config", str(paths["operator"])],
+        [
+            "operate",
+            "--request",
+            str(paths["request"]),
+            "--operator-config",
+            str(paths["operator"]),
+        ],
     )
     if result.returncode != 0:
         raise RuntimeError("upgrade-pair operation failed")
@@ -279,7 +288,9 @@ def smoke_upgrade(candidate_archive: pathlib.Path, old_archive: pathlib.Path) ->
 
     with tempfile.TemporaryDirectory(prefix="kapsel-release-upgrade-") as temporary:
         root = pathlib.Path(temporary)
-        candidate_root = SMOKE.extract_exact_archive(candidate_archive, candidate_bytes, root / "new")
+        candidate_root = SMOKE.extract_exact_archive(
+            candidate_archive, candidate_bytes, root / "new"
+        )
         old_root = extract_old_archive(old_archive, root / "old")
         candidate_binary = candidate_root / "bin" / "kapsel"
         old_binary = old_root / "bin" / "kapsel"
@@ -307,9 +318,9 @@ def smoke_upgrade(candidate_archive: pathlib.Path, old_archive: pathlib.Path) ->
             if receipt.read_bytes() != frozen_receipt or SMOKE.KubernetesFixture.requests != 3:
                 raise RuntimeError("v0.2 upgrade changed frozen receipt or provider activity")
             trust = evaluation / "receipt.trust"
-            trust_hex = candidate_root.joinpath(
-                "share", "kapsel", "kap0038-trust.hex"
-            ).read_text().strip()
+            trust_hex = (
+                candidate_root.joinpath("share", "kapsel", "kap0038-trust.hex").read_text().strip()
+            )
             SMOKE.write_private(trust, bytes.fromhex(trust_hex))
             SMOKE.inspect_receipt(candidate_binary, receipt, trust)
 
@@ -329,7 +340,10 @@ def smoke_upgrade(candidate_archive: pathlib.Path, old_archive: pathlib.Path) ->
                 raise RuntimeError("rollback quarantine did not preserve the active generation")
             mcp_open(candidate_binary, paths["operator"])
             mcp_open(candidate_binary, paths["operator"])
-            if operate(candidate_binary, paths) != old_report or receipt.read_bytes() != frozen_receipt:
+            if (
+                operate(candidate_binary, paths) != old_report
+                or receipt.read_bytes() != frozen_receipt
+            ):
                 raise RuntimeError("restored v0.1.1 generation changed candidate behavior")
             shutil.rmtree(quarantine)
             backup.unlink()

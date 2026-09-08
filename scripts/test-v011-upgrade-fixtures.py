@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-from collections.abc import Callable
 import pathlib
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 
 TAG = "v0.1.1"
 TAG_OBJECT = "9085414ad329edfa5afe49577afd1d1409a30a5d"
@@ -20,8 +20,7 @@ VERIFICATION_TEST = "gateway::tests::v011_upgrade::v011_fixture_verification"
 PROCESS_LOSS_TEST = "gateway::tests::v011_upgrade::v011_process_loss_verification"
 OLD_REOPEN_TEST = "gateway::tests::v011_upgrade::v011_marked_fixture_reopen"
 MATRIX_TEST = (
-    "gateway::tests::v011_upgrade::"
-    "v011_upgrade_matrix_names_every_historical_state_and_ambiguity"
+    "gateway::tests::v011_upgrade::v011_upgrade_matrix_names_every_historical_state_and_ambiguity"
 )
 MODULE = """
 
@@ -82,9 +81,7 @@ def require_sha256(path: pathlib.Path, expected: str, phase: str) -> None:
 
 
 def registered_worktrees(root: pathlib.Path) -> set[pathlib.Path]:
-    raw = subprocess.check_output(
-        ["git", "worktree", "list", "--porcelain", "-z"], cwd=root
-    )
+    raw = subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=root)
     prefix = b"worktree "
     return {
         pathlib.Path(os.fsdecode(field[len(prefix) :])).resolve()
@@ -262,7 +259,9 @@ def self_test_cleanup() -> None:
             )
         except BaseExceptionGroup as failures:
             if failures.exceptions != (primary, cleanup):
-                raise AssertionError("primary and cleanup failures were not both preserved")
+                raise AssertionError(
+                    "primary and cleanup failures were not both preserved"
+                ) from failures
         else:
             raise AssertionError("combined primary and cleanup failure was not reported")
     print("cleanup failure self-test: OK", flush=True)

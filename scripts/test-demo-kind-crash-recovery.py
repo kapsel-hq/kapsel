@@ -13,7 +13,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "scripts" / "demo-kind-crash-recovery.sh"
 
-FAKE_DEMO_EXECUTABLE = r'''
+FAKE_DEMO_EXECUTABLE = r"""
 command=$1
 shift
 case "$command" in
@@ -62,7 +62,7 @@ PYSQL
     printf '%s\n' '{"status":"INSPECTED","result":"FAILED","rollout_condition_reason":"ProgressDeadlineExceeded","non_claims":"no-exactly-once;no-causation;no-kubernetes-truth;no-complete-capture;no-witnessing;not-production"}'
     ;;
 esac
-'''
+"""
 
 
 class HarnessPrerequisiteTests(unittest.TestCase):
@@ -81,7 +81,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                 if name == "docker" and body == "exit 0":
                     body = "[ \"$1\" = version ] && echo '29.4.0'; exit 0"
                 path = directory / name
-                path.write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >>\"$FAKE_LOG\"\n{body}\n")
+                path.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "{name} $*" >>"$FAKE_LOG"\n{body}\n')
                 path.chmod(0o755)
             environment = os.environ.copy()
             environment["PATH"] = f"{directory}:{environment['PATH']}"
@@ -161,7 +161,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
     def test_unparseable_docker_version_stops_before_kind(self) -> None:
         result, calls = self.run_case(
             {
-                "docker": "[ \"$1\" = version ] && echo unknown; exit 0",
+                "docker": '[ "$1" = version ] && echo unknown; exit 0',
                 "kind": "exit 99",
             }
         )
@@ -187,7 +187,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
             {
                 "docker": "exit 0",
                 "kind": "echo 'kind v0.32.0'",
-                "kubectl": "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"29\"}}'",
+                "kubectl": 'echo \'{"clientVersion":{"major":"1","minor":"29"}}\'',
             }
         )
         self.assertNotEqual(result.returncode, 0)
@@ -199,7 +199,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
             {
                 "docker": "exit 0",
                 "kind": "echo 'kind v0.32.0'",
-                "kubectl": "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'",
+                "kubectl": 'echo \'{"clientVersion":{"major":"1","minor":"34"}}\'',
                 "python3": "exit 1",
             }
         )
@@ -214,9 +214,9 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                 "kind": (
                     "if [ \"$1\" = version ]; then echo 'kind v0.32.0'; "
                     "elif [ \"$1 $2\" = 'get clusters' ]; then echo 'No kind clusters found.'; "
-                    "elif [ \"$1\" = create ]; then exit 1; fi; exit 0"
+                    'elif [ "$1" = create ]; then exit 1; fi; exit 0'
                 ),
-                "kubectl": "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'",
+                "kubectl": 'echo \'{"clientVersion":{"major":"1","minor":"34"}}\'',
             }
         )
         self.assertNotEqual(result.returncode, 0)
@@ -232,10 +232,10 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                 "kind": (
                     "if [ \"$1\" = version ]; then echo 'kind v0.32.0'; "
                     "elif [ \"$1 $2\" = 'get clusters' ]; then echo 'No kind clusters found.'; "
-                    "elif [ \"$1\" = create ]; then exit 1; "
-                    "elif [ \"$1\" = delete ]; then exit 1; fi; exit 0"
+                    'elif [ "$1" = create ]; then exit 1; '
+                    'elif [ "$1" = delete ]; then exit 1; fi; exit 0'
                 ),
-                "kubectl": "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'",
+                "kubectl": 'echo \'{"clientVersion":{"major":"1","minor":"34"}}\'',
             }
         )
         self.assertNotEqual(result.returncode, 0)
@@ -249,9 +249,9 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                 "kind": (
                     "if [ \"$1\" = version ]; then echo 'kind v0.32.0'; "
                     "elif [ \"$1 $2\" = 'get clusters' ]; then echo 'No kind clusters found.'; "
-                    "elif [ \"$1\" = create ]; then exit 1; fi; exit 0"
+                    'elif [ "$1" = create ]; then exit 1; fi; exit 0'
                 ),
-                "kubectl": "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'",
+                "kubectl": 'echo \'{"clientVersion":{"major":"1","minor":"34"}}\'',
                 "rm": "echo hidden-descendant >&2; exit 1",
             }
         )
@@ -269,8 +269,8 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                     "elif [ \"$1 $2\" = 'get kubeconfig' ]; then echo kubeconfig; fi; exit 0"
                 ),
                 "kubectl": (
-                    "if [ \"$1\" = version ]; then "
-                    "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'; "
+                    'if [ "$1" = version ]; then '
+                    'echo \'{"clientVersion":{"major":"1","minor":"34"}}\'; '
                     "elif echo \"$*\" | grep -q 'apply -f -'; then cat >/dev/null; "
                     "elif echo \"$*\" | grep -q 'get deployment'; then "
                     "printf registry.k8s.io/pause:3.10.1; fi; exit 0"
@@ -303,9 +303,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
             {
                 "docker": "exit 0",
                 "kind": "if [ \"$1\" = version ]; then echo 'kind v0.32.0'; else echo occupied; fi",
-                "kubectl": (
-                    "echo '{\"clientVersion\":{\"major\":\"1\",\"minor\":\"34\"}}'"
-                ),
+                "kubectl": ('echo \'{"clientVersion":{"major":"1","minor":"34"}}\''),
             }
         )
         self.assertNotEqual(result.returncode, 0)

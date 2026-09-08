@@ -15,9 +15,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-BUILDER_IMAGE = (
-    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-)
+BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 TOOLCHAIN = "1.98.0"
 
 
@@ -30,12 +28,15 @@ def cache_key() -> str:
 
 def cache_paths() -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create build-only caches without retaining disposable test evidence."""
-    base = pathlib.Path(
-        os.environ.get(
-            "KAPSEL_INSTALLER_CACHE_DIR",
-            pathlib.Path.home() / ".cache/kapsel/installer",
+    base = (
+        pathlib.Path(
+            os.environ.get(
+                "KAPSEL_INSTALLER_CACHE_DIR",
+                pathlib.Path.home() / ".cache/kapsel/installer",
+            )
         )
-    ) / cache_key()
+        / cache_key()
+    )
     paths = (base / "rustup", base / "registry", base / "target")
     for path in paths:
         path.mkdir(parents=True, exist_ok=True)
@@ -94,9 +95,7 @@ def stage_bundle(stage: pathlib.Path) -> None:
 def operator_input(directory: pathlib.Path, certificate_authority: bytes) -> None:
     directory.chmod(0o700)
     files = {
-        "grant.bin": bytes.fromhex(
-            (ROOT / "vectors/effect-gateway-grant.hex").read_text().strip()
-        ),
+        "grant.bin": bytes.fromhex((ROOT / "vectors/effect-gateway-grant.hex").read_text().strip()),
         "authorization.pub": bytes.fromhex(
             "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
         ),
@@ -205,7 +204,16 @@ def generate_tls_fixture(target: pathlib.Path) -> None:
         **openssl,
     )
     subprocess.run(
-        ["openssl", "x509", "-in", target / "kube.crt", "-outform", "DER", "-out", target / "kube.der"],
+        [
+            "openssl",
+            "x509",
+            "-in",
+            target / "kube.crt",
+            "-outform",
+            "DER",
+            "-out",
+            target / "kube.der",
+        ],
         **openssl,
     )
     subprocess.run(

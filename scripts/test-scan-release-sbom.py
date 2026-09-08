@@ -22,7 +22,7 @@ SCANNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SCANNER)
 
 
-FAKE_TRIVY = r'''#!/usr/bin/env python3
+FAKE_TRIVY = r"""#!/usr/bin/env python3
 import datetime
 import json
 import os
@@ -57,11 +57,13 @@ elif arguments and arguments[0] == "sbom":
     output.write_text(json.dumps({"Results": [{"Vulnerabilities": vulnerabilities}]}))
 else:
     raise SystemExit(f"unexpected fake Trivy arguments: {arguments}")
-'''
+"""
 
 
 class ReleaseSbomScannerTests(unittest.TestCase):
-    def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path, pathlib.Path, dict[str, str]]:
+    def fixture(
+        self,
+    ) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path, pathlib.Path, dict[str, str]]:
         temporary = tempfile.TemporaryDirectory(prefix="kapsel-sbom-scan-test-")
         root = pathlib.Path(temporary.name)
         binary_directory = root / "bin"

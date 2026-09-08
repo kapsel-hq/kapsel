@@ -107,7 +107,8 @@ The [v0.2.0 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0)
 authenticated x86-64 GNU/Linux archive and a disposable-`kind` crash-recovery demonstration. The
 [evaluation guide](docs/EVALUATOR.md) shows how to authenticate the artifact and run it.
 
-From a source checkout, run the deterministic gate:
+For source development, follow [Build and test](docs/BUILD.md) to install the toolchain and run the
+deterministic gate:
 
 ```sh
 ./scripts/ci-local.sh

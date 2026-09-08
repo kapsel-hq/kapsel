@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import resource
 import shutil
 import socket
@@ -16,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 IMAGE = "i" * 440 + "@sha256:" + "0" * 64
@@ -142,9 +142,7 @@ def operator_fixture(
     return request_path, operator_path
 
 
-def deployment_response(
-    request: dict[str, str], resource_version: str, receiver: bool
-) -> bytes:
+def deployment_response(request: dict[str, str], resource_version: str, receiver: bool) -> bytes:
     metadata: dict[str, Any] = {
         "name": request["deployment"],
         "namespace": request["namespace"],
@@ -154,9 +152,7 @@ def deployment_response(
     }
     image = request["immutable_image_digest"] if receiver else IMAGE_DIGEST.replace("0", "a")
     if receiver:
-        metadata["annotations"] = {
-            "kapsel.dev/kap0038-operation-id": request["operation_id"]
-        }
+        metadata["annotations"] = {"kapsel.dev/kap0038-operation-id": request["operation_id"]}
     document: dict[str, Any] = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -239,7 +235,14 @@ def sample_child(
         stderr=subprocess.PIPE,
     )
     result = json.loads(completed.stdout)
-    if set(result) != {"wall_us", "cpu_us", "rss_bytes", "returncode", "stdout_bytes", "stderr_bytes"}:
+    if set(result) != {
+        "wall_us",
+        "cpu_us",
+        "rss_bytes",
+        "returncode",
+        "stdout_bytes",
+        "stderr_bytes",
+    }:
         raise RuntimeError("measurement wrapper returned an unexpected shape")
     return result
 
@@ -353,8 +356,13 @@ def measure(repo: Path, output: Path) -> None:
         root.chmod(0o700)
         receipt = root / "canonical.receipt"
         trust = root / "canonical.trust"
-        private_file(receipt, bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip()))
-        private_file(trust, bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip()))
+        private_file(
+            receipt,
+            bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip()),
+        )
+        private_file(
+            trust, bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip())
+        )
 
         for index in range(WARMUPS + SAMPLES):
             result = sample_child([str(ordinary)])
@@ -406,14 +414,10 @@ def measure(repo: Path, output: Path) -> None:
                 ordinary, fresh_root, ("127.0.0.1", 9), ordinary_request()
             )
             _ = request_path
-            result = sample_child(
-                [str(ordinary), "mcp", "--operator-config", str(operator_path)]
-            )
+            result = sample_child([str(ordinary), "mcp", "--operator-config", str(operator_path)])
             if index >= WARMUPS:
                 record(measurements, "journal_fresh_open", result, 0)
-            result = sample_child(
-                [str(ordinary), "mcp", "--operator-config", str(operator_path)]
-            )
+            result = sample_child([str(ordinary), "mcp", "--operator-config", str(operator_path)])
             if index >= WARMUPS:
                 record(measurements, "journal_marked_open", result, 0)
 
@@ -587,10 +591,18 @@ def measure(repo: Path, output: Path) -> None:
         "internal_wall_us": internal,
         "growth": growth,
         "wire_sizes": {
-            "canonical_grant_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-grant.hex").read_text().strip())),
-            "canonical_receipt_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip())),
-            "canonical_statement_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-statement.hex").read_text().strip())),
-            "canonical_trust_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip())),
+            "canonical_grant_bytes": len(
+                bytes.fromhex((repo / "vectors/effect-gateway-grant.hex").read_text().strip())
+            ),
+            "canonical_receipt_bytes": len(
+                bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip())
+            ),
+            "canonical_statement_bytes": len(
+                bytes.fromhex((repo / "vectors/effect-gateway-statement.hex").read_text().strip())
+            ),
+            "canonical_trust_bytes": len(
+                bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip())
+            ),
         },
         "binary": {
             "build_target": "x86_64-unknown-linux-gnu",

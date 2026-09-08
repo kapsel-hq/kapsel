@@ -2,11 +2,11 @@
 """Regression tests for beta qualification and its privacy review."""
 
 import hashlib
-from pathlib import Path
 import runpy
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ORCHESTRATOR = runpy.run_path(str(ROOT / "scripts/run-beta-qualification.py"))
@@ -39,9 +39,7 @@ class BetaQualificationTests(unittest.TestCase):
                 "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('bounded')",
                 "BOUNDED_OUTPUT",
             ]
-            result = ORCHESTRATOR["run_lane"](
-                "placeholder regression", command, ROOT, 30, output
-            )
+            result = ORCHESTRATOR["run_lane"]("placeholder regression", command, ROOT, 30, output)
             self.assertEqual(result["command"], command)
             self.assertEqual(output.read_text(), "bounded")
             self.assertEqual(

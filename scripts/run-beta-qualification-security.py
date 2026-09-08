@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 
 
 def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
@@ -42,7 +42,11 @@ def utc_timestamp(value: str) -> str:
 
 
 def git_tree_sha256(repository: Path, commit: str) -> str:
-    paths = run(["git", "ls-tree", "-r", "--name-only", commit], repository).stdout.decode().splitlines()
+    paths = (
+        run(["git", "ls-tree", "-r", "--name-only", commit], repository)
+        .stdout.decode()
+        .splitlines()
+    )
     digest = hashlib.sha256()
     for path in sorted(paths):
         contents = run(["git", "show", f"{commit}:{path}"], repository).stdout
@@ -161,9 +165,10 @@ def main() -> None:
     root = Path(__file__).resolve().parent.parent
     if subprocess.run(["git", "diff", "--quiet", "--exit-code"], cwd=root).returncode != 0:
         raise RuntimeError("security scan requires a clean source tree")
-    if subprocess.run(
-        ["git", "diff", "--cached", "--quiet", "--exit-code"], cwd=root
-    ).returncode != 0:
+    if (
+        subprocess.run(["git", "diff", "--cached", "--quiet", "--exit-code"], cwd=root).returncode
+        != 0
+    ):
         raise RuntimeError("security scan requires a clean index")
     commit = run(["git", "rev-parse", "HEAD"], root).stdout.decode().strip()
     cargo_audit, audit_tool = cargo_audit_result(root)

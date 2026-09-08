@@ -20,12 +20,8 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
-BUILDER_IMAGE = (
-    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
-)
-SMOKE_IMAGE = (
-    "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
-)
+BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
+SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 NON_CLAIMS = "developer-beta;not-production;no-public-rust-api;no-other-targets"
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
@@ -385,7 +381,9 @@ def cargo_graph(
             "relatedSpdxElement": identifiers[target],
             "comment": "Cargo locked graph; target-conditioned and build dependencies are conservative identity evidence.",
         }
-        for source, target in sorted(set(edges), key=lambda edge: (identifiers[edge[0]], identifiers[edge[1]]))
+        for source, target in sorted(
+            set(edges), key=lambda edge: (identifiers[edge[0]], identifiers[edge[1]])
+        )
     ]
     return packages, relationships, identifiers[root_id]
 
@@ -452,8 +450,7 @@ def create_sbom(
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"{archive.name} software bill of materials",
         "documentNamespace": (
-            "https://github.com/kapsel-cloud/kapsel/sbom/"
-            f"{revision}/{archive_digest}"
+            f"https://github.com/kapsel-cloud/kapsel/sbom/{revision}/{archive_digest}"
         ),
         "comment": (
             f"source_revision={revision};source_tree={tree};rust_target={TARGET};"
@@ -497,7 +494,9 @@ def create_sbom(
     return sbom_path
 
 
-def create_digest_manifest(archive: pathlib.Path, checksum: pathlib.Path, sbom: pathlib.Path) -> pathlib.Path:
+def create_digest_manifest(
+    archive: pathlib.Path, checksum: pathlib.Path, sbom: pathlib.Path
+) -> pathlib.Path:
     manifest = archive.with_name(archive.name + ".SHA256SUMS")
     entries = sorted([archive, checksum, sbom], key=lambda path: path.name)
     value = "".join(f"{file_sha256(path)}  {path.name}\n" for path in entries).encode()
