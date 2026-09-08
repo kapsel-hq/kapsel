@@ -1046,6 +1046,8 @@ async fn wait_for_deployment_rollout(
                 status.observed_generation == generation
                     && status.available_replicas == Some(1)
                     && status.updated_replicas == Some(1)
+                    && status.replicas == Some(1)
+                    && status.ready_replicas == Some(1)
             });
             if ready {
                 return Ok::<(), kube::Error>(());
@@ -1160,4 +1162,639 @@ fn private_test_directory_for(scenario: &str) -> PathBuf {
     fs::create_dir(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     fs::canonicalize(path).unwrap()
+}
+
+// Deliberately bypasses dispatch permission only in this receiver experiment. No
+// experimental patch or replay path is available to the production gateway.
+mod patch_experiment {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use serde_json::Value;
+
+    use super::*;
+
+    const EXPERIMENT_NAMESPACE: &str = "kapsel-patch-experiment";
+    const MARKER: &str = "kapsel.dev/kap0038-operation-id";
+    type ExperimentResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Strategy {
+        Strategic,
+        Json,
+    }
+
+    impl Strategy {
+        fn content_type(self) -> &'static str {
+            match self {
+                Self::Strategic => "application/strategic-merge-patch+json",
+                Self::Json => "application/json-patch+json",
+            }
+        }
+
+        fn stale_status(self) -> u16 {
+            match self {
+                Self::Strategic => 409,
+                Self::Json => 422,
+            }
+        }
+    }
+
+    // Freeze the index and annotations from the ORIGINAL approved snapshot.
+    // Adding a member requires an existing parent (RFC 6902 section 4.1).
+    // Add the whole preserved map only when the snapshot has no annotations.
+    fn json_document(request: &SetDeploymentImageRequest, original: &Deployment) -> Value {
+        let containers = &original
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+            .containers;
+        let index = containers
+            .iter()
+            .position(|c| c.name == request.container)
+            .unwrap();
+        let mut operations = vec![
+            json!({"op": "test", "path": "/metadata/uid", "value": original.metadata.uid}),
+            json!({"op": "test", "path": "/metadata/resourceVersion",
+                   "value": original.metadata.resource_version}),
+            json!({"op": "test", "path": format!("/spec/template/spec/containers/{index}/name"),
+                   "value": request.container}),
+            json!({"op": "replace", "path": format!("/spec/template/spec/containers/{index}/image"),
+                   "value": request.immutable_image_digest}),
+        ];
+        if original.metadata.annotations.is_some() {
+            operations.push(json!({"op": "add",
+                "path": "/metadata/annotations/kapsel.dev~1kap0038-operation-id",
+                "value": request.operation_id}));
+        } else {
+            operations.push(json!({"op": "add", "path": "/metadata/annotations",
+                "value": {MARKER: request.operation_id}}));
+        }
+        Value::Array(operations)
+    }
+
+    struct FrozenPatch {
+        strategy: Strategy,
+        request: SetDeploymentImageRequest,
+        original: Deployment,
+        bytes: Vec<u8>,
+        sends: Arc<AtomicUsize>,
+    }
+
+    impl FrozenPatch {
+        fn new(
+            strategy: Strategy,
+            request: SetDeploymentImageRequest,
+            original: Deployment,
+        ) -> Self {
+            let target = TargetIdentity {
+                deployment_uid: original.metadata.uid.clone().unwrap(),
+                resource_version: original.metadata.resource_version.clone().unwrap(),
+            };
+            let document = match strategy {
+                Strategy::Strategic => test_deployment_patch_document(&request, &target),
+                Strategy::Json => json_document(&request, &original),
+            };
+            Self {
+                strategy,
+                request,
+                original,
+                bytes: serde_json::to_vec(&document).unwrap(),
+                sends: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        async fn send(&self, client: &Client) -> Result<u16, kube::Error> {
+            let request = http::Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/apis/apps/v1/namespaces/{}/deployments/{}",
+                    self.request.namespace, self.request.deployment
+                ))
+                .header("content-type", self.strategy.content_type())
+                .header("user-agent", "kapsel-frozen-patch-experiment")
+                .body(self.bytes.clone())
+                .unwrap();
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            match client.request::<Deployment>(request).await {
+                Ok(_) => Ok(200),
+                Err(kube::Error::Api(response)) => Ok(response.code),
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    async fn control(
+        client: &Client,
+        operation_id: &str,
+        action: Value,
+    ) -> ExperimentResult<Value> {
+        let mut command = action;
+        command["operation_id"] = json!(operation_id);
+        let request = http::Request::builder()
+            .method("POST")
+            .uri(concat!(
+                "/api/v1/namespaces/kapsel-recovery-policy-webhook/services/",
+                "http:recovery-policy-webhook:control/proxy/control"
+            ))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&command)?)
+            .unwrap();
+        Ok(client.request(request).await?)
+    }
+
+    async fn wait_at_barrier(
+        client: &Client,
+        operation_id: &str,
+        count: usize,
+    ) -> ExperimentResult<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let state = control(client, operation_id, json!({"action": "state"})).await?;
+                if state["effects"].as_array().unwrap().len() >= count {
+                    assert_eq!(state["released"], 0);
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+                // Polling cadence is not ordering evidence. The held invocation ledger is.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| "admission barrier was not reached in 10 seconds")?
+    }
+
+    #[tokio::test]
+    #[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+    async fn kind_frozen_patch_receiver_matrix() {
+        assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
+        let mut config = kube::Config::infer().await.unwrap();
+        config.default_retry = false;
+        let client = Client::try_from(config).unwrap();
+        let namespaces: Api<Namespace> = Api::all(client.clone());
+        namespaces
+            .create(
+                &PostParams::default(),
+                &Namespace {
+                    metadata: ObjectMeta {
+                        name: Some(EXPERIMENT_NAMESPACE.into()),
+                        labels: Some(BTreeMap::from([(
+                            "kapsel.dev/recovery-policy".into(),
+                            "true".into(),
+                        )])),
+                        ..ObjectMeta::default()
+                    },
+                    ..Namespace::default()
+                },
+            )
+            .await
+            .unwrap();
+        let proof = tokio::time::timeout(std::time::Duration::from_secs(240), async {
+            for strategy in [Strategy::Strategic, Strategy::Json] {
+                for scenario in [
+                    "persisted-discard",
+                    "preflight-writer",
+                    "recreated",
+                    "reordered",
+                    "overlap",
+                    "unpersisted-replay",
+                    "before-send",
+                ] {
+                    Box::pin(run_case(&client, strategy, scenario)).await?;
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            namespaces.delete(EXPERIMENT_NAMESPACE, &DeleteParams::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        proof.unwrap().unwrap();
+    }
+
+    async fn run_case(client: &Client, strategy: Strategy, scenario: &str) -> ExperimentResult<()> {
+        let name = format!(
+            "{}-{scenario}",
+            match strategy {
+                Strategy::Strategic => "strategic",
+                Strategy::Json => "json",
+            }
+        );
+        let deployments: Api<Deployment> = Api::namespaced(client.clone(), EXPERIMENT_NAMESPACE);
+        let mut fixture = fixture_deployment_for(EXPERIMENT_NAMESPACE, &name);
+        fixture.metadata.annotations = Some(BTreeMap::from([(
+            "kapsel.dev/experiment-preserve".into(),
+            "original".into(),
+        )]));
+        deployments.create(&PostParams::default(), &fixture).await?;
+        wait_for_deployment_rollout(&deployments, &name).await?;
+        let request = SetDeploymentImageRequest {
+            operation_id: name.clone(),
+            namespace: EXPERIMENT_NAMESPACE.into(),
+            deployment: name.clone(),
+            container: "target".into(),
+            immutable_image_digest: TARGET_IMAGE.into(),
+        };
+        let original = deployments.get(&name).await?;
+        let mut adapter = KubernetesDeploymentImageAdapter::new(client.clone());
+        let preflight = adapter.identify(&request).await.unwrap();
+        assert_eq!(Some(preflight.deployment_uid), original.metadata.uid);
+        assert_eq!(
+            Some(preflight.resource_version),
+            original.metadata.resource_version
+        );
+        let frozen = Arc::new(FrozenPatch::new(strategy, request, original));
+        control(
+            client,
+            &name,
+            json!({"action": "configure", "hold": scenario == "overlap",
+            "invalidate_first": scenario == "unpersisted-replay"}),
+        )
+        .await?;
+        let replica_sets: Api<ReplicaSet> = Api::namespaced(client.clone(), EXPERIMENT_NAMESPACE);
+        let selector = ListParams::default().labels(&format!("app={name}"));
+        let rs_before = replica_sets.list(&selector).await?.items.len();
+        let statuses = exercise_scenario(client, &deployments, &frozen, scenario).await?;
+        wait_for_deployment_rollout(&deployments, &name).await?;
+        let after = deployments.get(&name).await?;
+        let rs_after = replica_sets.list(&selector).await?.items.len();
+        let state = control(client, &name, json!({"action": "state"})).await?;
+        let invocations = state["invocations"].as_array().unwrap();
+        let effects = wait_for_admission_effects(client, &name, invocations.len()).await?;
+        assert_eq!(state["effects"].as_array().unwrap().len(), effects.len());
+        assert_eq!(invocations.len(), effects.len());
+        for uid in invocations {
+            assert!(effects
+                .iter()
+                .any(|line| line.contains(uid.as_str().unwrap())));
+        }
+        let expected_effects = match scenario {
+            "overlap" | "unpersisted-replay" => 2,
+            "persisted-discard" => match strategy {
+                Strategy::Strategic => 2,
+                Strategy::Json => 1,
+            },
+            "before-send" => 1,
+            "preflight-writer" | "reordered" | "recreated" => match strategy {
+                Strategy::Strategic => 1,
+                Strategy::Json => 0,
+            },
+            _ => unreachable!(),
+        };
+        // GuaranteedUpdate may re-enter admission within one strategic request.
+        // The receiver ledger, not a request-count assumption, owns the measurement.
+        if matches!(strategy, Strategy::Strategic) {
+            assert!(effects.len() >= expected_effects);
+        } else if expected_effects == 0 {
+            // A stale cached original can pass JSON tests before the storage CAS
+            // notices the writer. Tests against the refreshed object then fail.
+            assert!(effects.len() <= 1);
+        } else {
+            assert_eq!(effects.len(), expected_effects);
+        }
+        if statuses.contains(&200) {
+            assert_persisted_image_change(&frozen, &after);
+            assert_eq!(rs_after, rs_before + 1);
+        }
+        report_case(&frozen, &statuses, &after, &effects, rs_before, rs_after);
+        Ok(())
+    }
+
+    fn assert_persisted_image_change(frozen: &FrozenPatch, after: &Deployment) {
+        assert_eq!(after.metadata.uid, frozen.original.metadata.uid);
+        let mut expected_spec = frozen.original.spec.clone().unwrap();
+        let container = expected_spec
+            .template
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers
+            .iter_mut()
+            .find(|container| container.name == frozen.request.container)
+            .unwrap();
+        container.image = Some(frozen.request.immutable_image_digest.clone());
+        assert_eq!(after.spec.as_ref(), Some(&expected_spec));
+        for (key, value) in frozen.original.metadata.annotations.as_ref().unwrap() {
+            if key != MARKER && key != "deployment.kubernetes.io/revision" {
+                assert_eq!(
+                    after.metadata.annotations.as_ref().unwrap().get(key),
+                    Some(value)
+                );
+            }
+        }
+        assert_eq!(
+            after.metadata.generation.unwrap(),
+            frozen.original.metadata.generation.unwrap() + 1
+        );
+        assert_eq!(
+            after.metadata.annotations.as_ref().unwrap().get(MARKER),
+            Some(&frozen.request.operation_id)
+        );
+    }
+
+    async fn exercise_scenario(
+        client: &Client,
+        deployments: &Api<Deployment>,
+        frozen: &Arc<FrozenPatch>,
+        scenario: &str,
+    ) -> ExperimentResult<Vec<u16>> {
+        let name = &frozen.request.deployment;
+        let strategy = frozen.strategy;
+        let statuses = match scenario {
+            "persisted-discard" => {
+                // Harness sees persistence, then deliberately discards the response for
+                // caller semantics. This is not TCP loss or a process-kill injection.
+                assert_eq!(frozen.send(client).await?, 200);
+                wait_for_deployment_rollout(deployments, name).await?;
+                let after_first = deployments.get(name).await?;
+                let replay = frozen.send(client).await?;
+                assert_eq!(replay, strategy.stale_status());
+                let after_replay = deployments.get(name).await?;
+                assert_eq!(after_first.spec, after_replay.spec);
+                assert_eq!(
+                    after_first.metadata.generation,
+                    after_replay.metadata.generation
+                );
+                vec![200, replay]
+            },
+            "preflight-writer" | "recreated" | "reordered" => {
+                change_before_send(deployments, name, scenario).await?;
+                let before_send = deployments.get(name).await?;
+                if scenario == "recreated" {
+                    assert_ne!(before_send.metadata.uid, frozen.original.metadata.uid);
+                }
+                let status = frozen.send(client).await?;
+                assert_eq!(status, strategy.stale_status());
+                let after = deployments.get(name).await?;
+                assert_eq!(before_send.metadata.uid, after.metadata.uid);
+                assert_eq!(before_send.metadata.generation, after.metadata.generation);
+                assert_eq!(before_send.spec, after.spec);
+                assert_eq!(before_send.metadata.annotations, after.metadata.annotations);
+                vec![status]
+            },
+            "overlap" => overlap(client, deployments, frozen).await?,
+            "unpersisted-replay" => {
+                assert_eq!(frozen.send(client).await?, 422);
+                let unpersisted = deployments.get(name).await?;
+                assert_eq!(
+                    unpersisted.metadata.resource_version,
+                    frozen.original.metadata.resource_version
+                );
+                assert_eq!(unpersisted.spec, frozen.original.spec);
+                wait_for_admission_effects(client, name, 1).await?;
+                control(client, name, json!({"action": "allow"})).await?;
+                assert_eq!(frozen.send(client).await?, 200);
+                vec![422, 200]
+            },
+            "before-send" => {
+                prove_before_send_fault(client, frozen).await?;
+                assert_eq!(frozen.sends.load(Ordering::SeqCst), 0);
+                assert!(admission_effects(client, name).await?.is_empty());
+                assert_eq!(deployments.get(name).await?.spec, frozen.original.spec);
+                report_unsent(name);
+                // Counterfactual replay, NOT gateway recovery. Frozen original bytes.
+                assert_eq!(frozen.send(client).await?, 200);
+                vec![200]
+            },
+            _ => unreachable!(),
+        };
+        Ok(statuses)
+    }
+
+    async fn change_before_send(
+        deployments: &Api<Deployment>,
+        name: &str,
+        scenario: &str,
+    ) -> ExperimentResult<()> {
+        match scenario {
+            "preflight-writer" => advance_deployment_version(deployments, name, "writer").await?,
+            "recreated" => {
+                deployments.delete(name, &DeleteParams::default()).await?;
+                wait_for_deployment_deletion(deployments, name).await?;
+                deployments
+                    .create(
+                        &PostParams::default(),
+                        &fixture_deployment_for(EXPERIMENT_NAMESPACE, name),
+                    )
+                    .await?;
+                wait_for_deployment_rollout(deployments, name).await?;
+            },
+            "reordered" => {
+                let mut changed = deployments.get(name).await?;
+                changed
+                    .spec
+                    .as_mut()
+                    .unwrap()
+                    .template
+                    .spec
+                    .as_mut()
+                    .unwrap()
+                    .containers
+                    .swap(0, 1);
+                deployments
+                    .replace(name, &PostParams::default(), &changed)
+                    .await?;
+                wait_for_deployment_rollout(deployments, name).await?;
+            },
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    async fn overlap(
+        client: &Client,
+        deployments: &Api<Deployment>,
+        frozen: &Arc<FrozenPatch>,
+    ) -> ExperimentResult<Vec<u16>> {
+        let name = &frozen.request.operation_id;
+        let first = spawn_send(client, frozen);
+        wait_at_barrier(client, name, 1).await?;
+        let second = spawn_send(client, frozen);
+        wait_at_barrier(client, name, 2).await?;
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+        let held = deployments.get(&frozen.request.deployment).await?;
+        assert_eq!(
+            held.metadata.resource_version,
+            frozen.original.metadata.resource_version
+        );
+        assert_eq!(held.spec, frozen.original.spec);
+        report_held(
+            name,
+            frozen.sends.load(Ordering::SeqCst),
+            wait_for_admission_effects(client, name, 2).await?.len(),
+        );
+        control(client, name, json!({"action": "release", "through": 1})).await?;
+        assert_eq!(first.await??, 200);
+        control(client, name, json!({"action": "release", "through": 16})).await?;
+        let second_status = second.await??;
+        assert_eq!(second_status, frozen.strategy.stale_status());
+        Ok(vec![200, second_status])
+    }
+
+    fn spawn_send(
+        client: &Client,
+        frozen: &Arc<FrozenPatch>,
+    ) -> tokio::task::JoinHandle<Result<u16, kube::Error>> {
+        let client = client.clone();
+        let frozen = Arc::clone(frozen);
+        tokio::spawn(async move { frozen.send(&client).await })
+    }
+
+    async fn prove_before_send_fault(
+        client: &Client,
+        frozen: &FrozenPatch,
+    ) -> ExperimentResult<()> {
+        let directory = private_test_directory_for(&frozen.request.operation_id);
+        let database = directory.join("journal.sqlite3");
+        let mut gateway = Gateway::open_for_test(&database)?;
+        let authorization = ExactAuthorization {
+            approved_target: Some(ApprovedTarget {
+                uid: frozen.original.metadata.uid.clone().unwrap(),
+                resource_version: frozen.original.metadata.resource_version.clone().unwrap(),
+            }),
+            authorization_id: frozen.request.operation_id.clone(),
+            operation_id: frozen.request.operation_id.clone(),
+            namespace: frozen.request.namespace.clone(),
+            deployment: frozen.request.deployment.clone(),
+            container: frozen.request.container.clone(),
+            immutable_image_digest: frozen.request.immutable_image_digest.clone(),
+        };
+        gateway.submit_exact_for_test(&frozen.request, &authorization)?;
+        let mut adapter = CountingAdapter::new(client.clone());
+        assert!(matches!(
+            gateway
+                .run_once_with_adapter(&mut adapter, Some(FaultPoint::ApplyStartedCommitted))
+                .await,
+            Err(GatewayError::InjectedFault)
+        ));
+        assert_eq!(adapter.apply_calls, 0);
+        drop(gateway);
+        let reopened = Gateway::open_for_test(&database)?;
+        assert_eq!(
+            reopened.get(&frozen.request.operation_id)?,
+            Some(OperationState::ApplyStarted)
+        );
+        assert_eq!(reopened.result(&frozen.request.operation_id)?, None);
+        drop(reopened);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn report_unsent(name: &str) {
+        println!(
+            "[patch comparison] {name} fault=ApplyStartedCommitted-injected-return-and-reopen \
+            dispatch_calls=0 admission_effects=0 persisted_changes=0 caller_result=none"
+        );
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn report_held(name: &str, sends: usize, effects: usize) {
+        println!(
+            "[patch comparison] {name} barrier=both-pending dispatch_calls={sends} \
+            admission_effects={effects} persisted_changes=0 resource_version=original \
+            caller_result=none"
+        );
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn report_case(
+        frozen: &FrozenPatch,
+        statuses: &[u16],
+        after: &Deployment,
+        effects: &[String],
+        rs_before: usize,
+        rs_after: usize,
+    ) {
+        println!(
+            "[patch comparison] {} strategy={:?} dispatch_calls={} http_statuses={statuses:?} \
+            admission_invocations={} log_effects={} desired_spec_changed={} \
+            generation={:?}->{:?} replica_sets={rs_before}->{rs_after} \
+            uid={:?}->{:?} resource_version={:?}->{:?} \
+            observed_generation={:?} available_replicas={:?} updated_replicas={:?} \
+            caller_result=not-classified",
+            frozen.request.operation_id,
+            frozen.strategy,
+            frozen.sends.load(Ordering::SeqCst),
+            effects.len(),
+            effects.len(),
+            after.spec != frozen.original.spec,
+            frozen.original.metadata.generation,
+            after.metadata.generation,
+            frozen.original.metadata.uid,
+            after.metadata.uid,
+            frozen.original.metadata.resource_version,
+            after.metadata.resource_version,
+            after.status.as_ref().and_then(|s| s.observed_generation),
+            after.status.as_ref().and_then(|s| s.available_replicas),
+            after.status.as_ref().and_then(|s| s.updated_replicas)
+        );
+        for effect in effects {
+            println!("[patch comparison] {effect}");
+        }
+    }
+
+    #[test]
+    fn frozen_json_document_tests_original_identity_and_index_before_any_write() {
+        let mut original = fixture_deployment_for(EXPERIMENT_NAMESPACE, "document");
+        original.metadata.uid = Some("original-uid".into());
+        original.metadata.resource_version = Some("opaque-original-rv".into());
+        let request = request();
+        let no_annotations = json_document(&request, &original);
+        assert_eq!(
+            no_annotations[0],
+            json!({"op": "test", "path": "/metadata/uid",
+            "value": "original-uid"})
+        );
+        assert_eq!(
+            no_annotations[1],
+            json!({"op": "test", "path": "/metadata/resourceVersion",
+            "value": "opaque-original-rv"})
+        );
+        assert_eq!(
+            no_annotations[2],
+            json!({"op": "test",
+            "path": "/spec/template/spec/containers/0/name", "value": "target"})
+        );
+        assert_eq!(no_annotations[3]["op"], "replace");
+        assert_eq!(no_annotations[4]["path"], "/metadata/annotations");
+        original.metadata.annotations = Some(BTreeMap::from([("keep".into(), "me".into())]));
+        original
+            .spec
+            .as_mut()
+            .unwrap()
+            .template
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers
+            .swap(0, 1);
+        let reordered = json_document(&request, &original);
+        assert_eq!(
+            reordered[2]["path"],
+            "/spec/template/spec/containers/1/name"
+        );
+        assert_eq!(
+            reordered[3]["path"],
+            "/spec/template/spec/containers/1/image"
+        );
+        assert_eq!(
+            reordered[4]["path"],
+            "/metadata/annotations/kapsel.dev~1kap0038-operation-id"
+        );
+        assert_eq!(
+            no_annotations[2]["path"],
+            "/spec/template/spec/containers/0/name"
+        );
+    }
 }

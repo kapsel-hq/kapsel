@@ -13,7 +13,7 @@ cluster_owned=0
 webhook_image_owned=0
 
 phase() {
-  printf '[kind %s/10] %s\n' "$1" "$2"
+  printf '[kind %s/11] %s\n' "$1" "$2"
 }
 
 monotonic_ns() {
@@ -37,7 +37,7 @@ cleanup() {
     fi
   fi
   if [[ $cluster_owned -eq 1 ]]; then
-    phase 10 "deleting owned cluster $cluster_name"
+    phase 11 "deleting owned cluster $cluster_name"
     cleanup_started=$(monotonic_ns)
     if ! kind delete cluster --name "$cluster_name"; then
       printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
@@ -120,12 +120,58 @@ cargo test --locked -p kapsel --no-run
 phase 2 "creating disposable cluster $cluster_name"
 cluster_owned=1
 cluster_started=$(monotonic_ns)
+cat >"$workspace/audit-policy.yaml" <<'EOF'
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: Metadata
+    verbs: ["patch"]
+    namespaces: ["kapsel-patch-experiment"]
+    resources:
+      - group: apps
+        resources: ["deployments"]
+    omitStages: ["ResponseStarted", "ResponseComplete"]
+  - level: None
+EOF
+cat >"$workspace/kind.yaml" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: $workspace/audit-policy.yaml
+        containerPath: /etc/kubernetes/kapsel-audit-policy.yaml
+        readOnly: true
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            audit-policy-file: /etc/kubernetes/kapsel-audit-policy.yaml
+            audit-log-path: /var/log/kubernetes/kapsel-audit.log
+            audit-log-maxsize: "5"
+            audit-log-maxbackup: "1"
+          extraVolumes:
+            - name: audit-policy
+              hostPath: /etc/kubernetes/kapsel-audit-policy.yaml
+              mountPath: /etc/kubernetes/kapsel-audit-policy.yaml
+              readOnly: true
+              pathType: File
+            - name: audit-log
+              hostPath: /var/log/kubernetes
+              mountPath: /var/log/kubernetes
+              readOnly: false
+              pathType: DirectoryOrCreate
+EOF
 kind create cluster \
   --name "$cluster_name" \
   --image "$node_image" \
+  --config "$workspace/kind.yaml" \
   --kubeconfig "$kubeconfig" \
   --wait 120s
 export KUBECONFIG="$kubeconfig"
+printf '[kind evidence] node_image=%s\n' "$node_image"
+kubectl version -o json
 cluster_finished=$(monotonic_ns)
 printf '[kind timing] cluster_create_ms=%s\n' "$(elapsed_ms "$cluster_started" "$cluster_finished")"
 
@@ -191,8 +237,12 @@ spec:
   selector:
     app: recovery-policy-webhook
   ports:
-    - port: 443
+    - name: admission
+      port: 443
       targetPort: 8443
+    - name: control
+      port: 8080
+      targetPort: 8080
 EOF
 kubectl -n kapsel-recovery-policy-webhook rollout status \
   deployment/recovery-policy-webhook \
@@ -207,7 +257,7 @@ webhooks:
     admissionReviewVersions: ["v1"]
     sideEffects: NoneOnDryRun
     failurePolicy: Fail
-    timeoutSeconds: 5
+    timeoutSeconds: 25
     clientConfig:
       service:
         namespace: kapsel-recovery-policy-webhook
@@ -286,3 +336,38 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
 scenario_finished=$(monotonic_ns)
 printf '[kind timing] snapshot_approval_ms=%s\n' \
   "$(elapsed_ms "$scenario_started" "$scenario_finished")"
+
+phase 10 "comparing frozen strategic and JSON PATCH receiver boundaries"
+scenario_started=$(monotonic_ns)
+KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
+  kind_tests::patch_experiment::kind_frozen_patch_receiver_matrix \
+  -- --ignored --exact --nocapture | tee "$workspace/patch-comparison.log"
+scenario_finished=$(monotonic_ns)
+printf '[kind timing] patch_comparison_ms=%s\n' \
+  "$(elapsed_ms "$scenario_started" "$scenario_finished")"
+# Independent API-server receipt counts, not inferred from webhook invocations or
+# expected matrix values. The policy records only experiment Deployment PATCHes.
+docker exec "${cluster_name}-control-plane" \
+  cat /var/log/kubernetes/kapsel-audit.log >"$workspace/audit.jsonl"
+python3 - "$workspace/audit.jsonl" "$workspace/patch-comparison.log" <<'PY'
+import collections
+import json
+import re
+import sys
+
+received = collections.Counter()
+for line in open(sys.argv[1]):
+    event = json.loads(line)
+    if (event["stage"] == "RequestReceived"
+            and event.get("userAgent") == "kapsel-frozen-patch-experiment"):
+        received[event["objectRef"]["name"]] += 1
+        print("[patch comparison audit event] " + json.dumps(event, separators=(",", ":")))
+sent = {}
+for line in open(sys.argv[2]):
+    match = re.search(r"\[patch comparison\] (\S+) strategy=\S+ dispatch_calls=(\d+)", line)
+    if match:
+        sent[match[1]] = int(match[2])
+assert sent and dict(received) == sent, (received, sent)
+for name, count in sorted(received.items()):
+    print(f"[patch comparison audit] {name} received_patch_requests={count}")
+PY

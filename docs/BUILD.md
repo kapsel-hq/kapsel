@@ -270,7 +270,10 @@ Its exact-snapshot case acquires the operator-owned target, proves one matching 
 then proves version drift and same-name recreation stop before a PATCH while a preflight-to-PATCH
 race reaches the marked conditional-request path. Its output records the base revision and exact
 working-tree patch digest, commands, timings, prerequisites, and cleanup; it refuses untracked files
-that cannot be represented by that digest. This lane is separate from deterministic CI.
+that cannot be represented by that digest. The test-only
+[frozen JSON PATCH comparison](TESTING.md#frozen-json-patch-receiver-comparison) adds request
+auditing, admission barriers, and admitted-but-unpersisted replay evidence without changing the
+production adapter. This lane is separate from deterministic CI.
 
 ## Public crash-recovery demonstration
 
